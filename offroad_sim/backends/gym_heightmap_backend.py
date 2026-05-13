@@ -10,6 +10,7 @@ import numpy as np
 
 from offroad_sim.backends.base import OffroadSimBackend
 from offroad_sim.core.types import Action, Observation, StepResult, VehicleState
+from offroad_sim.evaluation import MetricsTracker
 from offroad_sim.scenarios import ScenarioConfig
 
 
@@ -56,6 +57,7 @@ class GymHeightmapBackend(OffroadSimBackend):
         self.success = False
         self.terrain_risk_sum = 0.0
         self.last_distance_to_goal = 0.0
+        self.metrics_tracker = MetricsTracker()
 
     def reset(self, scenario_config: ScenarioConfig | dict[str, Any]) -> Observation:
         self.scenario = self._coerce_scenario(scenario_config)
@@ -67,6 +69,7 @@ class GymHeightmapBackend(OffroadSimBackend):
         self.collision_count = 0
         self.success = False
         self.terrain_risk_sum = 0.0
+        self.metrics_tracker.reset()
         self.world = self._generate_world(self.scenario)
 
         start_x, start_y = self.scenario.task.start
@@ -86,6 +89,7 @@ class GymHeightmapBackend(OffroadSimBackend):
             brake=_clip(float(action.brake), 0.0, 1.0),
         )
 
+        previous_observation = self.get_observation()
         prev_x = self.vehicle_state.x
         prev_y = self.vehicle_state.y
         prev_distance = self._distance_to_goal()
@@ -140,13 +144,15 @@ class GymHeightmapBackend(OffroadSimBackend):
             "too_far": too_far,
         }
         obs.info.update(info)
-        return StepResult(
+        step_result = StepResult(
             observation=obs,
             reward=float(reward),
             terminated=terminated,
             truncated=truncated,
             info=info,
         )
+        self.metrics_tracker.update(previous_observation, action, step_result)
+        return step_result
 
     def get_observation(self) -> Observation:
         if self.world is None:
@@ -176,19 +182,9 @@ class GymHeightmapBackend(OffroadSimBackend):
         )
 
     def get_metrics(self) -> dict[str, Any]:
-        average_risk = self.terrain_risk_sum / self.step_count if self.step_count else 0.0
-        average_speed = self.path_length / self.timestamp if self.timestamp > 0 else 0.0
-        return {
-            "success": self.success,
-            "total_reward": float(self.total_reward),
-            "episode_length": self.step_count,
-            "elapsed_time_sec": float(self.timestamp),
-            "path_length": float(self.path_length),
-            "average_speed": float(average_speed),
-            "collision_count": self.collision_count,
-            "average_terrain_risk": float(average_risk),
-            "distance_to_goal": float(self._distance_to_goal()) if self.world is not None else 0.0,
-        }
+        metrics = self.metrics_tracker.compute()
+        metrics["distance_to_goal"] = float(self._distance_to_goal()) if self.world is not None else 0.0
+        return metrics
 
     def close(self) -> None:
         return None
@@ -342,4 +338,3 @@ class GymHeightmapBackend(OffroadSimBackend):
         dy = float(heightmap[row1, col] - heightmap[row0, col]) / max((row1 - row0) * self.cell_size_m, 1e-6)
         self.vehicle_state.pitch = math.atan(dy)
         self.vehicle_state.roll = math.atan(dx)
-

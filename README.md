@@ -28,13 +28,17 @@ BeamNG, UE5, Gym, and Dataset Replay stay behind backend adapters.
 offroad_sim/
   agents/
     base.py
+    basic.py
   backends/
     base.py
+    gym_heightmap_backend.py
   core/
     types.py
   datasets/
   evaluation/
+    metrics.py
   replay/
+    episode.py
   rl/
   scenarios/
   utils/
@@ -50,6 +54,8 @@ dashboard/
   frontend/
 docs/
 examples/
+  run_gym_demo.py
+  replay_episode.py
 scripts/
 tests/
 ```
@@ -132,25 +138,77 @@ scenario = load_scenario_config("configs/scenarios/forest_trail_001.yaml")
 
 ## Gym Heightmap Backend
 
-M4 adds a lightweight `GymHeightmapBackend` for fast local experiments without BeamNG or UE5. It generates a deterministic 2.5D terrain map with:
+The lightweight `GymHeightmapBackend` supports fast local experiments without BeamNG or UE5. It generates a deterministic 2.5D terrain map with:
 
 - heightmap;
 - occupancy map;
 - traversability map;
 - terrain risk map.
 
-Run a demo episode:
+Run a demo episode with the rule-based agent:
 
 ```bash
 python examples/run_gym_demo.py --agent rule_based
 ```
 
-The demo loads `configs/scenarios/forest_trail_001.yaml`, runs an agent, and prints metrics such as `success`, `collision_count`, `path_length`, and `total_reward`.
+Available demo agents are:
+
+- `random`
+- `stop`
+- `rule_based`
+
+The `KeyboardAgent` interface exists as a placeholder for a future interactive backend.
+
+The demo loads `configs/scenarios/forest_trail_001.yaml`, runs an agent, and prints metrics such as `success`, `collision_count`, `path_length`, `total_reward`, `average_terrain_risk`, and `control_smoothness`.
+
+## Evaluation Metrics
+
+`offroad_sim.evaluation.MetricsTracker` computes the common episode metrics used by the backend and demo:
+
+- `success`
+- `total_reward`
+- `episode_length`
+- `time_to_goal`
+- `path_length`
+- `average_speed`
+- `max_speed`
+- `collision_count`
+- `rollover`
+- `max_pitch`
+- `max_roll`
+- `average_terrain_risk`
+- `control_smoothness`
+
+## Episode Recording
+
+Save a demo episode:
+
+```bash
+python examples/run_gym_demo.py --agent rule_based --record outputs/episodes/demo_001
+```
+
+Replay the saved episode:
+
+```bash
+python examples/replay_episode.py outputs/episodes/demo_001
+```
+
+The episode format is:
+
+```text
+episode_dir/
+  metadata.json
+  metrics.json
+  steps.jsonl
+  arrays/
+```
+
+Observation arrays are skipped by default to keep recordings small. Pass `--record-arrays` to persist arrays such as `local_bev` as `.npy` files.
 
 ## Next Milestone
 
-The next implementation step is M5: expand the basic agent set:
+The next implementation step is M8: implement `DatasetReplayBackend` and a mock dataset generator:
 
-- `StopAgent`
-- `KeyboardAgent` placeholder
-- CLI-selectable agent behavior in demos
+- `offroad_sim/backends/dataset_replay_backend.py`
+- `scripts/create_mock_dataset.py`
+- `examples/run_dataset_replay.py`

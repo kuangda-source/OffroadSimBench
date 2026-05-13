@@ -80,11 +80,38 @@ class RuleBasedGoalAgent(OffroadAgent):
         return Action(steer=steer, throttle=throttle, brake=brake)
 
 
+class StopAgent(OffroadAgent):
+    """Agent that commands a full stop every step."""
+
+    def reset(self, scenario_info: Any) -> None:
+        return None
+
+    def act(self, obs: Observation) -> Action:
+        return Action(steer=0.0, throttle=0.0, brake=1.0)
+
+
+class KeyboardAgent(OffroadAgent):
+    """Placeholder for future interactive keyboard control."""
+
+    def reset(self, scenario_info: Any) -> None:
+        return None
+
+    def act(self, obs: Observation) -> Action:
+        raise NotImplementedError(
+            "KeyboardAgent is a placeholder. Interactive keyboard control will be added later."
+        )
+
+
 def make_agent(name: str, seed: int | None = None) -> OffroadAgent:
     normalized = name.strip().lower().replace("-", "_")
     if normalized == "random":
         return RandomAgent(seed=seed)
+    if normalized == "stop":
+        return StopAgent()
+    if normalized == "keyboard":
+        return KeyboardAgent()
     if normalized in {"rule_based", "rulebased", "goal"}:
         return RuleBasedGoalAgent()
-    raise ValueError(f"Unknown agent '{name}'. Available agents: random, rule_based")
-
+    raise ValueError(
+        f"Unknown agent '{name}'. Available agents: random, stop, rule_based, keyboard"
+    )
