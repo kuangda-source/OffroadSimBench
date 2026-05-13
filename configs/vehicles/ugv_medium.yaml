@@ -1,0 +1,24 @@
+vehicle_id: ugv_medium_001
+template: medium_offroad
+mass_kg: 1200
+length_m: 4.0
+width_m: 1.7
+wheelbase_m: 2.8
+max_speed_mps: 15
+max_steer_deg: 35
+tire_type: offroad
+sensors:
+  - sensor_id: front_camera
+    type: camera
+    width: 640
+    height: 480
+    fov_deg: 90
+    update_rate_hz: 20
+    mount_xyz: [1.6, 0.0, 1.2]
+  - sensor_id: roof_lidar
+    type: lidar
+    channels: 16
+    range_m: 80
+    update_rate_hz: 10
+    mount_xyz: [0.0, 0.0, 1.7]
+

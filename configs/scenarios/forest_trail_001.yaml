@@ -1,0 +1,18 @@
+scenario_id: forest_trail_001
+backend: gym_heightmap
+map: procedural_forest
+weather: sunny
+terrain:
+  type: forest
+  difficulty: medium
+task:
+  max_time_sec: 180
+  success_radius_m: 5.0
+  start: [0.0, 0.0]
+  goal: [80.0, 60.0]
+metrics:
+  collision: true
+  rollover: true
+  path_length: true
+  terrain_risk: true
+
