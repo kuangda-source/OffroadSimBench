@@ -68,6 +68,22 @@ For development tools:
 python -m pip install -e ".[dev]"
 ```
 
+### Conda Environment
+
+This repo also includes `environment.yml` for a local conda-style environment. On this machine, the environment was created with the bundled micromamba executable:
+
+```powershell
+$env:MAMBA_ROOT_PREFIX = "D:\programs\OffroadSimBench\.mamba-root"
+& "D:\programs\OffroadSimBench\BeamNG\tools\Library\bin\micromamba.exe" create -y -p "D:\programs\OffroadSimBench\.conda\offroad-sim-bench" -f environment.yml
+```
+
+Run commands inside it with:
+
+```powershell
+$env:MAMBA_ROOT_PREFIX = "D:\programs\OffroadSimBench\.mamba-root"
+& "D:\programs\OffroadSimBench\BeamNG\tools\Library\bin\micromamba.exe" run -p "D:\programs\OffroadSimBench\.conda\offroad-sim-bench" python -m pytest
+```
+
 ## Validation
 
 Run the initial test suite:
@@ -114,10 +130,27 @@ from offroad_sim.scenarios import load_scenario_config
 scenario = load_scenario_config("configs/scenarios/forest_trail_001.yaml")
 ```
 
+## Gym Heightmap Backend
+
+M4 adds a lightweight `GymHeightmapBackend` for fast local experiments without BeamNG or UE5. It generates a deterministic 2.5D terrain map with:
+
+- heightmap;
+- occupancy map;
+- traversability map;
+- terrain risk map.
+
+Run a demo episode:
+
+```bash
+python examples/run_gym_demo.py --agent rule_based
+```
+
+The demo loads `configs/scenarios/forest_trail_001.yaml`, runs an agent, and prints metrics such as `success`, `collision_count`, `path_length`, and `total_reward`.
+
 ## Next Milestone
 
-The next implementation step is M4: implement the lightweight Gym/Heightmap backend:
+The next implementation step is M5: expand the basic agent set:
 
-- `offroad_sim/backends/gym_heightmap_backend.py`
-- `examples/run_gym_demo.py`
-- `tests/test_gym_heightmap_backend.py`
+- `StopAgent`
+- `KeyboardAgent` placeholder
+- CLI-selectable agent behavior in demos
