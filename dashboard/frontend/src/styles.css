@@ -75,6 +75,39 @@ h3 {
   min-height: 48px;
 }
 
+.language-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  min-height: 38px;
+  color: #cad6dd;
+}
+
+.segmented-control {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid #3a5062;
+  border-radius: 6px;
+  background: #111922;
+}
+
+.segmented-control button {
+  min-height: 30px;
+  color: #c8d5dd;
+  background: transparent;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.segmented-control button.active {
+  color: #f7fffb;
+  background: #16866f;
+  font-weight: 720;
+}
+
 .status-ok,
 .status-bad,
 .status-warn {

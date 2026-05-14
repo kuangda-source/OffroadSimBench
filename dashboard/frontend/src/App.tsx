@@ -2,6 +2,7 @@ import {
   Activity,
   Database,
   Gauge,
+  Languages,
   Map,
   Pause,
   Play,
@@ -119,6 +120,205 @@ const emptyCatalog: CatalogState = {
   episodes: []
 };
 
+type Language = "en" | "zh";
+
+type Copy = {
+  labels: {
+    language: string;
+    backend: string;
+    scenario: string;
+    agent: string;
+    seed: string;
+    steps: string;
+    stepBudget: string;
+    recordEpisode: string;
+    stream: string;
+    selected: string;
+    beamng: string;
+    activeEpisode: string;
+    frames: string;
+    step: string;
+    speed: string;
+    risk: string;
+    terrainRisk: string;
+    localBev: string;
+    replay: string;
+    recentEpisodes: string;
+  };
+  status: {
+    ok: string;
+    offline: string;
+    available: string;
+    unavailable: string;
+    ready: string;
+    pending: string;
+    standby: string;
+  };
+  messages: {
+    noBackend: string;
+    noCatalog: string;
+    noMetrics: string;
+    noMapFrame: string;
+    noEpisodes: string;
+    apiError: string;
+    streamBackendOnly: string;
+    streamClosed: string;
+    loadEpisodeFailed: string;
+  };
+  titles: {
+    startStream: string;
+    stopStream: string;
+    refresh: string;
+    resetReplay: string;
+    previousFrame: string;
+    playPause: string;
+    nextFrame: string;
+  };
+  metrics: Record<string, string>;
+};
+
+const copyByLanguage: Record<Language, Copy> = {
+  en: {
+    labels: {
+      language: "Language",
+      backend: "Backend",
+      scenario: "Scenario",
+      agent: "Agent",
+      seed: "Seed",
+      steps: "Steps",
+      stepBudget: "Step budget",
+      recordEpisode: "Record episode",
+      stream: "Stream",
+      selected: "Selected",
+      beamng: "BeamNG",
+      activeEpisode: "Active Episode",
+      frames: "Frames",
+      step: "Step",
+      speed: "Speed",
+      risk: "Risk",
+      terrainRisk: "Terrain Risk",
+      localBev: "Local BEV",
+      replay: "Replay",
+      recentEpisodes: "Recent Episodes"
+    },
+    status: {
+      ok: "ok",
+      offline: "offline",
+      available: "available",
+      unavailable: "unavailable",
+      ready: "ready",
+      pending: "pending",
+      standby: "standby"
+    },
+    messages: {
+      noBackend: "No backend selected",
+      noCatalog: "Backend catalogs have not loaded yet.",
+      noMetrics: "No metrics yet",
+      noMapFrame: "No map frame",
+      noEpisodes: "No recorded episodes",
+      apiError: "Failed to reach dashboard API.",
+      streamBackendOnly: "Streaming run currently targets the local gym_heightmap backend.",
+      streamClosed: "Episode stream closed unexpectedly.",
+      loadEpisodeFailed: "Could not load episode."
+    },
+    titles: {
+      startStream: "Start streaming run",
+      stopStream: "Stop stream",
+      refresh: "Refresh catalogs",
+      resetReplay: "Reset replay",
+      previousFrame: "Previous frame",
+      playPause: "Play or pause replay",
+      nextFrame: "Next frame"
+    },
+    metrics: {
+      success: "success",
+      done: "done",
+      steps: "steps",
+      total_reward: "total reward",
+      distance_to_goal: "distance to goal",
+      average_speed: "average speed",
+      max_speed: "max speed",
+      collision_count: "collisions",
+      path_length: "path length",
+      average_terrain_risk: "avg terrain risk",
+      control_smoothness: "control smoothness"
+    }
+  },
+  zh: {
+    labels: {
+      language: "语言",
+      backend: "后端",
+      scenario: "场景",
+      agent: "智能体",
+      seed: "种子",
+      steps: "步数",
+      stepBudget: "步数预算",
+      recordEpisode: "记录本轮",
+      stream: "开始流式运行",
+      selected: "当前后端",
+      beamng: "BeamNG",
+      activeEpisode: "当前 Episode",
+      frames: "帧数",
+      step: "步",
+      speed: "速度",
+      risk: "风险",
+      terrainRisk: "地形风险",
+      localBev: "局部 BEV",
+      replay: "回放",
+      recentEpisodes: "最近记录"
+    },
+    status: {
+      ok: "正常",
+      offline: "离线",
+      available: "可用",
+      unavailable: "不可用",
+      ready: "就绪",
+      pending: "待配置",
+      standby: "待机"
+    },
+    messages: {
+      noBackend: "尚未选择后端",
+      noCatalog: "后端目录尚未加载。",
+      noMetrics: "暂无指标",
+      noMapFrame: "暂无地图帧",
+      noEpisodes: "暂无记录 episode",
+      apiError: "无法连接 dashboard API。",
+      streamBackendOnly: "当前流式运行仅支持本地 gym_heightmap 后端。",
+      streamClosed: "Episode 流意外关闭。",
+      loadEpisodeFailed: "无法加载 episode。"
+    },
+    titles: {
+      startStream: "开始流式运行",
+      stopStream: "停止流",
+      refresh: "刷新目录",
+      resetReplay: "重置回放",
+      previousFrame: "上一帧",
+      playPause: "播放或暂停回放",
+      nextFrame: "下一帧"
+    },
+    metrics: {
+      success: "成功",
+      done: "完成",
+      steps: "步数",
+      total_reward: "总奖励",
+      distance_to_goal: "距目标",
+      average_speed: "平均速度",
+      max_speed: "最高速度",
+      collision_count: "碰撞次数",
+      path_length: "路径长度",
+      average_terrain_risk: "平均地形风险",
+      control_smoothness: "控制平滑度"
+    }
+  }
+};
+
+const initialLanguage = (): Language => {
+  if (typeof window === "undefined") {
+    return "zh";
+  }
+  return window.localStorage.getItem("offroad-sim-language") === "en" ? "en" : "zh";
+};
+
 async function fetchJson<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
     headers: { "Content-Type": "application/json" },
@@ -133,6 +333,7 @@ async function fetchJson<T>(path: string, options?: RequestInit): Promise<T> {
 
 function App() {
   const eventSourceRef = useRef<EventSource | null>(null);
+  const [language, setLanguage] = useState<Language>(initialLanguage);
   const [catalog, setCatalog] = useState<CatalogState>(emptyCatalog);
   const [selected, setSelected] = useState({
     backend: "gym_heightmap",
@@ -151,6 +352,7 @@ function App() {
   const [isStreaming, setIsStreaming] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const copy = copyByLanguage[language];
 
   const refresh = async () => {
     setError(null);
@@ -173,7 +375,7 @@ function App() {
       });
     } catch (err) {
       setCatalog((current) => ({ ...current, health: "offline" }));
-      setError(err instanceof Error ? err.message : "Failed to reach dashboard API.");
+      setError(err instanceof Error ? err.message : copy.messages.apiError);
     }
   };
 
@@ -181,6 +383,10 @@ function App() {
     void refresh();
     return () => eventSourceRef.current?.close();
   }, []);
+
+  useEffect(() => {
+    window.localStorage.setItem("offroad-sim-language", language);
+  }, [language]);
 
   const activeFrames = replayFrames.length ? replayFrames : frames;
   const currentFrame = activeFrames[Math.min(selectedFrameIndex, Math.max(activeFrames.length - 1, 0))] ?? null;
@@ -213,7 +419,7 @@ function App() {
 
   const startStream = () => {
     if (!canStream) {
-      setError("Streaming run currently targets the local gym_heightmap backend.");
+      setError(copy.messages.streamBackendOnly);
       return;
     }
     eventSourceRef.current?.close();
@@ -266,7 +472,7 @@ function App() {
     });
     source.addEventListener("error", (event) => {
       const payload = "data" in event ? parseEvent(event) : null;
-      setError(payload?.detail ?? "Episode stream closed unexpectedly.");
+      setError(payload?.detail ?? copy.messages.streamClosed);
       setIsStreaming(false);
       source.close();
     });
@@ -291,7 +497,7 @@ function App() {
       setStreamMetrics(detail.metrics ?? {});
       setSelectedFrameIndex(0);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not load episode.");
+      setError(err instanceof Error ? err.message : copy.messages.loadEpisodeFailed);
     }
   };
 
@@ -302,12 +508,34 @@ function App() {
           <Activity size={22} aria-hidden="true" />
           <div>
             <h1>OffroadSimBench</h1>
-            <span className={catalog.health === "ok" ? "status-ok" : "status-bad"}>{catalog.health}</span>
+            <span className={catalog.health === "ok" ? "status-ok" : "status-bad"}>
+              {formatStatus(catalog.health, copy)}
+            </span>
+          </div>
+        </div>
+
+        <div className="language-row" aria-label={copy.labels.language}>
+          <Languages size={17} aria-hidden="true" />
+          <div className="segmented-control">
+            <button
+              type="button"
+              className={language === "zh" ? "active" : ""}
+              onClick={() => setLanguage("zh")}
+            >
+              中文
+            </button>
+            <button
+              type="button"
+              className={language === "en" ? "active" : ""}
+              onClick={() => setLanguage("en")}
+            >
+              EN
+            </button>
           </div>
         </div>
 
         <label>
-          Backend
+          {copy.labels.backend}
           <select
             value={selected.backend}
             onChange={(event) => setSelected({ ...selected, backend: event.target.value })}
@@ -321,7 +549,7 @@ function App() {
         </label>
 
         <label>
-          Scenario
+          {copy.labels.scenario}
           <select
             value={selected.scenario}
             onChange={(event) => setSelected({ ...selected, scenario: event.target.value })}
@@ -335,7 +563,7 @@ function App() {
         </label>
 
         <label>
-          Agent
+          {copy.labels.agent}
           <select
             value={selected.agent}
             onChange={(event) => setSelected({ ...selected, agent: event.target.value })}
@@ -350,7 +578,7 @@ function App() {
 
         <div className="number-grid">
           <label>
-            Seed
+            {copy.labels.seed}
             <input
               type="number"
               value={selected.seed}
@@ -358,7 +586,7 @@ function App() {
             />
           </label>
           <label>
-            Steps
+            {copy.labels.steps}
             <input
               type="number"
               min={1}
@@ -370,7 +598,7 @@ function App() {
         </div>
 
         <label className="range-control">
-          Step budget
+          {copy.labels.stepBudget}
           <input
             type="range"
             min={20}
@@ -387,7 +615,7 @@ function App() {
             checked={selected.record}
             onChange={(event) => setSelected({ ...selected, record: event.target.checked })}
           />
-          Record episode
+          {copy.labels.recordEpisode}
         </label>
 
         <div className="button-row">
@@ -396,42 +624,42 @@ function App() {
             className="primary-button"
             onClick={startStream}
             disabled={isStreaming || !canStream}
-            title="Start streaming run"
+            title={copy.titles.startStream}
           >
             <Play size={18} aria-hidden="true" />
-            <span>Stream</span>
+            <span>{copy.labels.stream}</span>
           </button>
           <button
             type="button"
             className="icon-button"
             onClick={stopStream}
             disabled={!isStreaming}
-            title="Stop stream"
+            title={copy.titles.stopStream}
           >
             <Square size={18} aria-hidden="true" />
           </button>
-          <button type="button" className="icon-button" onClick={refresh} title="Refresh catalogs">
+          <button type="button" className="icon-button" onClick={refresh} title={copy.titles.refresh}>
             <RefreshCw size={18} aria-hidden="true" />
           </button>
         </div>
 
         {error && <p className="error-text">{error}</p>}
 
-        <BackendStatusPanel backend={selectedBackend} beamng={beamngBackend} />
+        <BackendStatusPanel backend={selectedBackend} beamng={beamngBackend} copy={copy} />
       </aside>
 
       <section className="workspace">
         <header className="top-strip">
           <div>
-            <span className="eyebrow">Active Episode</span>
-            <h2>{liveEpisodeId ?? "standby"}</h2>
-            <p>{selectedBackend?.description ?? "No backend selected"}</p>
+            <span className="eyebrow">{copy.labels.activeEpisode}</span>
+            <h2>{liveEpisodeId ?? copy.status.standby}</h2>
+            <p>{selectedBackend?.description ?? copy.messages.noBackend}</p>
           </div>
           <div className="top-metrics">
-            <MetricBadge label="Frames" value={activeFrames.length} />
-            <MetricBadge label="Step" value={currentFrame?.step_index ?? "-"} />
-            <MetricBadge label="Speed" value={formatNumber(currentFrame?.observation.vehicle_state.speed)} />
-            <MetricBadge label="Risk" value={formatNumber(currentFrame?.observation.info.terrain_risk as number)} />
+            <MetricBadge label={copy.labels.frames} value={activeFrames.length} />
+            <MetricBadge label={copy.labels.step} value={currentFrame?.step_index ?? "-"} />
+            <MetricBadge label={copy.labels.speed} value={formatNumber(currentFrame?.observation.vehicle_state.speed)} />
+            <MetricBadge label={copy.labels.risk} value={formatNumber(currentFrame?.observation.info.terrain_risk as number)} />
           </div>
         </header>
 
@@ -439,31 +667,31 @@ function App() {
           <section className="panel map-panel">
             <div className="panel-heading">
               <div>
-                <h3>Terrain Risk</h3>
+                <h3>{copy.labels.terrainRisk}</h3>
                 <span>{selected.scenario}</span>
               </div>
               <Map size={18} aria-hidden="true" />
             </div>
-            <TerrainPanel frames={activeFrames} frameIndex={selectedFrameIndex} />
+            <TerrainPanel frames={activeFrames} frameIndex={selectedFrameIndex} copy={copy} />
           </section>
 
           <section className="panel side-panel">
             <div className="panel-heading">
               <div>
-                <h3>Local BEV</h3>
-                <span>step {currentFrame?.step_index ?? 0}</span>
+                <h3>{copy.labels.localBev}</h3>
+                <span>{copy.labels.step} {currentFrame?.step_index ?? 0}</span>
               </div>
               <Gauge size={18} aria-hidden="true" />
             </div>
-            <Heatmap payload={currentFrame?.observation.local_bev ?? null} layer="risk" compact />
-            <MetricTable metrics={activeMetrics} />
+            <Heatmap payload={currentFrame?.observation.local_bev ?? null} layer="risk" compact copy={copy} />
+            <MetricTable metrics={activeMetrics} copy={copy} />
           </section>
         </div>
 
         <section className="panel replay-panel">
           <div className="panel-heading">
-            <div>
-              <h3>Replay</h3>
+              <div>
+              <h3>{copy.labels.replay}</h3>
               <span>{activeFrames.length ? `${selectedFrameIndex + 1}/${activeFrames.length}` : "0/0"}</span>
             </div>
             <Waypoints size={18} aria-hidden="true" />
@@ -477,40 +705,41 @@ function App() {
             onTogglePlay={() => setIsPlaying((current) => !current)}
             onStepForward={() => setSelectedFrameIndex((current) => Math.min(current + 1, activeFrames.length - 1))}
             onStepBack={() => setSelectedFrameIndex((current) => Math.max(current - 1, 0))}
+            copy={copy}
           />
         </section>
 
         <section className="panel history-panel">
           <div className="panel-heading">
-            <div>
-              <h3>Recent Episodes</h3>
+              <div>
+              <h3>{copy.labels.recentEpisodes}</h3>
               <span>{catalog.episodes.length}</span>
             </div>
             <Database size={18} aria-hidden="true" />
           </div>
-          <EpisodeList episodes={catalog.episodes} onSelect={(episodeId) => void loadEpisode(episodeId)} />
+          <EpisodeList episodes={catalog.episodes} onSelect={(episodeId) => void loadEpisode(episodeId)} copy={copy} />
         </section>
       </section>
     </main>
   );
 }
 
-function BackendStatusPanel({ backend, beamng }: { backend?: CatalogItem; beamng?: CatalogItem }) {
+function BackendStatusPanel({ backend, beamng, copy }: { backend?: CatalogItem; beamng?: CatalogItem; copy: Copy }) {
   return (
     <div className="runtime-panel">
       <div>
-        <span>Selected</span>
+        <span>{copy.labels.selected}</span>
         <strong className={backend?.available === false ? "status-bad" : "status-ok"}>
-          {backend?.available === false ? "unavailable" : "available"}
+          {backend?.available === false ? copy.status.unavailable : copy.status.available}
         </strong>
       </div>
       <div>
-        <span>BeamNG</span>
+        <span>{copy.labels.beamng}</span>
         <strong className={beamng?.available ? "status-ok" : "status-warn"}>
-          {beamng?.available ? "ready" : "pending"}
+          {beamng?.available ? copy.status.ready : copy.status.pending}
         </strong>
       </div>
-      <p>{beamng?.message ?? "Backend catalogs have not loaded yet."}</p>
+      <p>{beamng?.message ?? copy.messages.noCatalog}</p>
     </div>
   );
 }
@@ -524,7 +753,7 @@ function MetricBadge({ label, value }: { label: string; value: string | number }
   );
 }
 
-function MetricTable({ metrics }: { metrics: Record<string, unknown> }) {
+function MetricTable({ metrics, copy }: { metrics: Record<string, unknown>; copy: Copy }) {
   const preferred = [
     "success",
     "done",
@@ -542,14 +771,14 @@ function MetricTable({ metrics }: { metrics: Record<string, unknown> }) {
     .filter((key) => key in metrics)
     .map((key) => [key, metrics[key]] as const);
   if (!rows.length) {
-    return <div className="empty-state">No metrics yet</div>;
+    return <div className="empty-state">{copy.messages.noMetrics}</div>;
   }
   return (
     <table>
       <tbody>
         {rows.map(([key, value]) => (
           <tr key={key}>
-            <th>{key}</th>
+            <th>{copy.metrics[key] ?? key}</th>
             <td>{formatValue(value)}</td>
           </tr>
         ))}
@@ -558,14 +787,14 @@ function MetricTable({ metrics }: { metrics: Record<string, unknown> }) {
   );
 }
 
-function TerrainPanel({ frames, frameIndex }: { frames: FramePayload[]; frameIndex: number }) {
+function TerrainPanel({ frames, frameIndex, copy }: { frames: FramePayload[]; frameIndex: number; copy: Copy }) {
   const terrain = latestArray(frames, frameIndex, "terrain_map");
   const trajectory = frames.slice(0, frameIndex + 1).map((frame) => frame.observation.vehicle_state);
   const goal = frames[Math.min(frameIndex, Math.max(frames.length - 1, 0))]?.observation.goal ?? [0, 0];
 
   return (
     <div className="terrain-stage">
-      <Heatmap payload={terrain} layer="risk" />
+      <Heatmap payload={terrain} layer="risk" copy={copy} />
       <TrajectoryOverlay points={trajectory} goal={goal} />
     </div>
   );
@@ -574,15 +803,17 @@ function TerrainPanel({ frames, frameIndex }: { frames: FramePayload[]; frameInd
 function Heatmap({
   payload,
   layer,
-  compact = false
+  compact = false,
+  copy
 }: {
   payload?: ArrayLayers | null;
   layer: string;
   compact?: boolean;
+  copy: Copy;
 }) {
   const matrix = payload?.layers[layer] ?? firstLayer(payload);
   if (!matrix?.length || !matrix[0]?.length) {
-    return <div className={compact ? "empty-state compact" : "empty-state"}>No map frame</div>;
+    return <div className={compact ? "empty-state compact" : "empty-state"}>{copy.messages.noMapFrame}</div>;
   }
 
   const rows = matrix.length;
@@ -630,7 +861,8 @@ function ReplayControls({
   onReset,
   onTogglePlay,
   onStepBack,
-  onStepForward
+  onStepForward,
+  copy
 }: {
   frameCount: number;
   frameIndex: number;
@@ -640,20 +872,21 @@ function ReplayControls({
   onTogglePlay: () => void;
   onStepBack: () => void;
   onStepForward: () => void;
+  copy: Copy;
 }) {
   const disabled = frameCount === 0;
   return (
     <div className="replay-controls">
-      <button type="button" className="icon-button light" onClick={onReset} disabled={disabled} title="Reset replay">
+      <button type="button" className="icon-button light" onClick={onReset} disabled={disabled} title={copy.titles.resetReplay}>
         <RotateCcw size={17} aria-hidden="true" />
       </button>
-      <button type="button" className="icon-button light" onClick={onStepBack} disabled={disabled} title="Previous frame">
+      <button type="button" className="icon-button light" onClick={onStepBack} disabled={disabled} title={copy.titles.previousFrame}>
         <SkipBack size={17} aria-hidden="true" />
       </button>
-      <button type="button" className="icon-button light" onClick={onTogglePlay} disabled={disabled} title="Play or pause replay">
+      <button type="button" className="icon-button light" onClick={onTogglePlay} disabled={disabled} title={copy.titles.playPause}>
         {isPlaying ? <Pause size={17} aria-hidden="true" /> : <Play size={17} aria-hidden="true" />}
       </button>
-      <button type="button" className="icon-button light" onClick={onStepForward} disabled={disabled} title="Next frame">
+      <button type="button" className="icon-button light" onClick={onStepForward} disabled={disabled} title={copy.titles.nextFrame}>
         <StepForward size={17} aria-hidden="true" />
       </button>
       <input
@@ -670,13 +903,15 @@ function ReplayControls({
 
 function EpisodeList({
   episodes,
-  onSelect
+  onSelect,
+  copy
 }: {
   episodes: EpisodeSummary[];
   onSelect: (episodeId: string) => void;
+  copy: Copy;
 }) {
   if (!episodes.length) {
-    return <div className="empty-state">No recorded episodes</div>;
+    return <div className="empty-state">{copy.messages.noEpisodes}</div>;
   }
   return (
     <div className="episode-list">
@@ -755,6 +990,16 @@ function formatValue(value: unknown): string {
     return JSON.stringify(value);
   }
   return String(value);
+}
+
+function formatStatus(status: string, copy: Copy): string {
+  if (status === "ok") {
+    return copy.status.ok;
+  }
+  if (status === "offline") {
+    return copy.status.offline;
+  }
+  return status;
 }
 
 export default App;
