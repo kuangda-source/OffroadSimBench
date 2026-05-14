@@ -2,13 +2,13 @@
 
 OffroadSimBench is a local off-road autonomous driving simulation and world-model evaluation platform.
 
-The current milestone focuses on a runnable Python foundation:
+The first-stage milestone now provides a runnable local benchmark foundation:
 
 - a modular Python package named `offroad_sim`;
 - shared core types for actions, observations, vehicle state, and step results;
 - base interfaces for simulator backends and driving agents;
 - vehicle and scenario configuration loading from YAML;
-- future support for Gym/heightmap simulation, dataset replay, BeamNG, UE5, evaluation, replay, world models, RL, and a local dashboard.
+- lightweight Gym/heightmap simulation, dataset replay, BeamNG/UE5 adapters, evaluation, replay, world-model and RL wrappers, a CLI, and a local dashboard.
 
 ## Project Direction
 
@@ -45,13 +45,17 @@ offroad_sim/
     types.py
   evaluation/
     metrics.py
+    runner.py
   replay/
     episode.py
   rl/
+    gymnasium_env.py
   scenarios/
   utils/
   vehicles/
   world_models/
+    base.py
+    kinematic.py
 configs/
   scenarios/
     forest_trail_001.yaml
@@ -112,6 +116,12 @@ Run the initial test suite:
 pytest
 ```
 
+Run a local episode from the CLI:
+
+```bash
+offroad-sim run --agent rule_based --max-steps 1200
+```
+
 Check package import directly:
 
 ```bash
@@ -157,6 +167,18 @@ Check local backend availability:
 python examples/check_backends.py
 ```
 
+## CLI
+
+The `offroad-sim` command exposes the first-stage local workflows:
+
+```bash
+offroad-sim list
+offroad-sim run --agent world_model --max-steps 500 --record
+offroad-sim replay outputs/episodes/<episode_id>
+```
+
+The local automated runner currently executes `gym_heightmap` episodes. BeamNG and UE5 stay available through their backend adapters and status checks because they require external simulator runtimes.
+
 ## Config Loading
 
 Vehicle configs live under `configs/vehicles/`:
@@ -195,10 +217,29 @@ Available demo agents are:
 - `random`
 - `stop`
 - `rule_based`
+- `world_model`
 
 The `KeyboardAgent` interface exists as a placeholder for a future interactive backend.
 
 The demo loads `configs/scenarios/forest_trail_001.yaml`, runs an agent, and prints metrics such as `success`, `collision_count`, `path_length`, `total_reward`, `average_terrain_risk`, and `control_smoothness`.
+
+## Gymnasium Wrapper
+
+M12 adds a Gymnasium-compatible environment:
+
+```python
+from offroad_sim.rl import OffroadGymEnv
+
+env = OffroadGymEnv(max_episode_steps=200)
+obs, info = env.reset(seed=7)
+obs, reward, terminated, truncated, info = env.step(env.action_space.sample())
+```
+
+Smoke test it with:
+
+```bash
+python examples/run_gymnasium_env.py --steps 20
+```
 
 ## Evaluation Metrics
 
@@ -217,6 +258,25 @@ The demo loads `configs/scenarios/forest_trail_001.yaml`, runs an agent, and pri
 - `max_roll`
 - `average_terrain_risk`
 - `control_smoothness`
+
+`offroad_sim.evaluation.run_episode` is the shared runner used by examples, the CLI, and the dashboard API.
+
+## World Models
+
+M11 adds the world-model API and a deterministic baseline:
+
+- `BaseWorldModel`
+- `WorldModelPrediction`
+- `SimpleKinematicWorldModel`
+- `WorldModelAgent`
+
+Run the world-model agent:
+
+```bash
+python examples/run_world_model_agent.py --max-steps 500
+```
+
+The baseline predicts a short bicycle-model rollout and samples terrain risk from the current observation. Learned models can replace it without changing the agent/backend interfaces.
 
 ## Episode Recording
 
@@ -325,6 +385,26 @@ python examples/run_mock_ue5_backend.py
 
 See `docs/ue5_backend.md` for the command and observation JSON schema.
 
-## Next Milestone
+## Dashboard
 
-The next implementation step is M11: add the first world-model interface and baseline.
+M13/M14 add a local FastAPI API and React/Vite dashboard.
+
+Start the API:
+
+```bash
+uvicorn dashboard.backend.main:app --host 127.0.0.1 --port 8000
+```
+
+Start the frontend:
+
+```bash
+cd dashboard/frontend
+npm install
+npm run dev
+```
+
+The default frontend expects the API at `http://127.0.0.1:8000`. Use `VITE_API_BASE` to point it elsewhere.
+
+## Next Stage
+
+The next stage should focus on real simulator runtime validation: BeamNG scenario loading, sensor payload mapping, controller stepping, and a small end-to-end run once the local BeamNG runtime is ready.

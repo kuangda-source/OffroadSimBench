@@ -40,8 +40,9 @@ The platform should support:
 After Python changes, run:
 
 ```bash
-pytest
-python examples/run_gym_demo.py
+python -m pytest -q
+python examples/run_gym_demo.py --agent rule_based --max-steps 1200
+python -m offroad_sim.cli list
 ```
 
 After frontend changes, run:
@@ -91,4 +92,3 @@ offroad-sim-bench/
 - Keep agent-specific code inside `offroad_sim/agents/`.
 - Keep metrics inside `offroad_sim/evaluation/`.
 - Keep optional simulator integrations import-safe when their external tools are not installed.
-

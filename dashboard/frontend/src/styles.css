@@ -1,0 +1,385 @@
+:root {
+  color: #1f2a2e;
+  background: #f4f1ea;
+  font-family:
+    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 16px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+}
+
+button,
+input,
+select {
+  font: inherit;
+}
+
+.app-shell {
+  min-height: 100vh;
+  display: grid;
+  grid-template-columns: 320px minmax(0, 1fr);
+  background: #f4f1ea;
+}
+
+.control-rail {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  min-width: 0;
+  padding: 24px;
+  background: #1f2a2e;
+  color: #f8f3e7;
+  border-right: 1px solid #d6d0c3;
+}
+
+.brand-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 48px;
+}
+
+h1,
+h2,
+h3,
+p {
+  margin: 0;
+}
+
+h1 {
+  font-size: 20px;
+  font-weight: 740;
+  line-height: 1.1;
+}
+
+h2 {
+  font-size: 26px;
+  line-height: 1.2;
+}
+
+h3 {
+  font-size: 16px;
+  line-height: 1.2;
+}
+
+.status-ok,
+.status-bad {
+  display: inline-block;
+  margin-top: 4px;
+  font-size: 12px;
+  text-transform: uppercase;
+}
+
+.status-ok {
+  color: #91d2aa;
+}
+
+.status-bad,
+.error-text {
+  color: #ffb6a8;
+}
+
+label {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+  font-size: 13px;
+  color: #d9d3c5;
+}
+
+select,
+input[type="number"] {
+  width: 100%;
+  min-height: 40px;
+  border: 1px solid #71806f;
+  border-radius: 6px;
+  padding: 0 10px;
+  color: #f8f3e7;
+  background: #26373a;
+}
+
+.number-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.toggle-row input {
+  width: 18px;
+  height: 18px;
+  accent-color: #3e8d72;
+}
+
+.button-row {
+  display: flex;
+  gap: 10px;
+}
+
+.primary-button,
+.icon-button,
+.episode-list button {
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.primary-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 42px;
+  flex: 1;
+  color: #092017;
+  background: #8bcfa8;
+  font-weight: 720;
+}
+
+.primary-button:disabled {
+  cursor: progress;
+  opacity: 0.65;
+}
+
+.icon-button {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  min-height: 42px;
+  color: #f8f3e7;
+  background: #405356;
+}
+
+.workspace {
+  min-width: 0;
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  gap: 18px;
+  padding: 22px;
+}
+
+.top-strip,
+.panel {
+  border: 1px solid #d6d0c3;
+  background: #fffaf0;
+}
+
+.top-strip {
+  display: flex;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 18px;
+  min-height: 112px;
+}
+
+.top-strip p {
+  margin-top: 6px;
+  max-width: 680px;
+  color: #66706c;
+  line-height: 1.45;
+}
+
+.eyebrow {
+  display: block;
+  margin-bottom: 5px;
+  font-size: 12px;
+  text-transform: uppercase;
+  color: #70796f;
+}
+
+.top-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(92px, 1fr));
+  gap: 10px;
+  min-width: 310px;
+}
+
+.metric-badge {
+  display: grid;
+  align-content: center;
+  gap: 5px;
+  min-height: 72px;
+  padding: 12px;
+  background: #edf3eb;
+  border: 1px solid #cfdbcc;
+}
+
+.metric-badge span,
+.panel-heading span {
+  color: #6c756e;
+  font-size: 12px;
+}
+
+.metric-badge strong {
+  font-size: 22px;
+  color: #1f2a2e;
+}
+
+.main-grid {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1.8fr) minmax(280px, 0.9fr);
+  gap: 18px;
+}
+
+.panel {
+  min-width: 0;
+  padding: 16px;
+}
+
+.panel-heading {
+  min-height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.trajectory-panel {
+  min-height: 440px;
+}
+
+.trajectory-panel svg {
+  width: 100%;
+  height: 360px;
+  display: block;
+}
+
+.trajectory-panel rect {
+  fill: #eef1e8;
+  stroke: #d6d0c3;
+}
+
+.trajectory-panel path {
+  fill: none;
+  stroke: #2f7d67;
+  stroke-width: 4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.start-point {
+  fill: #e6a94d;
+}
+
+.end-point {
+  fill: #c85245;
+}
+
+.plot-empty,
+.empty-state {
+  display: grid;
+  place-items: center;
+  min-height: 160px;
+  color: #788078;
+  background: #f5f1e7;
+  border: 1px dashed #d6d0c3;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+th,
+td {
+  padding: 9px 0;
+  border-bottom: 1px solid #e0dacd;
+  text-align: left;
+  vertical-align: top;
+  word-break: break-word;
+}
+
+th {
+  width: 46%;
+  color: #59635c;
+  font-weight: 620;
+}
+
+td {
+  color: #1f2a2e;
+}
+
+.history-panel {
+  min-height: 168px;
+}
+
+.episode-list {
+  display: grid;
+  gap: 8px;
+}
+
+.episode-list button {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  min-height: 40px;
+  padding: 9px 11px;
+  color: #1f2a2e;
+  background: #edf3eb;
+  border: 1px solid #cfdbcc;
+  text-align: left;
+}
+
+.episode-list span {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.error-text {
+  line-height: 1.4;
+  font-size: 13px;
+}
+
+@media (max-width: 960px) {
+  .app-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .control-rail {
+    border-right: 0;
+    border-bottom: 1px solid #d6d0c3;
+  }
+
+  .top-strip,
+  .main-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .top-strip {
+    display: grid;
+  }
+
+  .top-metrics {
+    min-width: 0;
+  }
+}
+
+@media (max-width: 560px) {
+  .workspace,
+  .control-rail {
+    padding: 16px;
+  }
+
+  .top-metrics,
+  .number-grid {
+    grid-template-columns: 1fr;
+  }
+}

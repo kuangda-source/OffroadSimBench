@@ -112,6 +112,10 @@ def make_agent(name: str, seed: int | None = None) -> OffroadAgent:
         return KeyboardAgent()
     if normalized in {"rule_based", "rulebased", "goal"}:
         return RuleBasedGoalAgent()
+    if normalized in {"world_model", "worldmodel", "wm"}:
+        from offroad_sim.agents.world_model import WorldModelAgent
+
+        return WorldModelAgent()
     raise ValueError(
-        f"Unknown agent '{name}'. Available agents: random, stop, rule_based, keyboard"
+        f"Unknown agent '{name}'. Available agents: random, stop, rule_based, world_model, keyboard"
     )

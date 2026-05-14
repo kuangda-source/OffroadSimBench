@@ -26,7 +26,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--agent",
-        choices=["random", "stop", "rule_based"],
+        choices=["random", "stop", "rule_based", "world_model"],
         default="rule_based",
         help="Agent to run.",
     )

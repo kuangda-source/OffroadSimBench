@@ -8,6 +8,7 @@ from offroad_sim.agents.basic import (
     StopAgent,
     make_agent,
 )
+from offroad_sim.agents.world_model import WorldModelAgent
 
 __all__ = [
     "KeyboardAgent",
@@ -15,5 +16,6 @@ __all__ = [
     "RandomAgent",
     "RuleBasedGoalAgent",
     "StopAgent",
+    "WorldModelAgent",
     "make_agent",
 ]
