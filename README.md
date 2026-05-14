@@ -10,6 +10,13 @@ The first-stage milestone now provides a runnable local benchmark foundation:
 - vehicle and scenario configuration loading from YAML;
 - lightweight Gym/heightmap simulation, dataset replay, BeamNG/UE5 adapters, evaluation, replay, world-model and RL wrappers, a CLI, and a local dashboard.
 
+The second-stage milestone adds the first visible demo path:
+
+- a dashboard SSE stream for live episode execution;
+- terrain-risk, local BEV, trajectory, metric, and timeline views;
+- recorded episode replay with play/pause and frame stepping;
+- BeamNG runtime auto-detection and status checks.
+
 ## Project Direction
 
 This is not intended to be only a web demo. The dashboard should eventually act as a local control panel, while simulation backends do the real work of running vehicles, agents, metrics, and replay.
@@ -387,7 +394,8 @@ See `docs/ue5_backend.md` for the command and observation JSON schema.
 
 ## Dashboard
 
-M13/M14 add a local FastAPI API and React/Vite dashboard.
+M13/M14 add a local FastAPI API and React/Vite dashboard. Phase 2 extends it
+into a live demo console backed by `/stream_episode` and recorded replay APIs.
 
 Start the API:
 
@@ -404,6 +412,14 @@ npm run dev
 ```
 
 The default frontend expects the API at `http://127.0.0.1:8000`. Use `VITE_API_BASE` to point it elsewhere.
+
+Phase 2 acceptance can be run with:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\phase2_acceptance.ps1
+```
+
+See `docs/phase2_demo_plan.md` for the visible demo checklist.
 
 ## Next Stage
 

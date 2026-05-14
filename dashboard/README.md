@@ -1,9 +1,9 @@
 # Dashboard
 
-Local control panel for the first-stage benchmark loop.
+Local control panel for the benchmark loop and second-stage visual demo.
 
-- `backend/`: FastAPI service for catalogs, backend status, episode runs, and saved episode metrics.
-- `frontend/`: React + Vite + TypeScript app that calls the local API.
+- `backend/`: FastAPI service for catalogs, backend status, episode runs, SSE streaming, saved steps, and saved episode metrics.
+- `frontend/`: React + Vite + TypeScript app for live terrain/BEV visualization and replay.
 
 Start the API from the repo root:
 
@@ -24,3 +24,9 @@ Build the frontend:
 ```powershell
 npm run build
 ```
+
+Useful API endpoints:
+
+- `GET /stream_episode`
+- `GET /episodes/{episode_id}/steps`
+- `GET /beamng/status`

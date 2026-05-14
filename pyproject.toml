@@ -23,6 +23,9 @@ dev = [
   "pytest>=8.0",
   "httpx>=0.27",
 ]
+beamng = [
+  "beamngpy",
+]
 
 [project.scripts]
 offroad-sim = "offroad_sim.cli:main"

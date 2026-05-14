@@ -7,13 +7,16 @@ from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from offroad_sim.backends import default_backend_registry
 from offroad_sim.evaluation import run_episode
 from offroad_sim.evaluation.runner import DEFAULT_OUTPUT_ROOT
+from offroad_sim.evaluation.streaming import recorded_observation_payload, stream_episode_events
 from offroad_sim.utils.yaml_io import load_yaml_file
 
 
@@ -72,6 +75,12 @@ def backends() -> list[dict[str, Any]]:
     return rows
 
 
+@app.get("/beamng/status")
+def beamng_status() -> dict[str, Any]:
+    status = default_backend_registry().status("beamng")
+    return asdict(status) if is_dataclass(status) else dict(status)
+
+
 @app.post("/run_episode")
 def run_episode_endpoint(request: RunEpisodeRequest) -> dict[str, Any]:
     scenario_path = _resolve_config("scenarios", request.scenario)
@@ -89,6 +98,39 @@ def run_episode_endpoint(request: RunEpisodeRequest) -> dict[str, Any]:
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return result.to_dict()
+
+
+@app.get("/stream_episode")
+def stream_episode_endpoint(
+    backend: str = "gym_heightmap",
+    scenario: str = "forest_trail_001",
+    agent: str = "rule_based",
+    seed: int = 7,
+    max_steps: int = 1200,
+    record: bool = True,
+    record_arrays: bool = True,
+    delay_ms: int = 0,
+) -> StreamingResponse:
+    scenario_path = _resolve_config("scenarios", scenario)
+
+    def event_source() -> Any:
+        try:
+            for payload in stream_episode_events(
+                backend_name=backend,
+                scenario=scenario_path,
+                agent_name=agent,
+                seed=seed,
+                max_steps=max_steps,
+                record=record,
+                output_root=DEFAULT_OUTPUT_ROOT,
+                record_arrays=record_arrays,
+                delay_ms=delay_ms,
+            ):
+                yield _sse(payload.get("event", "message"), payload)
+        except Exception as exc:
+            yield _sse("error", {"event": "error", "detail": str(exc)})
+
+    return StreamingResponse(event_source(), media_type="text/event-stream")
 
 
 @app.get("/episodes")
@@ -122,6 +164,16 @@ def episode_detail(episode_id: str) -> dict[str, Any]:
         "metrics": _read_json(path / "metrics.json"),
         "steps_preview": _read_steps_preview(path / "steps.jsonl"),
     }
+
+
+@app.get("/episodes/{episode_id}/steps")
+def episode_steps(
+    episode_id: str,
+    limit: int = 5000,
+    include_arrays: bool = True,
+) -> list[dict[str, Any]]:
+    path = _episode_path(episode_id)
+    return _read_steps(path, limit=limit, include_arrays=include_arrays)
 
 
 @app.get("/metrics/{episode_id}")
@@ -178,3 +230,38 @@ def _read_steps_preview(path: Path, limit: int = 20) -> list[dict[str, Any]]:
             if line.strip():
                 rows.append(json.loads(line))
     return rows
+
+
+def _read_steps(path: Path, limit: int, include_arrays: bool) -> list[dict[str, Any]]:
+    steps_path = path / "steps.jsonl"
+    if not steps_path.exists():
+        return []
+    rows = []
+    with steps_path.open("r", encoding="utf-8") as file:
+        for _, line in zip(range(max(limit, 0)), file):
+            if not line.strip():
+                continue
+            record = json.loads(line)
+            observation = record.get("observation")
+            if isinstance(observation, dict):
+                record["observation"] = recorded_observation_payload(
+                    observation,
+                    episode_path=path,
+                    include_arrays=include_arrays,
+                )
+            rows.append(record)
+    return rows
+
+
+def _sse(event: str, payload: dict[str, Any]) -> str:
+    return f"event: {event}\ndata: {json.dumps(payload, default=_json_default, separators=(',', ':'))}\n\n"
+
+
+def _json_default(value: Any) -> Any:
+    if isinstance(value, np.integer):
+        return int(value)
+    if isinstance(value, np.floating):
+        return float(value)
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")

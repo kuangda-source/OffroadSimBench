@@ -17,6 +17,20 @@ $env:BNG_HOME = "D:\programs\OffroadSimBench\BeamNG\BeamNG.tech.v0.38.3.0"
 `BNG_HOME` should point to the BeamNG.tech install directory that contains either
 `BeamNG.tech.exe` or `Bin64/BeamNG.tech.x64.exe`.
 
+On the local project workstation, the adapter also auto-detects
+`BeamNG/BeamNG.tech*` under the repository root. You can inspect the resolved
+runtime without launching BeamNG:
+
+```powershell
+python examples\check_beamng_runtime.py
+```
+
+For an explicit real connection smoke test:
+
+```powershell
+python examples\check_beamng_runtime.py --connect --steps 1
+```
+
 ## Current Integration Boundary
 
 The backend already exposes the shared simulator methods:
@@ -33,6 +47,9 @@ The backend already exposes the shared simulator methods:
 
 Without `beamngpy` or `BNG_HOME`, the backend reports an unavailable status and
 raises a clear `BeamNGUnavailableError` only when a real connection is attempted.
+With both `beamngpy` and a detected executable present, the backend status becomes
+ready through the shared backend registry and the dashboard `/beamng/status`
+endpoint.
 
 ## Next BeamNG Pass
 

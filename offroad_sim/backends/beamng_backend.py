@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
+import math
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -56,6 +57,7 @@ class BeamNGBackend(OffroadSimBackend):
         self._scenario: Any = None
         self._vehicle: Any = None
         self._last_observation: Observation | None = None
+        self._scenario_config: Any = None
         self._step_count = 0
         self._connected = False
         if auto_connect:
@@ -64,9 +66,10 @@ class BeamNGBackend(OffroadSimBackend):
     @classmethod
     def runtime_status(cls, bng_home: str | Path | None = None) -> BackendStatus:
         beamngpy_available = importlib.util.find_spec("beamngpy") is not None
+        env_home = os.environ.get("BNG_HOME") or os.environ.get("BEAMNG_HOME")
         resolved_home = cls._resolve_bng_home(bng_home)
         executable = cls._find_executable(resolved_home) if resolved_home is not None else None
-        available = bool(beamngpy_available, executable is not None)
+        available = bool(beamngpy_available and executable is not None)
 
         missing: list[str] = []
         if not beamngpy_available:
@@ -85,6 +88,8 @@ class BeamNGBackend(OffroadSimBackend):
                 "beamngpy_available": beamngpy_available,
                 "bng_home": str(resolved_home) if resolved_home is not None else None,
                 "executable": str(executable) if executable is not None else None,
+                "auto_detected_home": bool(resolved_home is not None and bng_home is None and env_home is None),
+                "install_hint": "python -m pip install beamngpy",
             },
         )
 
@@ -95,10 +100,9 @@ class BeamNGBackend(OffroadSimBackend):
 
         beamngpy = importlib.import_module("beamngpy")
         BeamNGpy = getattr(beamngpy, "BeamNGpy")
-        kwargs = {
-            "home": str(self._resolve_bng_home(self.connection.bng_home)),
-            "user": str(Path(self.connection.user_dir)) if self.connection.user_dir else None,
-        }
+        kwargs = {"home": str(self._resolve_bng_home(self.connection.bng_home))}
+        if self.connection.user_dir:
+            kwargs["user"] = str(Path(self.connection.user_dir))
         self._bng = BeamNGpy(self.connection.host, self.connection.port, **kwargs)
         self._bng.open(launch=self.connection.launch)
         self._connected = True
@@ -107,7 +111,7 @@ class BeamNGBackend(OffroadSimBackend):
         self._ensure_connected()
         beamngpy = importlib.import_module("beamngpy")
         Scenario = getattr(beamngpy, "Scenario")
-        level = self._read_config(scenario_config, "map", self.connection.level)
+        level = self._beamng_level_for_config(scenario_config)
         scenario_name = self._read_config(scenario_config, "scenario_id", self.connection.scenario_name)
         self._scenario = Scenario(level, scenario_name)
 
@@ -130,6 +134,7 @@ class BeamNGBackend(OffroadSimBackend):
         # Real camera/lidar/imu mapping will live here once beamngpy is installed.
 
     def reset(self, scenario_config: Any = None) -> Observation:
+        self._scenario_config = scenario_config
         if not self._connected:
             self.connect()
         if self._scenario is None:
@@ -162,7 +167,10 @@ class BeamNGBackend(OffroadSimBackend):
             self._bng.step(self.connection.steps_per_action)
 
         self._step_count += 1
-        self._last_observation = self._build_placeholder_observation(None, timestamp=float(self._step_count))
+        self._last_observation = self._build_placeholder_observation(
+            self._scenario_config,
+            timestamp=float(self._step_count),
+        )
         return StepResult(
             observation=self._last_observation,
             reward=0.0,
@@ -192,15 +200,40 @@ class BeamNGBackend(OffroadSimBackend):
         self._scenario = None
         self._vehicle = None
         self._last_observation = None
+        self._scenario_config = None
         self._connected = False
         self._step_count = 0
 
     @classmethod
     def _resolve_bng_home(cls, bng_home: str | Path | None = None) -> Path | None:
         value = bng_home or os.environ.get("BNG_HOME") or os.environ.get("BEAMNG_HOME")
-        if not value:
-            return None
-        return Path(value)
+        if value:
+            return Path(value)
+        return cls._auto_detect_bng_home()
+
+    @classmethod
+    def _auto_detect_bng_home(cls) -> Path | None:
+        repo_root = Path(__file__).resolve().parents[2]
+        roots = [
+            repo_root / "BeamNG",
+            repo_root.parent / "BeamNG",
+        ]
+        for root in roots:
+            if not root.exists():
+                continue
+            direct_candidates = [
+                root / "BeamNG.tech",
+                root / "BeamNG.drive",
+                root / "BeamNG.tech.v0.38.3.0",
+            ]
+            wildcard_candidates = sorted(
+                [*root.glob("BeamNG.tech*"), *root.glob("BeamNG.drive*")],
+                reverse=True,
+            )
+            for candidate in [*direct_candidates, *wildcard_candidates]:
+                if candidate.is_dir() and cls._find_executable(candidate) is not None:
+                    return candidate
+        return None
 
     @classmethod
     def _find_executable(cls, bng_home: Path | None) -> Path | None:
@@ -230,17 +263,81 @@ class BeamNGBackend(OffroadSimBackend):
 
     def _build_placeholder_observation(self, scenario_config: Any, timestamp: float = 0.0) -> Observation:
         task = self._read_config(scenario_config, "task", None)
-        start = getattr(task, "start", (0.0, 0.0)) if task is not None else (0.0, 0.0)
-        goal = getattr(task, "goal", (0.0, 0.0)) if task is not None else (0.0, 0.0)
+        start = self._read_task_value(task, "start", (0.0, 0.0))
+        goal = self._read_task_value(task, "goal", (0.0, 0.0))
+        vehicle_state = self._read_vehicle_state()
+        if vehicle_state is None and self._last_observation is not None:
+            vehicle_state = self._last_observation.vehicle_state
+        if vehicle_state is None:
+            vehicle_state = VehicleState(x=float(start[0]), y=float(start[1]))
         return Observation(
             timestamp=timestamp,
-            vehicle_state=VehicleState(x=float(start[0]), y=float(start[1])),
+            vehicle_state=vehicle_state,
             goal=(float(goal[0]), float(goal[1])),
             info={
                 "backend": "beamng",
                 "status": "connected",
-                "note": "Sensor parsing is reserved for the concrete BeamNG integration pass.",
+                "note": "BeamNG pose is read when available; camera/lidar array mapping is reserved for the sensor pass.",
             },
+        )
+
+    def _read_task_value(self, task: Any, key: str, default: Any) -> Any:
+        if task is None:
+            return default
+        if isinstance(task, Mapping):
+            return task.get(key, default)
+        return getattr(task, key, default)
+
+    def _beamng_level_for_config(self, config: Any) -> str:
+        explicit_level = self._read_config(config, "beamng_level", None) or self._read_config(config, "level", None)
+        if explicit_level:
+            return str(explicit_level)
+        if self._read_config(config, "backend", None) == "beamng":
+            return str(self._read_config(config, "map", self.connection.level))
+        return self.connection.level
+
+    def _read_vehicle_state(self) -> VehicleState | None:
+        vehicle = self._vehicle
+        if vehicle is None:
+            return None
+
+        update_vehicle = getattr(vehicle, "update_vehicle", None)
+        if callable(update_vehicle):
+            try:
+                update_vehicle()
+            except Exception:
+                pass
+
+        state = getattr(vehicle, "state", None)
+        if not isinstance(state, Mapping):
+            return None
+
+        pos = state.get("pos")
+        if pos is None:
+            pos = state.get("position")
+        if pos is None or len(pos) < 2:
+            return None
+
+        direction = state.get("dir")
+        if direction is None:
+            direction = state.get("direction")
+        yaw = 0.0
+        if direction is not None and len(direction) >= 2:
+            yaw = math.atan2(float(direction[1]), float(direction[0]))
+
+        velocity = state.get("vel")
+        if velocity is None:
+            velocity = state.get("velocity")
+        speed = 0.0
+        if velocity is not None and len(velocity) >= 2:
+            speed = math.sqrt(sum(float(component) ** 2 for component in velocity[:3]))
+
+        return VehicleState(
+            x=float(pos[0]),
+            y=float(pos[1]),
+            z=float(pos[2]) if len(pos) >= 3 else 0.0,
+            yaw=yaw,
+            speed=speed,
         )
 
     def _missing_runtime_message(self, status: BackendStatus) -> str:
