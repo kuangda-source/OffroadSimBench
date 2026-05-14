@@ -6,16 +6,19 @@ from offroad_sim.agents.basic import (
     RandomAgent,
     RuleBasedGoalAgent,
     StopAgent,
-    make_agent,
 )
+from offroad_sim.agents.registry import AgentRegistry, AgentSpec, default_agent_registry, make_agent
 from offroad_sim.agents.world_model import WorldModelAgent
 
 __all__ = [
+    "AgentRegistry",
+    "AgentSpec",
     "KeyboardAgent",
     "OffroadAgent",
     "RandomAgent",
     "RuleBasedGoalAgent",
     "StopAgent",
     "WorldModelAgent",
+    "default_agent_registry",
     "make_agent",
 ]

@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterator, Mapping
 
 import numpy as np
 
 from offroad_sim.agents import make_agent
-from offroad_sim.backends.registry import make_backend
 from offroad_sim.core import Action, Observation
 from offroad_sim.evaluation.runner import DEFAULT_OUTPUT_ROOT, _episode_id, _load_scenario
+from offroad_sim.evaluation.runner import _agent_diagnostics, _create_backend, _scenario_id
 from offroad_sim.replay import EpisodeRecorder
 from offroad_sim.scenarios import ScenarioConfig
 
@@ -22,7 +22,7 @@ BEV_LAYERS = ("height", "traversability", "risk", "occupancy")
 
 def stream_episode_events(
     backend_name: str = "gym_heightmap",
-    scenario: ScenarioConfig | str | Path | None = None,
+    scenario: ScenarioConfig | str | Path | Mapping[str, Any] | None = None,
     agent_name: str = "rule_based",
     seed: int = 7,
     max_steps: int = 1200,
@@ -30,22 +30,17 @@ def stream_episode_events(
     output_root: str | Path = DEFAULT_OUTPUT_ROOT,
     record_arrays: bool = True,
     delay_ms: int = 0,
+    backend_options: Mapping[str, Any] | None = None,
+    agent_options: Mapping[str, Any] | None = None,
 ) -> Iterator[dict[str, Any]]:
-    """Run an episode and yield JSON-serializable progress events.
-
-    The first visible demo target is the local heightmap backend. External
-    backends can adopt the same generator once their runtime reset/step loops
-    are stable enough for unattended dashboard runs.
-    """
-
-    if backend_name != "gym_heightmap":
-        raise ValueError("Streaming episode runs currently support backend_name='gym_heightmap'.")
+    """Run an episode and yield JSON-serializable progress events."""
 
     scenario_config = _load_scenario(scenario)
-    backend = make_backend(backend_name, seed=seed)
-    agent = make_agent(agent_name, seed=seed)
+    backend = _create_backend(backend_name, seed=seed, options=backend_options)
+    agent = make_agent(agent_name, seed=seed, **dict(agent_options or {}))
     recorder = EpisodeRecorder(save_arrays=record_arrays) if record else None
-    episode_id = _episode_id(scenario_config.scenario_id, agent_name)
+    scenario_id = _scenario_id(scenario_config)
+    episode_id = _episode_id(scenario_id, agent_name)
     result = None
     steps = 0
     done = False
@@ -53,23 +48,25 @@ def stream_episode_events(
 
     try:
         obs = backend.reset(scenario_config)
-        agent.reset({"scenario_id": scenario_config.scenario_id, "backend": backend_name})
+        agent.reset({"scenario_id": scenario_id, "backend": backend_name})
         if recorder is not None:
             recorder.start_episode(
                 {
                     "episode_id": episode_id,
-                    "scenario_id": scenario_config.scenario_id,
+                    "scenario_id": scenario_id,
                     "backend": backend_name,
                     "agent": agent_name,
                     "seed": seed,
                     "streamed": True,
+                    "agent_options": dict(agent_options or {}),
+                    "backend_options": dict(backend_options or {}),
                 }
             )
 
         yield {
             "event": "start",
             "episode_id": episode_id,
-            "scenario_id": scenario_config.scenario_id,
+            "scenario_id": scenario_id,
             "backend": backend_name,
             "agent": agent_name,
             "seed": seed,
@@ -89,13 +86,17 @@ def stream_episode_events(
             action = agent.act(obs)
             result = backend.step(action)
             obs = result.observation
+            step_info = dict(result.info)
+            diagnostics = _agent_diagnostics(agent)
+            if diagnostics:
+                step_info["agent_diagnostics"] = diagnostics
             if recorder is not None:
                 recorder.record_step(
                     observation=obs,
                     action=action,
                     reward=result.reward,
                     done=result.done,
-                    info=result.info,
+                    info=step_info,
                 )
             done = result.done
             include_terrain = steps == 1 or steps % 10 == 0 or done
@@ -108,9 +109,11 @@ def stream_episode_events(
                     "steps": steps,
                     "backend": backend_name,
                     "agent": agent_name,
-                    "scenario_id": scenario_config.scenario_id,
+                    "scenario_id": scenario_id,
                 }
             )
+            if diagnostics:
+                metrics["agent_diagnostics"] = diagnostics
 
             yield {
                 "event": "step",
@@ -121,7 +124,7 @@ def stream_episode_events(
                     action=action,
                     reward=result.reward,
                     done=done,
-                    info=result.info,
+                    info=step_info,
                     include_terrain=include_terrain,
                 ),
                 "metrics": metrics,
@@ -140,9 +143,12 @@ def stream_episode_events(
                 "steps": steps,
                 "backend": backend_name,
                 "agent": agent_name,
-                "scenario_id": scenario_config.scenario_id,
+                "scenario_id": scenario_id,
             }
         )
+        diagnostics = _agent_diagnostics(agent)
+        if diagnostics:
+            metrics["agent_diagnostics"] = diagnostics
 
         if recorder is not None:
             recorder.end_episode(metrics)

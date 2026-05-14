@@ -56,6 +56,8 @@ class BeamNGBackend(OffroadSimBackend):
         self._bng: Any = None
         self._scenario: Any = None
         self._vehicle: Any = None
+        self._sensors: dict[str, Any] = {}
+        self._sensor_cache: dict[str, Any] = {}
         self._last_observation: Observation | None = None
         self._scenario_config: Any = None
         self._step_count = 0
@@ -131,7 +133,25 @@ class BeamNGBackend(OffroadSimBackend):
     def attach_sensors(self, vehicle_config: VehicleConfig | None = None) -> None:
         self._ensure_connected()
         self.vehicle_config = vehicle_config or self.vehicle_config
-        # Real camera/lidar/imu mapping will live here once beamngpy is installed.
+        self._sensors = {}
+        if self._vehicle is None or self.vehicle_config is None:
+            return
+
+        try:
+            sensors_module = importlib.import_module("beamngpy.sensors")
+        except ImportError:
+            return
+
+        for sensor in self.vehicle_config.sensors:
+            if not sensor.enabled:
+                continue
+            instance = self._make_sensor(sensors_module, sensor)
+            if instance is None:
+                continue
+            attach = getattr(self._vehicle, "attach_sensor", None)
+            if callable(attach):
+                attach(sensor.sensor_id, instance)
+            self._sensors[sensor.sensor_id] = instance
 
     def reset(self, scenario_config: Any = None) -> Observation:
         self._scenario_config = scenario_config
@@ -167,6 +187,7 @@ class BeamNGBackend(OffroadSimBackend):
             self._bng.step(self.connection.steps_per_action)
 
         self._step_count += 1
+        self._sensor_cache = self._poll_sensors()
         self._last_observation = self._build_placeholder_observation(
             self._scenario_config,
             timestamp=float(self._step_count),
@@ -191,6 +212,8 @@ class BeamNGBackend(OffroadSimBackend):
             "episode_length": self._step_count,
             "vehicle_id": self.connection.vehicle_id,
             "level": self.connection.level,
+            "sensor_count": len(self._sensors),
+            "sensor_ids": sorted(self._sensors),
         }
 
     def close(self) -> None:
@@ -199,6 +222,8 @@ class BeamNGBackend(OffroadSimBackend):
         self._bng = None
         self._scenario = None
         self._vehicle = None
+        self._sensors = {}
+        self._sensor_cache = {}
         self._last_observation = None
         self._scenario_config = None
         self._connected = False
@@ -270,14 +295,23 @@ class BeamNGBackend(OffroadSimBackend):
             vehicle_state = self._last_observation.vehicle_state
         if vehicle_state is None:
             vehicle_state = VehicleState(x=float(start[0]), y=float(start[1]))
+        sensor_payload = self._sensor_cache or self._poll_sensors()
+        front_rgb = self._sensor_value(sensor_payload, ("front_camera", "colour", "color", "annotation"))
+        depth = self._sensor_value(sensor_payload, ("front_camera", "depth"))
+        lidar = self._sensor_value(sensor_payload, ("roof_lidar", "points", "pointCloud", "pointcloud"))
         return Observation(
             timestamp=timestamp,
             vehicle_state=vehicle_state,
             goal=(float(goal[0]), float(goal[1])),
+            front_rgb=front_rgb,
+            depth=depth,
+            lidar_points=lidar,
             info={
                 "backend": "beamng",
                 "status": "connected",
-                "note": "BeamNG pose is read when available; camera/lidar array mapping is reserved for the sensor pass.",
+                "sensor_ids": sorted(self._sensors),
+                "sensor_payload_keys": sorted(sensor_payload),
+                "note": "BeamNG pose and best-effort sensor payloads are read when available.",
             },
         )
 
@@ -339,6 +373,53 @@ class BeamNGBackend(OffroadSimBackend):
             yaw=yaw,
             speed=speed,
         )
+
+    def _make_sensor(self, sensors_module: Any, sensor: Any) -> Any | None:
+        sensor_type = getattr(sensor, "sensor_type", "")
+        xyz = tuple(float(value) for value in getattr(sensor, "mount_xyz", (0.0, 0.0, 0.0)))
+        rpy = tuple(float(value) for value in getattr(sensor, "mount_rpy", (0.0, 0.0, 0.0)))
+        try:
+            if sensor_type == "camera" and hasattr(sensors_module, "Camera"):
+                Camera = getattr(sensors_module, "Camera")
+                return Camera(
+                    pos=xyz,
+                    rot=rpy,
+                    resolution=(int(getattr(sensor, "width", 640)), int(getattr(sensor, "height", 480))),
+                    fov=float(getattr(sensor, "fov_deg", 90.0)),
+                )
+            if sensor_type == "lidar" and hasattr(sensors_module, "Lidar"):
+                Lidar = getattr(sensors_module, "Lidar")
+                return Lidar(pos=xyz, rot=rpy)
+            if sensor_type == "imu" and hasattr(sensors_module, "IMU"):
+                return getattr(sensors_module, "IMU")(pos=xyz, rot=rpy)
+            if sensor_type == "gps" and hasattr(sensors_module, "GPS"):
+                return getattr(sensors_module, "GPS")(pos=xyz, rot=rpy)
+        except TypeError:
+            return None
+        return None
+
+    def _poll_sensors(self) -> dict[str, Any]:
+        vehicle = self._vehicle
+        if vehicle is None:
+            return {}
+        poll = getattr(vehicle, "poll_sensors", None)
+        if callable(poll):
+            try:
+                data = poll()
+                return dict(data) if isinstance(data, Mapping) else {}
+            except Exception:
+                return {}
+        return {}
+
+    def _sensor_value(self, payload: Mapping[str, Any], keys: tuple[str, ...]) -> Any | None:
+        for sensor_id, sensor_payload in payload.items():
+            if keys[0] not in str(sensor_id):
+                continue
+            if isinstance(sensor_payload, Mapping):
+                for key in keys[1:]:
+                    if key in sensor_payload:
+                        return sensor_payload[key]
+        return None
 
     def _missing_runtime_message(self, status: BackendStatus) -> str:
         return (

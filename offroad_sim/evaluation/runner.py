@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from offroad_sim.agents import make_agent
 from offroad_sim.backends.registry import make_backend
@@ -48,7 +48,7 @@ class EpisodeRunResult:
 
 def run_episode(
     backend_name: str = "gym_heightmap",
-    scenario: ScenarioConfig | str | Path | None = None,
+    scenario: ScenarioConfig | str | Path | Mapping[str, Any] | None = None,
     agent_name: str = "rule_based",
     seed: int = 7,
     max_steps: int = 1200,
@@ -56,37 +56,34 @@ def run_episode(
     episode_path: str | Path | None = None,
     output_root: str | Path = DEFAULT_OUTPUT_ROOT,
     record_arrays: bool = False,
+    backend_options: Mapping[str, Any] | None = None,
+    agent_options: Mapping[str, Any] | None = None,
 ) -> EpisodeRunResult:
-    """Run one local benchmark episode.
-
-    First-stage automated runs are intentionally limited to the local
-    gym_heightmap backend. BeamNG and UE5 expose the same backend interface but
-    need external runtimes and are validated through connection/status checks.
-    """
-
-    if backend_name != "gym_heightmap":
-        raise ValueError("Automated local episode runs currently support backend_name='gym_heightmap'.")
+    """Run one benchmark episode through any registered backend and agent."""
 
     scenario_config = _load_scenario(scenario)
-    backend = make_backend(backend_name, seed=seed)
-    agent = make_agent(agent_name, seed=seed)
+    backend = _create_backend(backend_name, seed=seed, options=backend_options)
+    agent = make_agent(agent_name, seed=seed, **dict(agent_options or {}))
     recorder = EpisodeRecorder(save_arrays=record_arrays) if record else None
-    episode_id = _episode_id(scenario_config.scenario_id, agent_name)
+    scenario_id = _scenario_id(scenario_config)
+    episode_id = _episode_id(scenario_id, agent_name)
     result = None
     steps = 0
     done = False
 
     try:
         obs = backend.reset(scenario_config)
-        agent.reset({"scenario_id": scenario_config.scenario_id, "backend": backend_name})
+        agent.reset({"scenario_id": scenario_id, "backend": backend_name})
         if recorder is not None:
             recorder.start_episode(
                 {
                     "episode_id": episode_id,
-                    "scenario_id": scenario_config.scenario_id,
+                    "scenario_id": scenario_id,
                     "backend": backend_name,
                     "agent": agent_name,
                     "seed": seed,
+                    "agent_options": dict(agent_options or {}),
+                    "backend_options": dict(backend_options or {}),
                 }
             )
 
@@ -94,13 +91,17 @@ def run_episode(
             action = agent.act(obs)
             result = backend.step(action)
             obs = result.observation
+            step_info = dict(result.info)
+            diagnostics = _agent_diagnostics(agent)
+            if diagnostics:
+                step_info["agent_diagnostics"] = diagnostics
             if recorder is not None:
                 recorder.record_step(
                     observation=obs,
                     action=action,
                     reward=result.reward,
                     done=result.done,
-                    info=result.info,
+                    info=step_info,
                 )
             if result.done:
                 done = True
@@ -115,9 +116,12 @@ def run_episode(
                 "steps": steps,
                 "backend": backend_name,
                 "agent": agent_name,
-                "scenario_id": scenario_config.scenario_id,
+                "scenario_id": scenario_id,
             }
         )
+        diagnostics = _agent_diagnostics(agent)
+        if diagnostics:
+            metrics["agent_diagnostics"] = diagnostics
 
         saved_path = None
         if recorder is not None:
@@ -130,7 +134,7 @@ def run_episode(
             metrics=metrics,
             backend=backend_name,
             agent=agent_name,
-            scenario_id=scenario_config.scenario_id,
+            scenario_id=scenario_id,
             steps=steps,
             done=done,
             terminated=bool(result.terminated) if result else False,
@@ -142,12 +146,38 @@ def run_episode(
         backend.close()
 
 
-def _load_scenario(scenario: ScenarioConfig | str | Path | None) -> ScenarioConfig:
+def _load_scenario(scenario: ScenarioConfig | str | Path | Mapping[str, Any] | None) -> Any:
     if isinstance(scenario, ScenarioConfig):
         return scenario
+    if isinstance(scenario, Mapping):
+        return dict(scenario)
     return load_scenario_config(scenario or DEFAULT_SCENARIO_PATH)
 
 
 def _episode_id(scenario_id: str, agent_name: str) -> str:
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     return f"{scenario_id}_{agent_name}_{timestamp}"
+
+
+def _scenario_id(scenario: Any) -> str:
+    if isinstance(scenario, Mapping):
+        return str(scenario.get("scenario_id", "adhoc_scenario"))
+    return str(getattr(scenario, "scenario_id", "adhoc_scenario"))
+
+
+def _create_backend(name: str, *, seed: int, options: Mapping[str, Any] | None = None) -> Any:
+    kwargs = dict(options or {})
+    try:
+        return make_backend(name, seed=seed, **kwargs)
+    except TypeError as exc:
+        if "seed" not in str(exc):
+            raise
+        return make_backend(name, **kwargs)
+
+
+def _agent_diagnostics(agent: Any) -> dict[str, Any]:
+    diagnostics = getattr(agent, "diagnostics", None)
+    if not callable(diagnostics):
+        return {}
+    value = diagnostics()
+    return dict(value) if isinstance(value, Mapping) else {}

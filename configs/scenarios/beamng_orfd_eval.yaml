@@ -1,0 +1,20 @@
+scenario_id: beamng_orfd_eval
+backend: beamng
+map: west_coast_usa
+weather: sunny
+terrain:
+  type: mixed_offroad
+  difficulty: medium
+task:
+  max_time_sec: 120
+  success_radius_m: 5.0
+  start: [0.0, 0.0]
+  goal: [35.0, 20.0]
+metrics:
+  collision: true
+  rollover: true
+  path_length: true
+  terrain_risk: true
+metadata:
+  dataset_bridge: orfd_relative_route
+  phase: 3

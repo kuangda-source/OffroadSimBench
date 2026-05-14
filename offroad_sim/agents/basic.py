@@ -102,20 +102,7 @@ class KeyboardAgent(OffroadAgent):
         )
 
 
-def make_agent(name: str, seed: int | None = None) -> OffroadAgent:
-    normalized = name.strip().lower().replace("-", "_")
-    if normalized == "random":
-        return RandomAgent(seed=seed)
-    if normalized == "stop":
-        return StopAgent()
-    if normalized == "keyboard":
-        return KeyboardAgent()
-    if normalized in {"rule_based", "rulebased", "goal"}:
-        return RuleBasedGoalAgent()
-    if normalized in {"world_model", "worldmodel", "wm"}:
-        from offroad_sim.agents.world_model import WorldModelAgent
+def make_agent(name: str, seed: int | None = None, **kwargs: Any) -> OffroadAgent:
+    from offroad_sim.agents.registry import make_agent as registry_make_agent
 
-        return WorldModelAgent()
-    raise ValueError(
-        f"Unknown agent '{name}'. Available agents: random, stop, rule_based, world_model, keyboard"
-    )
+    return registry_make_agent(name, seed=seed, **kwargs)

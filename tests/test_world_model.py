@@ -4,7 +4,8 @@ import numpy as np
 
 from offroad_sim.agents import WorldModelAgent, make_agent
 from offroad_sim.core import Action, Observation, VehicleState
-from offroad_sim.world_models import SimpleKinematicWorldModel
+from offroad_sim.datasets import create_mock_orfd_dataset, default_dataset_registry
+from offroad_sim.world_models import SimpleKinematicWorldModel, TinyLearnedWorldModel, default_world_model_registry, make_world_model
 
 
 def _observation(risk: float = 0.0) -> Observation:
@@ -48,3 +49,25 @@ def test_world_model_agent_slows_down_on_high_predicted_risk() -> None:
 
 def test_make_agent_supports_world_model() -> None:
     assert isinstance(make_agent("world_model"), WorldModelAgent)
+
+
+def test_world_model_registry_exposes_switchable_models() -> None:
+    registry = default_world_model_registry()
+
+    assert {"simple_kinematic", "tiny_learned", "le_wm"}.issubset(set(registry.names()))
+    assert registry.status("tiny_learned").available is True
+
+
+def test_tiny_learned_world_model_trains_and_loads(tmp_path) -> None:
+    dataset_root = create_mock_orfd_dataset(tmp_path / "orfd", frame_count=5)
+    adapter = default_dataset_registry().resolve(dataset_root, "orfd")
+    sequence = adapter.load_sequence(dataset_root, "training/seq_0001")
+    model = TinyLearnedWorldModel.fit([sequence])
+    model_path = model.save(tmp_path / "tiny_model")
+
+    loaded = make_world_model("tiny_learned", path=model_path.parent)
+    prediction = loaded.predict(_observation(), Action(throttle=0.4), horizon=3)
+
+    assert prediction.final_state is not None
+    assert prediction.metadata["model_type"] == "tiny_learned"
+    assert model.metadata["sample_count"] == 4

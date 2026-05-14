@@ -14,10 +14,12 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from offroad_sim.backends import default_backend_registry
+from offroad_sim.datasets import default_dataset_registry
 from offroad_sim.evaluation import run_episode
 from offroad_sim.evaluation.runner import DEFAULT_OUTPUT_ROOT
 from offroad_sim.evaluation.streaming import recorded_observation_payload, stream_episode_events
 from offroad_sim.utils.yaml_io import load_yaml_file
+from offroad_sim.world_models import default_world_model_registry
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -33,6 +35,12 @@ class RunEpisodeRequest(BaseModel):
     max_steps: int = Field(default=1200, ge=1, le=100_000)
     record: bool = True
     record_arrays: bool = False
+    world_model_type: str = "simple_kinematic"
+    world_model: str | None = None
+    dataset_root: str | None = None
+    sequence_id: str | None = None
+    adapter: str | None = None
+    load_assets: bool = False
 
 
 app = FastAPI(title="OffroadSimBench Dashboard API", version="0.1.0")
@@ -75,6 +83,45 @@ def backends() -> list[dict[str, Any]]:
     return rows
 
 
+@app.get("/world_models")
+def world_models() -> list[dict[str, Any]]:
+    registry = default_world_model_registry()
+    rows = []
+    for name, status in registry.status().items():
+        row = asdict(status) if is_dataclass(status) else dict(status)
+        row["description"] = registry.get(name).description
+        rows.append(row)
+    return rows
+
+
+@app.get("/datasets/inspect")
+def inspect_dataset(dataset_root: str, adapter: str | None = None, sequence_id: str | None = None) -> dict[str, Any]:
+    try:
+        registry = default_dataset_registry()
+        resolved_adapter = registry.resolve(dataset_root, adapter)
+        sequences = resolved_adapter.list_sequences(dataset_root)
+        selected = sequence_id or sequences[0]
+        sequence = resolved_adapter.load_sequence(dataset_root, selected)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    asset_counts: dict[str, int] = {}
+    for frame in sequence.frames:
+        for name in frame.available_assets():
+            asset_counts[name] = asset_counts.get(name, 0) + 1
+    return {
+        "dataset_root": str(Path(dataset_root).resolve()),
+        "adapter": resolved_adapter.name,
+        "sequences": sequences,
+        "selected_sequence": selected,
+        "dataset_id": sequence.dataset_id,
+        "dataset_type": sequence.dataset_type,
+        "frame_count": len(sequence.frames),
+        "asset_counts": asset_counts,
+        "metadata": sequence.metadata,
+    }
+
+
 @app.get("/beamng/status")
 def beamng_status() -> dict[str, Any]:
     status = default_backend_registry().status("beamng")
@@ -87,13 +134,15 @@ def run_episode_endpoint(request: RunEpisodeRequest) -> dict[str, Any]:
     try:
         result = run_episode(
             backend_name=request.backend,
-            scenario=scenario_path,
+            scenario=_scenario_for_request(request, scenario_path),
             agent_name=request.agent,
             seed=request.seed,
             max_steps=request.max_steps,
             record=request.record,
             output_root=DEFAULT_OUTPUT_ROOT,
             record_arrays=request.record_arrays,
+            backend_options=_backend_options(request),
+            agent_options=_agent_options(request),
         )
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -110,14 +159,35 @@ def stream_episode_endpoint(
     record: bool = True,
     record_arrays: bool = True,
     delay_ms: int = 0,
+    world_model_type: str = "simple_kinematic",
+    world_model: str | None = None,
+    dataset_root: str | None = None,
+    sequence_id: str | None = None,
+    adapter: str | None = None,
+    load_assets: bool = False,
 ) -> StreamingResponse:
     scenario_path = _resolve_config("scenarios", scenario)
+    request = RunEpisodeRequest(
+        backend=backend,
+        scenario=scenario,
+        agent=agent,
+        seed=seed,
+        max_steps=max_steps,
+        record=record,
+        record_arrays=record_arrays,
+        world_model_type=world_model_type,
+        world_model=world_model,
+        dataset_root=dataset_root,
+        sequence_id=sequence_id,
+        adapter=adapter,
+        load_assets=load_assets,
+    )
 
     def event_source() -> Any:
         try:
             for payload in stream_episode_events(
                 backend_name=backend,
-                scenario=scenario_path,
+                scenario=_scenario_for_request(request, scenario_path),
                 agent_name=agent,
                 seed=seed,
                 max_steps=max_steps,
@@ -125,6 +195,8 @@ def stream_episode_endpoint(
                 output_root=DEFAULT_OUTPUT_ROOT,
                 record_arrays=record_arrays,
                 delay_ms=delay_ms,
+                backend_options=_backend_options(request),
+                agent_options=_agent_options(request),
             ):
                 yield _sse(payload.get("event", "message"), payload)
         except Exception as exc:
@@ -203,6 +275,40 @@ def _resolve_config(kind: str, value: str) -> Path:
     if candidate.exists():
         return candidate
     raise HTTPException(status_code=404, detail=f"Unknown {kind[:-1]} config: {value}")
+
+
+def _backend_options(request: RunEpisodeRequest) -> dict[str, Any]:
+    options: dict[str, Any] = {}
+    if request.backend == "dataset_replay":
+        if request.dataset_root:
+            options["dataset_root"] = request.dataset_root
+        if request.sequence_id:
+            options["sequence_id"] = request.sequence_id
+        if request.adapter:
+            options["adapter"] = request.adapter
+        options["load_assets"] = bool(request.load_assets)
+    return options
+
+
+def _agent_options(request: RunEpisodeRequest) -> dict[str, Any]:
+    if request.agent != "world_model":
+        return {}
+    options: dict[str, Any] = {"world_model_name": request.world_model_type}
+    if request.world_model:
+        options["world_model_path"] = request.world_model
+    return options
+
+
+def _scenario_for_request(request: RunEpisodeRequest, scenario_path: Path) -> Any:
+    if request.backend == "dataset_replay" and request.dataset_root:
+        return {
+            "scenario_id": f"dataset_{Path(request.dataset_root).name}",
+            "dataset_root": request.dataset_root,
+            "sequence_id": request.sequence_id,
+            "adapter": request.adapter,
+            "load_assets": request.load_assets,
+        }
+    return scenario_path
 
 
 def _episode_path(episode_id: str) -> Path:

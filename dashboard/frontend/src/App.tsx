@@ -108,6 +108,7 @@ type CatalogState = {
   vehicles: CatalogItem[];
   agents: CatalogItem[];
   backends: CatalogItem[];
+  worldModels: CatalogItem[];
   episodes: EpisodeSummary[];
 };
 
@@ -117,6 +118,7 @@ const emptyCatalog: CatalogState = {
   vehicles: [],
   agents: [],
   backends: [],
+  worldModels: [],
   episodes: []
 };
 
@@ -128,6 +130,12 @@ type Copy = {
     backend: string;
     scenario: string;
     agent: string;
+    worldModel: string;
+    modelPath: string;
+    datasetRoot: string;
+    sequenceId: string;
+    adapter: string;
+    loadAssets: string;
     seed: string;
     steps: string;
     stepBudget: string;
@@ -184,6 +192,12 @@ const copyByLanguage: Record<Language, Copy> = {
       backend: "Backend",
       scenario: "Scenario",
       agent: "Agent",
+      worldModel: "World model",
+      modelPath: "Model path",
+      datasetRoot: "Dataset root",
+      sequenceId: "Sequence",
+      adapter: "Adapter",
+      loadAssets: "Load assets",
       seed: "Seed",
       steps: "Steps",
       stepBudget: "Step budget",
@@ -217,7 +231,7 @@ const copyByLanguage: Record<Language, Copy> = {
       noMapFrame: "No map frame",
       noEpisodes: "No recorded episodes",
       apiError: "Failed to reach dashboard API.",
-      streamBackendOnly: "Streaming run currently targets the local gym_heightmap backend.",
+      streamBackendOnly: "Select a backend before starting a stream.",
       streamClosed: "Episode stream closed unexpectedly.",
       loadEpisodeFailed: "Could not load episode."
     },
@@ -250,6 +264,12 @@ const copyByLanguage: Record<Language, Copy> = {
       backend: "后端",
       scenario: "场景",
       agent: "智能体",
+      worldModel: "世界模型",
+      modelPath: "模型路径",
+      datasetRoot: "数据集路径",
+      sequenceId: "序列",
+      adapter: "适配器",
+      loadAssets: "加载资产",
       seed: "种子",
       steps: "步数",
       stepBudget: "步数预算",
@@ -283,7 +303,7 @@ const copyByLanguage: Record<Language, Copy> = {
       noMapFrame: "暂无地图帧",
       noEpisodes: "暂无记录 episode",
       apiError: "无法连接 dashboard API。",
-      streamBackendOnly: "当前流式运行仅支持本地 gym_heightmap 后端。",
+      streamBackendOnly: "请先选择一个后端再开始流式运行。",
       streamClosed: "Episode 流意外关闭。",
       loadEpisodeFailed: "无法加载 episode。"
     },
@@ -339,6 +359,12 @@ function App() {
     backend: "gym_heightmap",
     scenario: "forest_trail_001",
     agent: "rule_based",
+    worldModel: "simple_kinematic",
+    modelPath: "",
+    datasetRoot: "",
+    sequenceId: "",
+    adapter: "",
+    loadAssets: false,
     seed: 7,
     maxSteps: 240,
     record: true
@@ -357,12 +383,13 @@ function App() {
   const refresh = async () => {
     setError(null);
     try {
-      const [health, scenarios, vehicles, agents, backends, episodes] = await Promise.all([
+      const [health, scenarios, vehicles, agents, backends, worldModels, episodes] = await Promise.all([
         fetchJson<{ status: string }>("/health"),
         fetchJson<CatalogItem[]>("/scenarios"),
         fetchJson<CatalogItem[]>("/vehicles"),
         fetchJson<CatalogItem[]>("/agents"),
         fetchJson<CatalogItem[]>("/backends"),
+        fetchJson<CatalogItem[]>("/world_models"),
         fetchJson<EpisodeSummary[]>("/episodes")
       ]);
       setCatalog({
@@ -371,6 +398,7 @@ function App() {
         vehicles,
         agents,
         backends,
+        worldModels,
         episodes
       });
     } catch (err) {
@@ -393,7 +421,7 @@ function App() {
   const activeMetrics = Object.keys(streamMetrics).length ? streamMetrics : (episodeDetail?.metrics ?? {});
   const selectedBackend = catalog.backends.find((item) => item.name === selected.backend);
   const beamngBackend = catalog.backends.find((item) => item.name === "beamng");
-  const canStream = selected.backend === "gym_heightmap";
+  const canStream = Boolean(selected.backend);
 
   useEffect(() => {
     if (isStreaming && frames.length) {
@@ -441,8 +469,22 @@ function App() {
       max_steps: String(selected.maxSteps),
       record: String(selected.record),
       record_arrays: "true",
+      world_model_type: selected.worldModel,
+      load_assets: String(selected.loadAssets),
       delay_ms: "35"
     });
+    if (selected.modelPath.trim()) {
+      params.set("world_model", selected.modelPath.trim());
+    }
+    if (selected.datasetRoot.trim()) {
+      params.set("dataset_root", selected.datasetRoot.trim());
+    }
+    if (selected.sequenceId.trim()) {
+      params.set("sequence_id", selected.sequenceId.trim());
+    }
+    if (selected.adapter.trim()) {
+      params.set("adapter", selected.adapter.trim());
+    }
     const source = new EventSource(`${API_BASE}/stream_episode?${params.toString()}`);
     eventSourceRef.current = source;
 
@@ -574,6 +616,72 @@ function App() {
               </option>
             ))}
           </select>
+        </label>
+
+        <label>
+          {copy.labels.worldModel}
+          <select
+            value={selected.worldModel}
+            onChange={(event) => setSelected({ ...selected, worldModel: event.target.value })}
+            disabled={selected.agent !== "world_model"}
+          >
+            {catalog.worldModels.map((item) => (
+              <option key={item.name} value={item.name}>
+                {item.name}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label>
+          {copy.labels.modelPath}
+          <input
+            type="text"
+            value={selected.modelPath}
+            placeholder="outputs/models/tiny_world_model"
+            onChange={(event) => setSelected({ ...selected, modelPath: event.target.value })}
+            disabled={selected.agent !== "world_model"}
+          />
+        </label>
+
+        <label>
+          {copy.labels.datasetRoot}
+          <input
+            type="text"
+            value={selected.datasetRoot}
+            placeholder="outputs/mock_orfd_phase3"
+            onChange={(event) => setSelected({ ...selected, datasetRoot: event.target.value })}
+          />
+        </label>
+
+        <div className="number-grid">
+          <label>
+            {copy.labels.sequenceId}
+            <input
+              type="text"
+              value={selected.sequenceId}
+              placeholder="training/seq_0001"
+              onChange={(event) => setSelected({ ...selected, sequenceId: event.target.value })}
+            />
+          </label>
+          <label>
+            {copy.labels.adapter}
+            <input
+              type="text"
+              value={selected.adapter}
+              placeholder="orfd"
+              onChange={(event) => setSelected({ ...selected, adapter: event.target.value })}
+            />
+          </label>
+        </div>
+
+        <label className="toggle-row">
+          <input
+            type="checkbox"
+            checked={selected.loadAssets}
+            onChange={(event) => setSelected({ ...selected, loadAssets: event.target.checked })}
+          />
+          {copy.labels.loadAssets}
         </label>
 
         <div className="number-grid">

@@ -10,10 +10,12 @@ from typing import Any
 from rich.console import Console
 from rich.table import Table
 
-from offroad_sim.agents.basic import make_agent
+from offroad_sim.agents import default_agent_registry, make_agent
 from offroad_sim.backends import default_backend_registry
+from offroad_sim.datasets import default_dataset_registry
 from offroad_sim.evaluation import run_episode
 from offroad_sim.replay import load_episode
+from offroad_sim.world_models import default_world_model_registry
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -27,7 +29,7 @@ def build_parser() -> argparse.ArgumentParser:
     list_parser = subparsers.add_parser("list", help="List scenarios, vehicles, agents, and backends.")
     list_parser.add_argument(
         "--kind",
-        choices=["all", "scenarios", "vehicles", "agents", "backends"],
+        choices=["all", "scenarios", "vehicles", "agents", "backends", "datasets", "world_models"],
         default="all",
     )
 
@@ -39,7 +41,19 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--max-steps", type=int, default=1200)
     run_parser.add_argument("--record", nargs="?", const="auto", default=None)
     run_parser.add_argument("--record-arrays", action="store_true")
+    run_parser.add_argument("--world-model-type", default="simple_kinematic")
+    run_parser.add_argument("--world-model", default=None, help="Path to a saved world model.")
+    run_parser.add_argument("--dataset-root", default=None, help="Dataset root for dataset_replay backend.")
+    run_parser.add_argument("--sequence-id", default=None)
+    run_parser.add_argument("--adapter", default=None, help="Dataset adapter name.")
+    run_parser.add_argument("--load-assets", action="store_true")
     run_parser.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+
+    inspect_parser = subparsers.add_parser("inspect-dataset", help="Inspect a dataset adapter and sequence.")
+    inspect_parser.add_argument("dataset_root")
+    inspect_parser.add_argument("--adapter", default=None)
+    inspect_parser.add_argument("--sequence-id", default=None)
+    inspect_parser.add_argument("--json", action="store_true")
 
     replay_parser = subparsers.add_parser("replay", help="Inspect a saved episode directory.")
     replay_parser.add_argument("episode_path")
@@ -60,18 +74,27 @@ def main(argv: list[str] | None = None) -> int:
         episode_path = None if args.record in {None, "auto"} else Path(args.record)
         result = run_episode(
             backend_name=args.backend,
-            scenario=args.scenario,
+            scenario=_scenario_for_run(args),
             agent_name=args.agent,
             seed=args.seed,
             max_steps=args.max_steps,
             record=args.record is not None,
             episode_path=episode_path,
             record_arrays=args.record_arrays,
+            backend_options=_backend_options(args),
+            agent_options=_agent_options(args),
         )
         if args.json:
             console.print_json(json.dumps(result.to_dict(), default=str))
         else:
             _print_metrics(console, result.to_dict())
+        return 0
+    if args.command == "inspect-dataset":
+        payload = _inspect_dataset(args.dataset_root, adapter_name=args.adapter, sequence_id=args.sequence_id)
+        if args.json:
+            console.print_json(json.dumps(payload, default=str))
+        else:
+            _print_dataset_inspection(console, payload)
         return 0
     if args.command == "replay":
         player = load_episode(args.episode_path)
@@ -98,10 +121,10 @@ def _print_listing(console: Console, kind: str) -> None:
     if kind in {"all", "agents"}:
         table = Table(title="Agents")
         table.add_column("Name")
-        table.add_column("Status")
-        for name in ["random", "stop", "rule_based", "world_model"]:
-            make_agent(name)
-            table.add_row(name, "available")
+        table.add_column("Description")
+        registry = default_agent_registry()
+        for name in registry.names():
+            table.add_row(name, registry.get(name).description)
         console.print(table)
     if kind in {"all", "backends"}:
         registry = default_backend_registry()
@@ -109,6 +132,21 @@ def _print_listing(console: Console, kind: str) -> None:
         table.add_column("Name")
         table.add_column("Available")
         table.add_column("Message")
+        for name, status in registry.status().items():
+            table.add_row(name, str(status.available), status.message)
+        console.print(table)
+    if kind in {"all", "datasets"}:
+        table = Table(title="Dataset Adapters")
+        table.add_column("Name")
+        for name in default_dataset_registry().names():
+            table.add_row(name)
+        console.print(table)
+    if kind in {"all", "world_models"}:
+        table = Table(title="World Models")
+        table.add_column("Name")
+        table.add_column("Available")
+        table.add_column("Message")
+        registry = default_world_model_registry()
         for name, status in registry.status().items():
             table.add_row(name, str(status.available), status.message)
         console.print(table)
@@ -149,6 +187,78 @@ def _print_metrics(console: Console, payload: dict[str, Any]) -> None:
         table.add_row(key, str(value))
     if payload.get("episode_path"):
         table.add_row("episode_path", str(payload["episode_path"]))
+    console.print(table)
+
+
+def _backend_options(args: argparse.Namespace) -> dict[str, Any]:
+    options: dict[str, Any] = {}
+    if args.backend == "dataset_replay":
+        if args.dataset_root:
+            options["dataset_root"] = args.dataset_root
+        if args.sequence_id:
+            options["sequence_id"] = args.sequence_id
+        if args.adapter:
+            options["adapter"] = args.adapter
+        options["load_assets"] = bool(args.load_assets)
+    return options
+
+
+def _agent_options(args: argparse.Namespace) -> dict[str, Any]:
+    if args.agent != "world_model":
+        return {}
+    options: dict[str, Any] = {"world_model_name": args.world_model_type}
+    if args.world_model:
+        options["world_model_path"] = args.world_model
+    return options
+
+
+def _scenario_for_run(args: argparse.Namespace) -> Any:
+    if args.backend == "dataset_replay" and args.dataset_root:
+        return {
+            "scenario_id": f"dataset_{Path(args.dataset_root).name}",
+            "dataset_root": args.dataset_root,
+            "sequence_id": args.sequence_id,
+            "adapter": args.adapter,
+            "load_assets": bool(args.load_assets),
+        }
+    return args.scenario
+
+
+def _inspect_dataset(dataset_root: str, *, adapter_name: str | None = None, sequence_id: str | None = None) -> dict[str, Any]:
+    registry = default_dataset_registry()
+    adapter = registry.resolve(dataset_root, adapter_name)
+    sequences = adapter.list_sequences(dataset_root)
+    selected_sequence = sequence_id or sequences[0]
+    sequence = adapter.load_sequence(dataset_root, selected_sequence)
+    first = sequence.frames[0]
+    last = sequence.frames[-1]
+    asset_counts: dict[str, int] = {}
+    for frame in sequence.frames:
+        for name in frame.available_assets():
+            asset_counts[name] = asset_counts.get(name, 0) + 1
+    return {
+        "dataset_root": str(Path(dataset_root).resolve()),
+        "adapter": adapter.name,
+        "sequences": sequences,
+        "selected_sequence": selected_sequence,
+        "dataset_id": sequence.dataset_id,
+        "dataset_type": sequence.dataset_type,
+        "frame_count": len(sequence.frames),
+        "asset_counts": asset_counts,
+        "first_frame": {"frame_id": first.frame_id, "timestamp": first.timestamp, "metadata": first.metadata},
+        "last_frame": {"frame_id": last.frame_id, "timestamp": last.timestamp, "metadata": last.metadata},
+        "metadata": sequence.metadata,
+    }
+
+
+def _print_dataset_inspection(console: Console, payload: dict[str, Any]) -> None:
+    table = Table(title=f"Dataset {payload['dataset_id']}")
+    table.add_column("Field")
+    table.add_column("Value")
+    for key in ["dataset_root", "adapter", "selected_sequence", "dataset_type", "frame_count"]:
+        table.add_row(key, str(payload[key]))
+    table.add_row("sequences", ", ".join(payload["sequences"]))
+    table.add_row("asset_counts", json.dumps(payload["asset_counts"], default=str))
     console.print(table)
 
 

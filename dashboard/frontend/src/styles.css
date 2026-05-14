@@ -140,7 +140,8 @@ label {
 }
 
 select,
-input[type="number"] {
+input[type="number"],
+input[type="text"] {
   width: 100%;
   min-height: 40px;
   border: 1px solid #536777;
