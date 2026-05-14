@@ -31,10 +31,15 @@ offroad_sim/
     basic.py
   backends/
     base.py
+    dataset_replay_backend.py
     gym_heightmap_backend.py
   core/
     types.py
   datasets/
+    adapters/
+    mock.py
+    registry.py
+    types.py
   evaluation/
     metrics.py
   replay/
@@ -55,8 +60,10 @@ dashboard/
 docs/
 examples/
   run_gym_demo.py
+  run_dataset_replay.py
   replay_episode.py
 scripts/
+  create_mock_dataset.py
 tests/
 ```
 
@@ -205,10 +212,52 @@ episode_dir/
 
 Observation arrays are skipped by default to keep recordings small. Pass `--record-arrays` to persist arrays such as `local_bev` as `.npy` files.
 
+## Dataset Replay
+
+M8 adds a dataset adapter layer so replay does not depend on one fixed file layout.
+
+The normalized path is:
+
+```text
+physical dataset layout -> DatasetAdapter -> DatasetSequence/DatasetFrame -> DatasetReplayBackend
+```
+
+Dynamic dataset switching works through `DatasetRegistry`:
+
+- pass `adapter="offroad_sim_v1"` when the format is known;
+- omit `adapter` to let the registry inspect `dataset.yaml`/`manifest.yaml` and auto-detect a loader;
+- add future adapters for KITTI, rosbag exports, CSV/image folders, or custom logs without changing `DatasetReplayBackend`.
+
+Create a tiny mock dataset:
+
+```bash
+python scripts/create_mock_dataset.py outputs/mock_dataset_m8 --frames 6
+```
+
+Replay it through the backend:
+
+```bash
+python examples/run_dataset_replay.py outputs/mock_dataset_m8 --load-assets
+```
+
+The built-in `offroad_sim_v1` mock layout is:
+
+```text
+dataset_root/
+  dataset.yaml
+  sequences/
+    seq_0001/
+      poses.csv
+      metadata.json
+      calibration.json
+      images/
+      depth/
+      lidar/
+      bev/
+      terrain/
+      labels/
+```
+
 ## Next Milestone
 
-The next implementation step is M8: implement `DatasetReplayBackend` and a mock dataset generator:
-
-- `offroad_sim/backends/dataset_replay_backend.py`
-- `scripts/create_mock_dataset.py`
-- `examples/run_dataset_replay.py`
+The next implementation step is M9: connect replayed datasets to richer world-model or evaluation workflows.
