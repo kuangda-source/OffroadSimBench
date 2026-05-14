@@ -151,7 +151,7 @@ class _MockUE5Handler(socketserver.StreamRequestHandler):
             self.wfile.write((json.dumps(response) + "\n").encode("utf-8"))
             self.wfile.flush()
             if request.get("command") == "close":
-                breakk
+                break
 
 
 class _MockUE5Runtime:
