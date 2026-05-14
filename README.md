@@ -31,8 +31,11 @@ offroad_sim/
     basic.py
   backends/
     base.py
+    beamng_backend.py
     dataset_replay_backend.py
     gym_heightmap_backend.py
+    registry.py
+    ue5_backend.py
   core/
     types.py
   datasets/
@@ -58,9 +61,13 @@ dashboard/
   backend/
   frontend/
 docs/
+  beamng_backend.md
+  ue5_backend.md
 examples/
+  check_backends.py
   run_gym_demo.py
   run_dataset_replay.py
+  run_mock_ue5_backend.py
   replay_episode.py
 scripts/
   create_mock_dataset.py
@@ -124,6 +131,31 @@ The first shared API layer is now in place:
 - `offroad_sim.backends.OffroadSimBackend`
 
 All future agents should implement `OffroadAgent`. All simulator integrations should implement `OffroadSimBackend`.
+
+## Backend Registry
+
+M9/M10 add a runtime backend registry so application code can switch simulators without importing simulator-specific modules directly:
+
+```python
+from offroad_sim.backends import default_backend_registry, make_backend
+
+registry = default_backend_registry()
+print(registry.names())
+backend = make_backend("gym_heightmap")
+```
+
+Current backend names are:
+
+- `gym_heightmap`
+- `dataset_replay`
+- `beamng`
+- `ue5`
+
+Check local backend availability:
+
+```bash
+python examples/check_backends.py
+```
 
 ## Config Loading
 
@@ -258,6 +290,41 @@ dataset_root/
       labels/
 ```
 
+## BeamNG Backend
+
+`BeamNGBackend` is an optional adapter for BeamNG.tech through `beamngpy`. The project does not include BeamNG.tech or BeamNG assets, and importing `offroad_sim` does not require BeamNG to be installed.
+
+Before using it for a real run:
+
+```powershell
+python -m pip install beamngpy
+$env:BNG_HOME = "D:\programs\OffroadSimBench\BeamNG\BeamNG.tech.v0.38.3.0"
+```
+
+The backend exposes the expected simulator lifecycle:
+
+- `connect()`
+- `load_scenario()`
+- `spawn_vehicle()`
+- `attach_sensors()`
+- `reset()`
+- `step()`
+- `get_observation()`
+- `get_metrics()`
+- `close()`
+
+See `docs/beamng_backend.md` for the current integration boundary and the next sensor-mapping pass.
+
+## UE5 Backend
+
+`UE5Backend` is a TCP JSON bridge placeholder for a future Unreal runtime. It currently ships with a local `MockUE5Server` so the protocol can be tested without Unreal Engine:
+
+```bash
+python examples/run_mock_ue5_backend.py
+```
+
+See `docs/ue5_backend.md` for the command and observation JSON schema.
+
 ## Next Milestone
 
-The next implementation step is M9: connect replayed datasets to richer world-model or evaluation workflows.
+The next implementation step is M11: add the first world-model interface and baseline.
