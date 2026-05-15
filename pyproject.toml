@@ -23,6 +23,9 @@ dev = [
   "pytest>=8.0",
   "httpx>=0.27",
 ]
+gui = [
+  "PySide6>=6.7",
+]
 beamng = [
   "beamngpy",
 ]
@@ -35,9 +38,10 @@ lewm-train = [
 
 [project.scripts]
 offroad-sim = "offroad_sim.cli:main"
+offroad-sim-gui = "desktop_app.main:main"
 
 [tool.setuptools.packages.find]
-include = ["offroad_sim*", "dashboard*"]
+include = ["offroad_sim*", "dashboard*", "desktop_app*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

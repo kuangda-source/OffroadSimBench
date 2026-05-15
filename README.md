@@ -71,6 +71,14 @@ python -m offroad_sim.cli run --backend dataset_replay --dataset-root outputs\mo
 python -m offroad_sim.cli run --backend dataset_replay --dataset-root outputs\mock_orfd_phase3 --adapter orfd --agent world_model --world-model-type tiny_learned --world-model outputs\models\phase3_tiny_world_model --planner world_model_cem --planner-horizon 4 --planner-samples 16 --planner-iterations 2 --max-steps 3 --record
 ```
 
+启动桌面 GUI：
+
+```powershell
+python -m desktop_app.main
+```
+
+GUI 会直接调用本地 Python 接口；当前未完成的能力在界面内显示 `NaN` 或 `未完成`，不会生成模拟结果。
+
 检查 BeamNG：
 
 ```powershell
@@ -185,6 +193,14 @@ Enable CEM path planning:
 ```powershell
 python -m offroad_sim.cli run --backend dataset_replay --dataset-root outputs\mock_orfd_phase3 --adapter orfd --agent world_model --world-model-type tiny_learned --world-model outputs\models\phase3_tiny_world_model --planner world_model_cem --planner-horizon 4 --planner-samples 16 --planner-iterations 2 --max-steps 3 --record
 ```
+
+Start the desktop GUI:
+
+```powershell
+python -m desktop_app.main
+```
+
+The GUI calls local Python APIs directly. Features that are not implemented yet are shown as `NaN` or `未完成`; the UI does not invent placeholder results.
 
 Check BeamNG:
 
