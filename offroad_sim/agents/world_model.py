@@ -8,6 +8,7 @@ from typing import Any
 from offroad_sim.agents.base import OffroadAgent
 from offroad_sim.agents.basic import RuleBasedGoalAgent
 from offroad_sim.core.types import Action, Observation
+from offroad_sim.planning import ActionPlanner, make_planner
 from offroad_sim.world_models import BaseWorldModel, make_world_model
 
 
@@ -19,12 +20,20 @@ class WorldModelAgent(OffroadAgent):
         world_model: BaseWorldModel | None = None,
         world_model_name: str = "simple_kinematic",
         world_model_path: str | Path | None = None,
+        planner: ActionPlanner | None = None,
+        planner_name: str | None = None,
+        planner_config: dict[str, Any] | None = None,
         horizon: int = 12,
         risk_threshold: float = 0.6,
     ) -> None:
         self.world_model = world_model or make_world_model(world_model_name, path=world_model_path)
         self.world_model_name = getattr(self.world_model, "model_type", world_model_name)
         self.world_model_path = str(world_model_path) if world_model_path is not None else None
+        planner_kwargs = dict(planner_config or {})
+        if planner_name == "le_wm_cem" and world_model_path is not None:
+            planner_kwargs.setdefault("checkpoint_path", world_model_path)
+        self.planner = planner or (make_planner(planner_name, **planner_kwargs) if planner_name else None)
+        self.planner_name = getattr(self.planner, "planner_type", planner_name)
         self.base_agent = RuleBasedGoalAgent()
         self.horizon = horizon
         self.risk_threshold = risk_threshold
@@ -39,10 +48,30 @@ class WorldModelAgent(OffroadAgent):
 
     def act(self, obs: Observation) -> Action:
         action = self.base_agent.act(obs)
+        if self.planner is not None:
+            planning = self.planner.plan(obs, self.world_model, reference_action=action)
+            self.last_prediction_metadata = {
+                "world_model": self.world_model_name,
+                "world_model_path": self.world_model_path,
+                "planner": self.planner_name,
+                "planning": planning.metadata,
+                "best_cost": planning.best_cost,
+                "final_state": {
+                    "x": planning.predicted_states[-1].x,
+                    "y": planning.predicted_states[-1].y,
+                    "yaw": planning.predicted_states[-1].yaw,
+                    "speed": planning.predicted_states[-1].speed,
+                }
+                if planning.predicted_states
+                else None,
+            }
+            return planning.first_action
+
         prediction = self.world_model.predict(obs, action, horizon=self.horizon)
         self.last_prediction_metadata = {
             "world_model": self.world_model_name,
             "world_model_path": self.world_model_path,
+            "planner": None,
             "horizon": self.horizon,
             "prediction": prediction.metadata,
             "final_state": {

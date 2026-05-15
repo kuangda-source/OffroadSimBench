@@ -18,6 +18,7 @@ from offroad_sim.datasets import default_dataset_registry
 from offroad_sim.evaluation import run_episode
 from offroad_sim.evaluation.runner import DEFAULT_OUTPUT_ROOT
 from offroad_sim.evaluation.streaming import recorded_observation_payload, stream_episode_events
+from offroad_sim.planning import default_planner_registry
 from offroad_sim.utils.yaml_io import load_yaml_file
 from offroad_sim.world_models import default_world_model_registry
 
@@ -37,6 +38,10 @@ class RunEpisodeRequest(BaseModel):
     record_arrays: bool = False
     world_model_type: str = "simple_kinematic"
     world_model: str | None = None
+    planner: str | None = None
+    planner_horizon: int = Field(default=10, ge=1, le=200)
+    planner_samples: int = Field(default=128, ge=4, le=5000)
+    planner_iterations: int = Field(default=4, ge=1, le=100)
     dataset_root: str | None = None
     sequence_id: str | None = None
     adapter: str | None = None
@@ -86,6 +91,17 @@ def backends() -> list[dict[str, Any]]:
 @app.get("/world_models")
 def world_models() -> list[dict[str, Any]]:
     registry = default_world_model_registry()
+    rows = []
+    for name, status in registry.status().items():
+        row = asdict(status) if is_dataclass(status) else dict(status)
+        row["description"] = registry.get(name).description
+        rows.append(row)
+    return rows
+
+
+@app.get("/planners")
+def planners() -> list[dict[str, Any]]:
+    registry = default_planner_registry()
     rows = []
     for name, status in registry.status().items():
         row = asdict(status) if is_dataclass(status) else dict(status)
@@ -161,6 +177,10 @@ def stream_episode_endpoint(
     delay_ms: int = 0,
     world_model_type: str = "simple_kinematic",
     world_model: str | None = None,
+    planner: str | None = None,
+    planner_horizon: int = 10,
+    planner_samples: int = 128,
+    planner_iterations: int = 4,
     dataset_root: str | None = None,
     sequence_id: str | None = None,
     adapter: str | None = None,
@@ -177,6 +197,10 @@ def stream_episode_endpoint(
         record_arrays=record_arrays,
         world_model_type=world_model_type,
         world_model=world_model,
+        planner=planner,
+        planner_horizon=planner_horizon,
+        planner_samples=planner_samples,
+        planner_iterations=planner_iterations,
         dataset_root=dataset_root,
         sequence_id=sequence_id,
         adapter=adapter,
@@ -296,6 +320,13 @@ def _agent_options(request: RunEpisodeRequest) -> dict[str, Any]:
     options: dict[str, Any] = {"world_model_name": request.world_model_type}
     if request.world_model:
         options["world_model_path"] = request.world_model
+    if request.planner:
+        options["planner_name"] = request.planner
+        options["planner_config"] = {
+            "horizon": request.planner_horizon,
+            "num_samples": request.planner_samples,
+            "iterations": request.planner_iterations,
+        }
     return options
 
 

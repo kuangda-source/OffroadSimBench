@@ -14,6 +14,7 @@ from offroad_sim.agents import default_agent_registry, make_agent
 from offroad_sim.backends import default_backend_registry
 from offroad_sim.datasets import default_dataset_registry
 from offroad_sim.evaluation import run_episode
+from offroad_sim.planning import default_planner_registry
 from offroad_sim.replay import load_episode
 from offroad_sim.world_models import default_world_model_registry
 
@@ -29,7 +30,7 @@ def build_parser() -> argparse.ArgumentParser:
     list_parser = subparsers.add_parser("list", help="List scenarios, vehicles, agents, and backends.")
     list_parser.add_argument(
         "--kind",
-        choices=["all", "scenarios", "vehicles", "agents", "backends", "datasets", "world_models"],
+        choices=["all", "scenarios", "vehicles", "agents", "backends", "datasets", "world_models", "planners"],
         default="all",
     )
 
@@ -43,6 +44,10 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--record-arrays", action="store_true")
     run_parser.add_argument("--world-model-type", default="simple_kinematic")
     run_parser.add_argument("--world-model", default=None, help="Path to a saved world model.")
+    run_parser.add_argument("--planner", default=None, help="Planner name, e.g. world_model_cem or le_wm_cem.")
+    run_parser.add_argument("--planner-horizon", type=int, default=10)
+    run_parser.add_argument("--planner-samples", type=int, default=128)
+    run_parser.add_argument("--planner-iterations", type=int, default=4)
     run_parser.add_argument("--dataset-root", default=None, help="Dataset root for dataset_replay backend.")
     run_parser.add_argument("--sequence-id", default=None)
     run_parser.add_argument("--adapter", default=None, help="Dataset adapter name.")
@@ -150,6 +155,15 @@ def _print_listing(console: Console, kind: str) -> None:
         for name, status in registry.status().items():
             table.add_row(name, str(status.available), status.message)
         console.print(table)
+    if kind in {"all", "planners"}:
+        table = Table(title="Planners")
+        table.add_column("Name")
+        table.add_column("Available")
+        table.add_column("Message")
+        registry = default_planner_registry()
+        for name, status in registry.status().items():
+            table.add_row(name, str(status.available), status.message)
+        console.print(table)
 
 
 def _print_path_table(console: Console, title: str, root: Path, pattern: str) -> None:
@@ -209,6 +223,13 @@ def _agent_options(args: argparse.Namespace) -> dict[str, Any]:
     options: dict[str, Any] = {"world_model_name": args.world_model_type}
     if args.world_model:
         options["world_model_path"] = args.world_model
+    if args.planner:
+        options["planner_name"] = args.planner
+        options["planner_config"] = {
+            "horizon": args.planner_horizon,
+            "num_samples": args.planner_samples,
+            "iterations": args.planner_iterations,
+        }
     return options
 
 

@@ -65,6 +65,12 @@ python scripts\train_world_model.py outputs\mock_orfd_phase3 --adapter orfd --ou
 python -m offroad_sim.cli run --backend dataset_replay --dataset-root outputs\mock_orfd_phase3 --adapter orfd --agent world_model --world-model-type tiny_learned --world-model outputs\models\phase3_tiny_world_model --max-steps 3 --record
 ```
 
+启用 CEM 路径规划：
+
+```powershell
+python -m offroad_sim.cli run --backend dataset_replay --dataset-root outputs\mock_orfd_phase3 --adapter orfd --agent world_model --world-model-type tiny_learned --world-model outputs\models\phase3_tiny_world_model --planner world_model_cem --planner-horizon 4 --planner-samples 16 --planner-iterations 2 --max-steps 3 --record
+```
+
 检查 BeamNG：
 
 ```powershell
@@ -106,7 +112,9 @@ powershell -ExecutionPolicy Bypass -File scripts\phase3_acceptance.ps1 -OrfdRoot
 
 https://github.com/lucas-maes/le-wm
 
-OffroadSimBench 不 vendoring LE-WM 源码；后续只需要安装 upstream 依赖、设置 `LE_WM_HOME` 或提供 checkpoint，然后在 `offroad_sim/world_models/le_wm.py` 内补充 checkpoint-specific inference glue。agent、CLI、dashboard 和 runner 不需要为换模型硬改代码。
+OffroadSimBench 不 vendoring LE-WM 源码；安装 upstream 依赖、设置 `LE_WM_HOME` 或提供 checkpoint 后，可以通过 `--world-model-type le_wm --planner le_wm_cem` 使用 stable-worldmodel 的 `AutoCostModel + CEMSolver` 做路径规划。checkpoint-specific 的输入键、归一化和图像尺寸可以在 `offroad_sim/planning/stablewm.py` 内调整，agent、CLI、dashboard 和 runner 不需要为换模型硬改代码。
+
+规划运行时可以用 `python -m pip install -e .[lewm]` 安装；如果要按 upstream LE-WM 流程训练/评估，则使用更重的 `python -m pip install -e .[lewm-train]`。当前 bridge 会懒加载并缓存 `AutoCostModel + CEMSolver`，避免每个控制步重复读取 checkpoint。
 
 ### 数据与大文件
 
@@ -172,6 +180,12 @@ Run dataset replay with a switchable world-model agent:
 python -m offroad_sim.cli run --backend dataset_replay --dataset-root outputs\mock_orfd_phase3 --adapter orfd --agent world_model --world-model-type tiny_learned --world-model outputs\models\phase3_tiny_world_model --max-steps 3 --record
 ```
 
+Enable CEM path planning:
+
+```powershell
+python -m offroad_sim.cli run --backend dataset_replay --dataset-root outputs\mock_orfd_phase3 --adapter orfd --agent world_model --world-model-type tiny_learned --world-model outputs\models\phase3_tiny_world_model --planner world_model_cem --planner-horizon 4 --planner-samples 16 --planner-iterations 2 --max-steps 3 --record
+```
+
 Check BeamNG:
 
 ```powershell
@@ -213,7 +227,9 @@ The project reserves a `le_wm` world-model entry for the upstream repository:
 
 https://github.com/lucas-maes/le-wm
 
-OffroadSimBench does not vendor LE-WM. Install the upstream runtime, set `LE_WM_HOME` or provide a checkpoint, and add checkpoint-specific inference glue inside `offroad_sim/world_models/le_wm.py`. Agents, CLI commands, dashboard controls, and the runner do not need hard-coded model changes.
+OffroadSimBench does not vendor LE-WM. Install the upstream runtime, set `LE_WM_HOME` or provide a checkpoint, then use `--world-model-type le_wm --planner le_wm_cem` to run stable-worldmodel `AutoCostModel + CEMSolver` path planning. Checkpoint-specific input keys, normalization, and image size live in `offroad_sim/planning/stablewm.py`; agents, CLI commands, dashboard controls, and the runner do not need hard-coded model changes.
+
+Install the planning runtime with `python -m pip install -e .[lewm]`. For upstream LE-WM training/evaluation workflows, use the heavier `python -m pip install -e .[lewm-train]`. The bridge lazy-loads and caches `AutoCostModel + CEMSolver` instead of reloading the checkpoint on every control step.
 
 ### Data And Large Files
 

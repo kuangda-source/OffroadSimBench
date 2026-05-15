@@ -26,6 +26,12 @@ dev = [
 beamng = [
   "beamngpy",
 ]
+lewm = [
+  "stable-worldmodel>=0.0.6",
+]
+lewm-train = [
+  "stable-worldmodel[train,env]>=0.0.6",
+]
 
 [project.scripts]
 offroad-sim = "offroad_sim.cli:main"

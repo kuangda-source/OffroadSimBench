@@ -109,6 +109,7 @@ type CatalogState = {
   agents: CatalogItem[];
   backends: CatalogItem[];
   worldModels: CatalogItem[];
+  planners: CatalogItem[];
   episodes: EpisodeSummary[];
 };
 
@@ -119,6 +120,7 @@ const emptyCatalog: CatalogState = {
   agents: [],
   backends: [],
   worldModels: [],
+  planners: [],
   episodes: []
 };
 
@@ -131,6 +133,10 @@ type Copy = {
     scenario: string;
     agent: string;
     worldModel: string;
+    planner: string;
+    plannerHorizon: string;
+    plannerSamples: string;
+    plannerIterations: string;
     modelPath: string;
     datasetRoot: string;
     sequenceId: string;
@@ -193,6 +199,10 @@ const copyByLanguage: Record<Language, Copy> = {
       scenario: "Scenario",
       agent: "Agent",
       worldModel: "World model",
+      planner: "Planner",
+      plannerHorizon: "Plan horizon",
+      plannerSamples: "Samples",
+      plannerIterations: "Iterations",
       modelPath: "Model path",
       datasetRoot: "Dataset root",
       sequenceId: "Sequence",
@@ -265,6 +275,10 @@ const copyByLanguage: Record<Language, Copy> = {
       scenario: "场景",
       agent: "智能体",
       worldModel: "世界模型",
+      planner: "规划器",
+      plannerHorizon: "规划步长",
+      plannerSamples: "采样数",
+      plannerIterations: "迭代数",
       modelPath: "模型路径",
       datasetRoot: "数据集路径",
       sequenceId: "序列",
@@ -360,6 +374,10 @@ function App() {
     scenario: "forest_trail_001",
     agent: "rule_based",
     worldModel: "simple_kinematic",
+    planner: "",
+    plannerHorizon: 10,
+    plannerSamples: 128,
+    plannerIterations: 4,
     modelPath: "",
     datasetRoot: "",
     sequenceId: "",
@@ -383,13 +401,14 @@ function App() {
   const refresh = async () => {
     setError(null);
     try {
-      const [health, scenarios, vehicles, agents, backends, worldModels, episodes] = await Promise.all([
+      const [health, scenarios, vehicles, agents, backends, worldModels, planners, episodes] = await Promise.all([
         fetchJson<{ status: string }>("/health"),
         fetchJson<CatalogItem[]>("/scenarios"),
         fetchJson<CatalogItem[]>("/vehicles"),
         fetchJson<CatalogItem[]>("/agents"),
         fetchJson<CatalogItem[]>("/backends"),
         fetchJson<CatalogItem[]>("/world_models"),
+        fetchJson<CatalogItem[]>("/planners"),
         fetchJson<EpisodeSummary[]>("/episodes")
       ]);
       setCatalog({
@@ -399,6 +418,7 @@ function App() {
         agents,
         backends,
         worldModels,
+        planners,
         episodes
       });
     } catch (err) {
@@ -470,9 +490,15 @@ function App() {
       record: String(selected.record),
       record_arrays: "true",
       world_model_type: selected.worldModel,
+      planner_horizon: String(selected.plannerHorizon),
+      planner_samples: String(selected.plannerSamples),
+      planner_iterations: String(selected.plannerIterations),
       load_assets: String(selected.loadAssets),
       delay_ms: "35"
     });
+    if (selected.planner) {
+      params.set("planner", selected.planner);
+    }
     if (selected.modelPath.trim()) {
       params.set("world_model", selected.modelPath.trim());
     }
@@ -631,6 +657,59 @@ function App() {
               </option>
             ))}
           </select>
+        </label>
+
+        <label>
+          {copy.labels.planner}
+          <select
+            value={selected.planner}
+            onChange={(event) => setSelected({ ...selected, planner: event.target.value })}
+            disabled={selected.agent !== "world_model"}
+          >
+            <option value="">none</option>
+            {catalog.planners.map((item) => (
+              <option key={item.name} value={item.name} disabled={item.available === false}>
+                {item.available === false ? `${item.name} (${item.message ?? "unavailable"})` : item.name}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <div className="number-grid">
+          <label>
+            {copy.labels.plannerHorizon}
+            <input
+              type="number"
+              min={1}
+              max={200}
+              value={selected.plannerHorizon}
+              onChange={(event) => setSelected({ ...selected, plannerHorizon: Number(event.target.value) })}
+              disabled={selected.agent !== "world_model" || !selected.planner}
+            />
+          </label>
+          <label>
+            {copy.labels.plannerSamples}
+            <input
+              type="number"
+              min={4}
+              max={5000}
+              value={selected.plannerSamples}
+              onChange={(event) => setSelected({ ...selected, plannerSamples: Number(event.target.value) })}
+              disabled={selected.agent !== "world_model" || !selected.planner}
+            />
+          </label>
+        </div>
+
+        <label>
+          {copy.labels.plannerIterations}
+          <input
+            type="number"
+            min={1}
+            max={100}
+            value={selected.plannerIterations}
+            onChange={(event) => setSelected({ ...selected, plannerIterations: Number(event.target.value) })}
+            disabled={selected.agent !== "world_model" || !selected.planner}
+          />
         </label>
 
         <label>

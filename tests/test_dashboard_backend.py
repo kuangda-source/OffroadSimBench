@@ -89,6 +89,16 @@ def test_dashboard_beamng_status_endpoint() -> None:
     assert "beamngpy_available" in payload["details"]
 
 
+def test_dashboard_world_model_and_planner_catalogs() -> None:
+    client = TestClient(app)
+
+    world_models = client.get("/world_models").json()
+    planners = client.get("/planners").json()
+
+    assert any(item["name"] == "le_wm" for item in world_models)
+    assert any(item["name"] == "le_wm_cem" for item in planners)
+
+
 def _parse_sse(text: str) -> list[dict[str, object]]:
     events = []
     for chunk in text.strip().split("\n\n"):

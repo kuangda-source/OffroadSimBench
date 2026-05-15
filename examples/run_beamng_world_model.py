@@ -14,6 +14,10 @@ def main() -> int:
     parser.add_argument("--scenario", default="configs/scenarios/forest_trail_001.yaml")
     parser.add_argument("--world-model-type", default="tiny_learned")
     parser.add_argument("--world-model", default=None)
+    parser.add_argument("--planner", default=None)
+    parser.add_argument("--planner-horizon", type=int, default=10)
+    parser.add_argument("--planner-samples", type=int, default=64)
+    parser.add_argument("--planner-iterations", type=int, default=3)
     parser.add_argument("--max-steps", type=int, default=20)
     parser.add_argument("--record", action="store_true")
     parser.add_argument("--record-arrays", action="store_true")
@@ -29,6 +33,14 @@ def main() -> int:
         agent_options={
             "world_model_name": args.world_model_type,
             "world_model_path": args.world_model,
+            "planner_name": args.planner,
+            "planner_config": {
+                "horizon": args.planner_horizon,
+                "num_samples": args.planner_samples,
+                "iterations": args.planner_iterations,
+            }
+            if args.planner
+            else None,
         },
     )
     print(json.dumps(result.to_dict(), indent=2, default=str))

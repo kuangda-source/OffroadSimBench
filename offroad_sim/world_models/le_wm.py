@@ -34,13 +34,16 @@ class LeWMWorldModel(BaseWorldModel):
     @classmethod
     def runtime_status(cls, checkpoint_path: str | Path | None = None) -> dict[str, Any]:
         stable_worldmodel = importlib.util.find_spec("stable_worldmodel") is not None
+        torch_available = importlib.util.find_spec("torch") is not None
         source_dir = os.environ.get("LE_WM_HOME")
         checkpoint = Path(checkpoint_path) if checkpoint_path else None
         checkpoint_exists = checkpoint is not None and checkpoint.exists()
-        available = stable_worldmodel and (checkpoint is None or checkpoint_exists)
+        available = stable_worldmodel and torch_available and (checkpoint is None or checkpoint_exists)
         missing: list[str] = []
         if not stable_worldmodel:
             missing.append("stable_worldmodel package")
+        if not torch_available:
+            missing.append("torch package")
         if checkpoint is not None and not checkpoint_exists:
             missing.append("LE-WM checkpoint")
         return {
@@ -49,6 +52,7 @@ class LeWMWorldModel(BaseWorldModel):
             "message": "LE-WM runtime is ready." if available else "Missing " + ", ".join(missing) + ".",
             "details": {
                 "stable_worldmodel_available": stable_worldmodel,
+                "torch_available": torch_available,
                 "le_wm_home": source_dir,
                 "checkpoint_path": str(checkpoint) if checkpoint else None,
                 "checkpoint_exists": checkpoint_exists if checkpoint else None,
