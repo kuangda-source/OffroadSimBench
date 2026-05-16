@@ -104,3 +104,9 @@ class ScenarioConfig:
 def load_scenario_config(path: str | Path) -> ScenarioConfig:
     return ScenarioConfig.from_yaml(path)
 
+
+def scenario_metadata_section(scenario: ScenarioConfig, name: str) -> dict[str, Any]:
+    """Return a named metadata section as a plain dict."""
+
+    value = scenario.metadata.get(name, {})
+    return dict(value) if isinstance(value, dict) else {}
