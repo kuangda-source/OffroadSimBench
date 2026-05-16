@@ -120,6 +120,8 @@ def test_beamng_backend_uses_visible_scenario_metadata(fake_beamngpy: SimpleName
 
     assert observation.info["backend"] == "beamng"
     assert fake_beamngpy.scenario_level == "gridmap_v2"
+    assert fake_beamngpy.scenario_name.startswith("beamng_visible_autodrive_")
+    assert fake_beamngpy.scenario_name != "beamng_visible_autodrive"
     assert fake_beamngpy.spawned_vehicle_model == "pickup"
     assert fake_beamngpy.spawned_pos == (0.0, 0.0, 0.5)
     assert fake_beamngpy.camera_request

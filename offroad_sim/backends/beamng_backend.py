@@ -10,6 +10,7 @@ import importlib
 import importlib.util
 import math
 import os
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
@@ -122,7 +123,7 @@ class BeamNGBackend(OffroadSimBackend):
         Scenario = getattr(beamngpy, "Scenario")
         level = self._beamng_level_for_config(scenario_config)
         self._active_level = level
-        scenario_name = self._read_config(scenario_config, "scenario_id", self.connection.scenario_name)
+        scenario_name = self._beamng_scenario_name_for_config(scenario_config)
         self._scenario = Scenario(level, scenario_name)
 
     def spawn_vehicle(self, vehicle_config: VehicleConfig | None = None) -> None:
@@ -382,6 +383,11 @@ class BeamNGBackend(OffroadSimBackend):
             value = metadata.get("beamng", {})
             return dict(value) if isinstance(value, Mapping) else {}
         return {}
+
+    def _beamng_scenario_name_for_config(self, config: Any) -> str:
+        beamng_options = self._beamng_metadata(config)
+        base_name = str(beamng_options.get("scenario_name") or self._read_config(config, "scenario_id", self.connection.scenario_name))
+        return f"{base_name}_{uuid.uuid4().hex[:8]}"
 
     def _beamng_vehicle_model_for_config(self, config: Any, vehicle_config: VehicleConfig | None) -> str:
         beamng_options = self._beamng_metadata(config)
