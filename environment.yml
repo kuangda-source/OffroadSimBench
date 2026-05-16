@@ -8,10 +8,10 @@ dependencies:
   - pyyaml>=6.0
   - pytest>=8.0
   - rich>=13.0
-  - fastapi>=0.115
-  - uvicorn>=0.30
   - pip:
       - -e .
-      - httpx>=0.27
       - beamngpy
       - PySide6>=6.7
+      - torch==2.5.1
+      - torchvision==0.20.1
+      - stable-worldmodel>=0.0.6

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import math
+import subprocess
+import sys
 from dataclasses import asdict, dataclass, is_dataclass
 from pathlib import Path
 from typing import Any
@@ -147,6 +149,49 @@ def train_tiny_world_model(
     }
 
 
+def export_lewm_hdf5(
+    dataset_root: str,
+    output_hdf5: str,
+    *,
+    adapter: str = "",
+    sequence_id: str = "",
+    image_size: int = 64,
+) -> dict[str, Any]:
+    if not dataset_root:
+        raise ValueError("Dataset root is required.")
+    if not output_hdf5:
+        raise ValueError("Output HDF5 path is required.")
+    command = [
+        sys.executable,
+        str(ROOT / "scripts" / "export_lewm_hdf5.py"),
+        dataset_root,
+        output_hdf5,
+        "--image-size",
+        str(image_size),
+    ]
+    if adapter:
+        command.extend(["--adapter", adapter])
+    if sequence_id:
+        command.extend(["--sequence-id", sequence_id])
+    return _run_json_command(command)
+
+
+def train_lewm_cost_model(input_hdf5: str, output_dir: str) -> dict[str, Any]:
+    if not input_hdf5:
+        raise ValueError("Input HDF5 path is required.")
+    if not output_dir:
+        raise ValueError("Output model directory is required.")
+    return _run_json_command(
+        [
+            sys.executable,
+            str(ROOT / "scripts" / "train_lewm_cost_model.py"),
+            input_hdf5,
+            "--output",
+            output_dir,
+        ]
+    )
+
+
 def backend_options(request: RunRequest) -> dict[str, Any]:
     options: dict[str, Any] = {}
     if request.backend == "dataset_replay":
@@ -278,6 +323,18 @@ def _read_json(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _run_json_command(command: list[str]) -> dict[str, Any]:
+    completed = subprocess.run(command, cwd=ROOT, text=True, capture_output=True, check=False)
+    if completed.returncode != 0:
+        raise RuntimeError((completed.stderr or completed.stdout or "command failed").strip())
+    output = completed.stdout.strip()
+    json_start = output.find("{")
+    if json_start < 0:
+        raise RuntimeError(f"Command did not emit JSON: {' '.join(command)}")
+    payload, _ = json.JSONDecoder().raw_decode(output[json_start:])
+    return payload
 
 
 def _float_or_nan(value: Any) -> float:

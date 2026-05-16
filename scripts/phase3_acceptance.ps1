@@ -22,6 +22,8 @@ if (-not $OrfdRoot) {
     $OrfdRoot = Join-Path $RepoRoot "outputs\mock_orfd_phase3"
 }
 $ModelOutput = Join-Path $RepoRoot "outputs\models\phase3_tiny_world_model"
+$StableWMOutput = Join-Path $RepoRoot "outputs\stablewm\phase3_orfd.h5"
+$LeWMOutput = Join-Path $RepoRoot "outputs\models\phase3_lewm_cost"
 
 function Invoke-AcceptanceStep {
     param(
@@ -63,23 +65,31 @@ Invoke-AcceptanceStep "Dataset replay with CEM path planner" {
     & $Python -m offroad_sim.cli run --backend dataset_replay --dataset-root $OrfdRoot --adapter orfd --agent world_model --world-model-type tiny_learned --world-model $ModelOutput --planner world_model_cem --planner-horizon 4 --planner-samples 16 --planner-iterations 2 --max-steps 3 --record --json
 }
 
+Invoke-AcceptanceStep "Export StableWM HDF5" {
+    & $Python scripts\export_lewm_hdf5.py $OrfdRoot $StableWMOutput --adapter orfd --image-size 32
+}
+
+Invoke-AcceptanceStep "Train LE-WM cost checkpoint" {
+    & $Python scripts\train_lewm_cost_model.py $StableWMOutput --output $LeWMOutput
+}
+
+Invoke-AcceptanceStep "Dataset replay with LE-WM CEM planner" {
+    & $Python -m offroad_sim.cli run --backend dataset_replay --dataset-root $OrfdRoot --adapter orfd --agent world_model --world-model-type le_wm --world-model $LeWMOutput --planner le_wm_cem --planner-horizon 4 --planner-samples 16 --planner-iterations 2 --max-steps 3 --record --json
+}
+
 Invoke-AcceptanceStep "BeamNG runtime status" {
     & $Python examples\check_beamng_runtime.py
 }
 
-Invoke-AcceptanceStep "Frontend production build" {
-    Push-Location (Join-Path $RepoRoot "dashboard\frontend")
-    try {
-        npm run build
-    }
-    finally {
-        Pop-Location
-    }
+Invoke-AcceptanceStep "Desktop GUI smoke" {
+    $env:QT_QPA_PLATFORM = "offscreen"
+    & $Python -c "from PySide6.QtWidgets import QApplication; from desktop_app.qt_main import MainWindow; app=QApplication([]); w=MainWindow(); print(w.windowTitle())"
+    Remove-Item Env:\QT_QPA_PLATFORM -ErrorAction SilentlyContinue
 }
 
 if ($BeamNGConnect) {
     Invoke-AcceptanceStep "BeamNG world-model connection run" {
-        & $Python examples\run_beamng_world_model.py --scenario configs\scenarios\beamng_orfd_eval.yaml --world-model-type tiny_learned --world-model $ModelOutput --planner world_model_cem --max-steps 5 --record
+        & $Python examples\run_beamng_world_model.py --scenario configs\scenarios\beamng_orfd_eval.yaml --world-model-type le_wm --world-model $LeWMOutput --planner le_wm_cem --planner-horizon 4 --planner-samples 16 --planner-iterations 2 --max-steps 5 --record
     }
 }
 

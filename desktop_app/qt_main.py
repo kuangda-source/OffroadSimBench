@@ -238,6 +238,8 @@ class MainWindow(QMainWindow):
         self.adapter_edit.setPlaceholderText("orfd / 留空自动识别")
         self.model_path_edit = QLineEdit()
         self.model_path_edit.setPlaceholderText("outputs\\models\\phase3_tiny_world_model")
+        self.stablewm_hdf5_edit = QLineEdit()
+        self.stablewm_hdf5_edit.setPlaceholderText("outputs\\stablewm\\orfd_or_beamng.h5")
 
         layout.addWidget(self._group("运行配置", [
             self._field("Backend", self.backend_combo),
@@ -256,6 +258,7 @@ class MainWindow(QMainWindow):
             self._field("Sequence", self.sequence_combo),
             self._field("Adapter", self.adapter_edit),
             self._field("Model path", self._with_button(self.model_path_edit, model_browse)),
+            self._field("StableWM HDF5", self.stablewm_hdf5_edit),
         ]))
 
         self.max_steps_spin = self._spin(1, 100000, 120)
@@ -285,12 +288,16 @@ class MainWindow(QMainWindow):
         inspect_button.clicked.connect(self.inspect_dataset)
         train_button = QPushButton("训练 tiny world model")
         train_button.clicked.connect(self.train_tiny_model)
+        export_hdf5_button = QPushButton("导出 StableWM HDF5")
+        export_hdf5_button.clicked.connect(self.export_stablewm_hdf5)
+        train_lewm_button = QPushButton("训练 LE-WM cost model")
+        train_lewm_button.clicked.connect(self.train_lewm_cost_model)
         beamng_button = QPushButton("检查 BeamNG")
         beamng_button.clicked.connect(self.check_beamng)
         stop_button = QPushButton("停止 / 暂停")
         stop_button.setEnabled(False)
         stop_button.setToolTip("运行中断接口未完成")
-        layout.addWidget(self._group("动作", [run_button, inspect_button, train_button, beamng_button, stop_button]))
+        layout.addWidget(self._group("动作", [run_button, inspect_button, train_button, export_hdf5_button, train_lewm_button, beamng_button, stop_button]))
         layout.addStretch(1)
         return scroll
 
@@ -408,6 +415,28 @@ class MainWindow(QMainWindow):
             "training failed",
         )
 
+    def export_stablewm_hdf5(self) -> None:
+        root = self.dataset_root_edit.text().strip()
+        output = self.stablewm_hdf5_edit.text().strip() or str(services.ROOT / "outputs" / "stablewm" / "gui_export.h5")
+        adapter = self.adapter_edit.text().strip()
+        sequence_id = self.sequence_combo.currentText().strip()
+        self.log(f"导出 StableWM HDF5 -> {output}")
+        self._run_task(
+            lambda: services.export_lewm_hdf5(root, output, adapter=adapter, sequence_id=sequence_id, image_size=64),
+            self._hdf5_exported,
+            "stablewm export failed",
+        )
+
+    def train_lewm_cost_model(self) -> None:
+        hdf5_path = self.stablewm_hdf5_edit.text().strip()
+        output = self.model_path_edit.text().strip() or str(services.ROOT / "outputs" / "models" / "gui_lewm_cost")
+        self.log(f"训练 LE-WM cost model -> {output}")
+        self._run_task(
+            lambda: services.train_lewm_cost_model(hdf5_path, output),
+            self._training_finished,
+            "lewm training failed",
+        )
+
     def check_beamng(self) -> None:
         status = services.beamng_status()
         self.log(f"BeamNG: {status.get('message', services.NAN_TEXT)}")
@@ -441,6 +470,10 @@ class MainWindow(QMainWindow):
         self.model_path_edit.setText(str(payload.get("output_dir", "")))
         self.log(f"模型训练完成: {payload.get('model_path', services.NAN_TEXT)}")
         self.refresh_catalogs()
+
+    def _hdf5_exported(self, payload: dict[str, Any]) -> None:
+        self.stablewm_hdf5_edit.setText(str(payload.get("output_hdf5", "")))
+        self.log(f"HDF5 导出完成: {payload.get('output_hdf5', services.NAN_TEXT)}")
 
     def _update_metrics(self, metrics: dict[str, Any]) -> None:
         diagnostics = metrics.get("agent_diagnostics", {}) if isinstance(metrics.get("agent_diagnostics"), dict) else {}

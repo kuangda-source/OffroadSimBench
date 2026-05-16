@@ -6,7 +6,7 @@
 
 ## 1. 阶段目标
 
-第一阶段的目标是把 OffroadSimBench 从项目骨架推进到一个可以本地运行、可测试、可扩展的仿真评测基座。重点不是一次性完成所有真实仿真器能力，而是把核心抽象、配置、数据集接入、轻量训练环境、世界模型接口、dashboard 和 CLI 打通，让后续 BeamNG/UE5 接入有稳定落点。
+第一阶段的目标是把 OffroadSimBench 从项目骨架推进到一个可以本地运行、可测试、可扩展的仿真评测基座。重点不是一次性完成所有真实仿真器能力，而是把核心抽象、配置、数据集接入、轻量训练环境、世界模型接口、GUI 和 CLI 打通，让后续 BeamNG/UE5 接入有稳定落点。
 
 本阶段已经完成：
 
@@ -19,7 +19,7 @@
 - UE5 TCP JSON bridge 与 mock server。
 - 世界模型接口、`SimpleKinematicWorldModel` 和 `WorldModelAgent`。
 - Gymnasium wrapper。
-- 共享 episode runner、CLI、FastAPI dashboard 后端和 React/Vite dashboard 前端。
+- 共享 episode runner、CLI 和本地 GUI 入口。
 - 第一阶段测试与 smoke test 矩阵。
 
 ## 2. 架构验收
@@ -38,7 +38,7 @@
 | 验收项 | 命令/动作 | 结果 |
 | --- | --- | --- |
 | Python 单元测试 | `python -m pytest -q` | 通过，`37 passed in 2.13s` |
-| 前端构建 | `npm run build` | 通过，TypeScript + Vite build 成功 |
+| GUI smoke | `python -m desktop_app.main` | PySide6 桌面入口可启动 |
 | 后端 registry | `python examples/check_backends.py` | 通过，`gym_heightmap`、`dataset_replay`、`ue5` 可用 |
 | BeamNG 状态 | registry status | 接口可用，真实 runtime 未配置，提示缺 `beamngpy` 和 `BNG_HOME` |
 | CLI catalog | `python -m offroad_sim.cli list --kind all` | 通过，列出 scenario、vehicle、agent、backend |
@@ -98,8 +98,7 @@
 ### Dashboard / CLI
 
 - `offroad-sim` CLI 支持 `list`、`run`、`replay`。
-- FastAPI dashboard 后端支持 catalog、backend status、episode run、episode/metrics 查询。
-- React/Vite dashboard 前端可构建，具备实验控制、指标展示、轨迹预览和历史 episode 列表。
+- 桌面 GUI 支持 catalog、backend status、episode run、episode/metrics 查询。
 
 ## 6. 已知限制
 
@@ -113,7 +112,7 @@
 
 第一阶段通过验收。
 
-当前仓库已经具备一个稳定的本地 benchmark 闭环：配置 -> 后端 -> agent -> step -> metrics -> record -> replay -> CLI/dashboard。多后端组织方式已经成型，数据集动态接入方式已经成型，世界模型和 RL 的入口也已经放好。
+当前仓库已经具备一个稳定的本地 benchmark 闭环：配置 -> 后端 -> agent -> step -> metrics -> record -> replay -> CLI/GUI。多后端组织方式已经成型，数据集动态接入方式已经成型，世界模型和 RL 的入口也已经放好。
 
 下一阶段建议优先推进 BeamNG 真实 runtime 接入：
 

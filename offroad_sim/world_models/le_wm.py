@@ -21,7 +21,7 @@ class LeWMWorldModel(BaseWorldModel):
     The implementation deliberately keeps lucas-maes/le-wm as an optional
     external runtime. OffroadSimBench owns the stable selection and status
     interface; checkpoint-specific inference glue can be added here without
-    changing agents, CLIs, or dashboard code.
+    changing agents, CLIs, or GUI code.
     """
 
     model_type = "le_wm"

@@ -1,8 +1,7 @@
 # Desktop GUI
 
-The first desktop GUI lives in `desktop_app/` and uses PySide6. It calls the
-same local Python services as the CLI and acceptance scripts; it does not depend
-on the old web dashboard API.
+The desktop GUI lives in `desktop_app/` and uses PySide6. It calls the same
+local Python services as the CLI and acceptance scripts.
 
 ## Run
 

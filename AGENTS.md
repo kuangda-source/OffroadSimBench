@@ -20,7 +20,7 @@ The platform should support:
 - future UE5 adapter;
 - episode recording;
 - evaluation metrics;
-- local dashboard.
+- local PySide6 desktop GUI.
 
 ## Development Principles
 
@@ -45,12 +45,11 @@ python examples/run_gym_demo.py --agent rule_based --max-steps 1200
 python -m offroad_sim.cli list
 ```
 
-After frontend changes, run:
+After desktop GUI changes, run:
 
 ```bash
-npm install
-npm run dev
-npm run build
+python -m pytest tests/test_desktop_services.py -q
+QT_QPA_PLATFORM=offscreen python -c "from PySide6.QtWidgets import QApplication; from desktop_app.qt_main import MainWindow; app=QApplication([]); w=MainWindow(); print(w.windowTitle())"
 ```
 
 ## Expected Repository Structure
@@ -72,9 +71,7 @@ offroad-sim-bench/
   configs/
     scenarios/
     vehicles/
-  dashboard/
-    backend/
-    frontend/
+  desktop_app/
   docs/
   examples/
   scripts/

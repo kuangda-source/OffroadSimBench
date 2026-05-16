@@ -2,7 +2,7 @@
 
 from offroad_sim.evaluation.metrics import MetricsTracker
 
-__all__ = ["EpisodeRunResult", "MetricsTracker", "run_episode", "stream_episode_events"]
+__all__ = ["EpisodeRunResult", "MetricsTracker", "run_episode"]
 
 
 def __getattr__(name: str):
@@ -10,8 +10,4 @@ def __getattr__(name: str):
         from offroad_sim.evaluation.runner import EpisodeRunResult, run_episode
 
         return {"EpisodeRunResult": EpisodeRunResult, "run_episode": run_episode}[name]
-    if name == "stream_episode_events":
-        from offroad_sim.evaluation.streaming import stream_episode_events
-
-        return stream_episode_events
     raise AttributeError(name)

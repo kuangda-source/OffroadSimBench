@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from unittest.mock import Mock, patch
 
 from desktop_app import services
 
@@ -48,3 +49,25 @@ def test_desktop_display_value_uses_nan_for_missing_values() -> None:
     assert services.display_value(math.nan) == "NaN"
     assert services.display_value(None) == "NaN"
     assert services.display_value(False) == "false"
+
+
+def test_desktop_lewm_command_services_require_paths() -> None:
+    try:
+        services.export_lewm_hdf5("", "out.h5")
+    except ValueError as exc:
+        assert "Dataset root" in str(exc)
+    else:
+        raise AssertionError("Expected dataset root validation.")
+
+    try:
+        services.train_lewm_cost_model("", "out")
+    except ValueError as exc:
+        assert "Input HDF5" in str(exc)
+    else:
+        raise AssertionError("Expected HDF5 path validation.")
+
+
+def test_run_json_command_ignores_surrounding_logs() -> None:
+    completed = Mock(returncode=0, stdout="log before\n{\"ok\": true}\nlog after", stderr="")
+    with patch("desktop_app.services.subprocess.run", return_value=completed):
+        assert services._run_json_command(["python", "script.py"]) == {"ok": True}

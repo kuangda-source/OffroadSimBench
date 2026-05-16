@@ -48,7 +48,7 @@ The backend already exposes the shared simulator methods:
 Without `beamngpy` or `BNG_HOME`, the backend reports an unavailable status and
 raises a clear `BeamNGUnavailableError` only when a real connection is attempted.
 With both `beamngpy` and a detected executable present, the backend status becomes
-ready through the shared backend registry and the dashboard `/beamng/status`
+ready through the shared backend registry and desktop GUI status panel
 endpoint.
 
 ## Next BeamNG Pass

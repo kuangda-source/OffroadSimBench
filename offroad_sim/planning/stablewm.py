@@ -9,6 +9,7 @@ import numpy as np
 
 from offroad_sim.core import Action, Observation, VehicleState
 from offroad_sim.planning.types import ActionPlanner, PlanningResult
+from offroad_sim.utils.runtime_env import prepare_stable_worldmodel_runtime
 from offroad_sim.world_models import BaseWorldModel
 
 
@@ -95,6 +96,7 @@ class LeWMCEMPlanner(ActionPlanner):
         if self._solver is not None and self._torch is not None and self._loaded_checkpoint == checkpoint_key:
             return self._solver, self._torch
 
+        prepare_stable_worldmodel_runtime()
         try:
             import torch
             from gymnasium.spaces import Box
@@ -134,9 +136,11 @@ class LeWMCEMPlanner(ActionPlanner):
             [[[observation.vehicle_state.x, observation.vehicle_state.y, observation.vehicle_state.yaw, observation.vehicle_state.speed]]],
             dtype=np.float32,
         )
+        goal_state = np.asarray([[[observation.goal[0], observation.goal[1]]]], dtype=np.float32)
         return {
             "pixels": torch.from_numpy(pixels[None, None, ...]).float(),
             "goal": torch.from_numpy(goal[None, None, ...]).float(),
+            "goal_state": torch.from_numpy(goal_state).float(),
             "state": torch.from_numpy(state).float(),
         }
 

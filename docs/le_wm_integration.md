@@ -17,7 +17,9 @@ WorldModelAgent
 For local smoke tests without a heavy LE-WM checkpoint, use:
 
 ```powershell
-python -m offroad_sim.cli run --backend dataset_replay --dataset-root outputs\mock_orfd_phase3 --adapter orfd --agent world_model --world-model-type tiny_learned --world-model outputs\models\phase3_tiny_world_model --planner world_model_cem --planner-horizon 4 --planner-samples 16 --planner-iterations 2 --max-steps 3 --record
+python scripts\export_lewm_hdf5.py outputs\mock_orfd_phase3 outputs\stablewm\mock_orfd_phase3.h5 --adapter orfd --image-size 32
+python scripts\train_lewm_cost_model.py outputs\stablewm\mock_orfd_phase3.h5 --output outputs\models\lewm_cost_smoke
+python -m offroad_sim.cli run --backend dataset_replay --dataset-root outputs\mock_orfd_phase3 --adapter orfd --agent world_model --world-model-type le_wm --world-model outputs\models\lewm_cost_smoke --planner le_wm_cem --planner-horizon 4 --planner-samples 16 --planner-iterations 2 --max-steps 3 --record
 ```
 
 For a real LE-WM checkpoint:
@@ -38,6 +40,12 @@ python scripts\export_lewm_hdf5.py D:\datasets\ORFD D:\stablewm-data\orfd.h5 --a
 The export writes top-level `ep_len`, `ep_offset`, `state`, `action`,
 `timestamp`, `goal`, and optional `pixels` arrays, matching stable-worldmodel's
 `HDF5Dataset` boundary.
+
+Recorded BeamNG episodes can be exported with:
+
+```powershell
+python scripts\export_episodes_hdf5.py outputs\episodes\beamng_orfd_eval_world_model_YYYYMMDDTHHMMSSZ outputs\stablewm\beamng_lewm_smoke.h5
+```
 
 ## Required External Runtime
 
@@ -66,6 +74,7 @@ python -m pip install -e .[lewm-train]
 
 - `pixels`: current observation image, shape `(1, 1, H, W, 3)`
 - `goal`: goal image, shape `(1, 1, H, W, 3)`
+- `goal_state`: numeric target, shape `(1, 1, 2)`
 - `state`: compact vehicle state, shape `(1, 1, 4)`
 
 Checkpoint-specific preprocessing should be added inside
