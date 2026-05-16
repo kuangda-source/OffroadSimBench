@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from offroad_sim.agents import make_agent
 from offroad_sim.agents.route_world_model import RouteWorldModelAgent
-from offroad_sim.core import Observation, VehicleState
+from offroad_sim.core import Action, Observation, VehicleState
 
 
 def observation_at(x: float, y: float, *, goal: tuple[float, float] = (10.0, 0.0)) -> Observation:
@@ -47,6 +47,30 @@ def test_route_world_model_agent_can_read_route_from_observation_info() -> None:
 
     assert action.throttle > 0.0
     assert agent.diagnostics()["route_length"] == 3
+
+
+def test_route_world_model_agent_keeps_visible_demo_moving_when_planner_stalls() -> None:
+    class StallingPlanner:
+        def reset(self, scenario_info) -> None:
+            return None
+
+        def act(self, obs: Observation) -> Action:
+            return Action(steer=0.2, throttle=0.0, brake=1.0)
+
+        def diagnostics(self) -> dict[str, str]:
+            return {"planner": "fake_stalling"}
+
+        def close(self) -> None:
+            return None
+
+    agent = RouteWorldModelAgent(route=[(0.0, 0.0), (20.0, 0.0)], world_model_name="simple_kinematic")
+    agent.inner = StallingPlanner()
+
+    action = agent.act(observation_at(0.0, 0.0))
+
+    assert action.throttle >= 0.35
+    assert action.brake <= 0.15
+    assert agent.diagnostics()["progress_guard"] is True
 
 
 def test_route_world_model_agent_is_registered() -> None:

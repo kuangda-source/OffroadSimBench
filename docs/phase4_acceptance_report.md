@@ -50,20 +50,24 @@ python scripts\run_beamng_visible_demo.py `
 - BeamNG connected: `true`
 - BeamNG level: `gridmap_v2`
 - BeamNG graphics backend: `Vulkan`
+- BeamNG drive mode: `ai_line`
 - Agent: `route_world_model`
 - World model: `le_wm`
 - Planner: `le_wm_cem`
 - Steps: `80`
 - Route waypoints: `4`
-- Distance traveled: `238.49808425341425m`
-- Episode: `beamng_visible_autodrive_route_world_model_20260516T143734Z`
+- Distance traveled: `52.56447844813956m`
+- Horizontal distance traveled: `52.557141703825124m`
+- Max vertical deviation: `0.34619452306068865m`
+- Episode: `beamng_visible_autodrive_route_world_model_20260516T174129Z`
 - Episode path:
-  `D:\programs\OffroadSimBench\outputs\episodes\beamng_visible_autodrive_route_world_model_20260516T143734Z`
+  `D:\programs\OffroadSimBench\outputs\episodes\beamng_visible_autodrive_route_world_model_20260516T174129Z`
 
 ## Known Limits
 
-- The current accepted visual demo uses a stock BeamNG level. Full ORFD terrain
-  reconstruction and packaging remains a later map-building task.
+- The current accepted visual demo uses a stock BeamNG level and BeamNG-native
+  `ai_line` route execution. Full ORFD terrain reconstruction and packaging
+  remains a later map-building task.
 - BeamNG sensor attachment is still best-effort across beamngpy versions. The
   visible driving loop relies on BeamNG vehicle pose and dynamics.
 - The LE-WM checkpoint used here is the local stable-worldmodel-compatible cost

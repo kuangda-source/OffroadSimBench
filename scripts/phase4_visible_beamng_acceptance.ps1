@@ -84,7 +84,8 @@ $payload = $text.Substring($start, $end - $start + 1) | ConvertFrom-Json
 $metrics = $payload.metrics
 if (-not $metrics.connected) { throw "BeamNG did not report connected=true." }
 if ([int]$payload.steps -lt 60) { throw "Expected at least 60 steps, got $($payload.steps)." }
-if ([double]$metrics.distance_traveled -lt 10.0) { throw "Expected at least 10m traveled, got $($metrics.distance_traveled)." }
+if ([double]$metrics.horizontal_distance_traveled -lt 10.0) { throw "Expected at least 10m horizontal travel, got $($metrics.horizontal_distance_traveled)." }
+if ([double]$metrics.max_abs_vertical_deviation -gt 8.0) { throw "Vehicle left the drivable surface vertically by $($metrics.max_abs_vertical_deviation)m." }
 if ([string]$metrics.level -ne "gridmap_v2") { throw "Expected gridmap_v2 level, got $($metrics.level)." }
 if (-not (Test-Path -LiteralPath $payload.episode_path)) { throw "Episode path does not exist: $($payload.episode_path)" }
 

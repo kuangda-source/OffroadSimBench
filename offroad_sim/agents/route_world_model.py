@@ -7,6 +7,7 @@ from dataclasses import replace
 from typing import Any
 
 from offroad_sim.agents.base import OffroadAgent
+from offroad_sim.agents.basic import RuleBasedGoalAgent
 from offroad_sim.agents.world_model import WorldModelAgent
 from offroad_sim.core import Action, Observation
 
@@ -25,6 +26,7 @@ class RouteWorldModelAgent(OffroadAgent):
         self.cursor = 0
         world_model_kwargs.pop("seed", None)
         self.inner = WorldModelAgent(**world_model_kwargs)
+        self.progress_agent = RuleBasedGoalAgent(cruise_throttle=0.55)
         self._last_diagnostics: dict[str, Any] = {}
 
     def reset(self, scenario_info: Any) -> None:
@@ -43,12 +45,15 @@ class RouteWorldModelAgent(OffroadAgent):
         target = self._target_for(obs)
         routed_obs = replace(obs, goal=target) if target is not None else obs
         action = self.inner.act(routed_obs)
+        reference_action = self.progress_agent.act(routed_obs)
+        action, progress_guard = self._apply_progress_guard(action, reference_action, routed_obs)
         inner_diagnostics = self.inner.diagnostics()
         self._last_diagnostics = {
             **inner_diagnostics,
             "route_length": len(self.route),
             "target_waypoint_index": self.cursor if self.route else None,
             "target_waypoint": list(target) if target is not None else None,
+            "progress_guard": progress_guard,
         }
         return action
 
@@ -57,6 +62,20 @@ class RouteWorldModelAgent(OffroadAgent):
 
     def close(self) -> None:
         self.inner.close()
+
+    def _apply_progress_guard(self, action: Action, reference_action: Action, obs: Observation) -> tuple[Action, bool]:
+        if obs.vehicle_state.speed > 2.0:
+            return action, False
+        if action.throttle >= 0.15 and action.brake <= 0.45:
+            return action, False
+        return (
+            Action(
+                steer=reference_action.steer,
+                throttle=max(action.throttle, min(reference_action.throttle, 0.45)),
+                brake=min(max(action.brake, 0.0), 0.15),
+            ),
+            True,
+        )
 
     def _target_for(self, obs: Observation) -> tuple[float, float] | None:
         if not self.route:

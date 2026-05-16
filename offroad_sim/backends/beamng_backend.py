@@ -26,6 +26,10 @@ class BeamNGUnavailableError(RuntimeError):
     """Raised when the optional BeamNG runtime cannot be used."""
 
 
+def _clamp(value: float, lower: float, upper: float) -> float:
+    return max(lower, min(upper, value))
+
+
 @dataclass(slots=True)
 class BeamNGConnectionConfig:
     """Connection and launch options for BeamNG.tech."""
@@ -66,9 +70,14 @@ class BeamNGBackend(OffroadSimBackend):
         self._connected = False
         self._active_level = self.connection.level
         self._active_steps_per_action = self.connection.steps_per_action
+        self._active_drive_mode = "manual"
         self._route: list[tuple[float, float]] = []
         self._distance_traveled = 0.0
+        self._horizontal_distance_traveled = 0.0
         self._last_position: tuple[float, float, float] | None = None
+        self._initial_z: float | None = None
+        self._min_z: float | None = None
+        self._max_z: float | None = None
         self._collision_count = 0
         self._last_damage = 0.0
         if auto_connect:
@@ -170,9 +179,14 @@ class BeamNGBackend(OffroadSimBackend):
         self._scenario_config = scenario_config
         beamng_options = self._beamng_metadata(scenario_config)
         self._active_steps_per_action = int(beamng_options.get("steps_per_action", self.connection.steps_per_action))
+        self._active_drive_mode = str(beamng_options.get("drive_mode", "manual")).lower()
         self._route = self._beamng_route_for_config(scenario_config)
         self._distance_traveled = 0.0
+        self._horizontal_distance_traveled = 0.0
         self._last_position = None
+        self._initial_z = None
+        self._min_z = None
+        self._max_z = None
         self._collision_count = 0
         self._last_damage = 0.0
         if not self._connected:
@@ -195,6 +209,7 @@ class BeamNGBackend(OffroadSimBackend):
         elif hasattr(self._bng, "start_scenario"):
             self._bng.start_scenario()
         self._configure_visible_helpers()
+        self._configure_drive_mode()
 
         self._step_count = 0
         self._last_observation = self._build_placeholder_observation(scenario_config)
@@ -203,18 +218,19 @@ class BeamNGBackend(OffroadSimBackend):
 
     def step(self, action: Action) -> StepResult:
         self._ensure_connected()
-        if self._vehicle is not None and hasattr(self._vehicle, "control"):
+        command = self._normalized_action(action)
+        if self._active_drive_mode != "ai_line" and self._vehicle is not None and hasattr(self._vehicle, "control"):
             try:
                 self._vehicle.control(
-                    throttle=action.throttle,
-                    steering=action.steer,
-                    brake=action.brake,
+                    throttle=command.throttle,
+                    steering=command.steer,
+                    brake=command.brake,
                     parkingbrake=0.0,
                     clutch=0.0,
                     gear=1,
                 )
             except TypeError:
-                self._vehicle.control(throttle=action.throttle, steering=action.steer, brake=action.brake)
+                self._vehicle.control(throttle=command.throttle, steering=command.steer, brake=command.brake)
         if self._bng is not None and hasattr(self._bng, "step"):
             self._bng.step(self._active_steps_per_action)
 
@@ -249,7 +265,13 @@ class BeamNGBackend(OffroadSimBackend):
             "sensor_count": len(self._sensors),
             "sensor_ids": sorted(self._sensors),
             "route_waypoint_count": len(self._route),
+            "drive_mode": self._active_drive_mode,
             "distance_traveled": self._distance_traveled,
+            "horizontal_distance_traveled": self._horizontal_distance_traveled,
+            "initial_z": self._initial_z,
+            "min_z": self._min_z,
+            "max_z": self._max_z,
+            "max_abs_vertical_deviation": self._max_abs_vertical_deviation(),
             "collision_count": self._collision_count,
             "damage": self._last_damage,
         }
@@ -268,9 +290,14 @@ class BeamNGBackend(OffroadSimBackend):
         self._step_count = 0
         self._active_level = self.connection.level
         self._active_steps_per_action = self.connection.steps_per_action
+        self._active_drive_mode = "manual"
         self._route = []
         self._distance_traveled = 0.0
+        self._horizontal_distance_traveled = 0.0
         self._last_position = None
+        self._initial_z = None
+        self._min_z = None
+        self._max_z = None
         self._collision_count = 0
         self._last_damage = 0.0
 
@@ -339,7 +366,12 @@ class BeamNGBackend(OffroadSimBackend):
         if vehicle_state is None and self._last_observation is not None:
             vehicle_state = self._last_observation.vehicle_state
         if vehicle_state is None:
-            vehicle_state = VehicleState(x=float(start[0]), y=float(start[1]))
+            spawn_pos, _ = self._beamng_vehicle_start_for_config(scenario_config)
+            vehicle_state = VehicleState(
+                x=float(spawn_pos[0]) if spawn_pos else float(start[0]),
+                y=float(spawn_pos[1]) if spawn_pos else float(start[1]),
+                z=float(spawn_pos[2]) if spawn_pos and len(spawn_pos) >= 3 else 0.0,
+            )
         sensor_payload = self._sensor_cache or self._poll_sensors()
         front_rgb = self._sensor_value(sensor_payload, ("front_camera", "colour", "color", "annotation"))
         depth = self._sensor_value(sensor_payload, ("front_camera", "depth"))
@@ -506,6 +538,26 @@ class BeamNGBackend(OffroadSimBackend):
         except Exception:
             pass
 
+    def _configure_drive_mode(self) -> None:
+        if self._active_drive_mode != "ai_line" or self._vehicle is None or not self._route:
+            return
+        beamng_options = self._beamng_metadata(self._scenario_config)
+        speed = float(beamng_options.get("ai_line_speed", 8.0))
+        spawn_pos, _ = self._beamng_vehicle_start_for_config(self._scenario_config)
+        line = [
+            {"pos": (float(x), float(y), float(spawn_pos[2])), "speed": speed}
+            for x, y in self._route
+        ]
+        set_line = getattr(self._vehicle, "ai_set_line", None)
+        if not callable(set_line):
+            ai = getattr(self._vehicle, "ai", None)
+            set_line = getattr(ai, "set_line", None)
+        if callable(set_line):
+            try:
+                set_line(line, cling=True)
+            except Exception:
+                pass
+
     def _read_vehicle_state(self) -> VehicleState | None:
         vehicle = self._vehicle
         if vehicle is None:
@@ -540,7 +592,7 @@ class BeamNGBackend(OffroadSimBackend):
             velocity = state.get("velocity")
         speed = 0.0
         if velocity is not None and len(velocity) >= 2:
-            speed = math.sqrt(sum(float(component) ** 2 for component in velocity[:3]))
+            speed = math.hypot(float(velocity[0]), float(velocity[1]))
 
         return VehicleState(
             x=float(pos[0]),
@@ -552,13 +604,33 @@ class BeamNGBackend(OffroadSimBackend):
 
     def _update_motion_metrics(self, state: VehicleState) -> None:
         current = (float(state.x), float(state.y), float(state.z))
+        if self._initial_z is None:
+            self._initial_z = current[2]
+        self._min_z = current[2] if self._min_z is None else min(self._min_z, current[2])
+        self._max_z = current[2] if self._max_z is None else max(self._max_z, current[2])
         if self._last_position is not None:
             self._distance_traveled += math.sqrt(sum((current[index] - self._last_position[index]) ** 2 for index in range(3)))
+            self._horizontal_distance_traveled += math.hypot(
+                current[0] - self._last_position[0],
+                current[1] - self._last_position[1],
+            )
         self._last_position = current
         damage = self._read_damage()
         if damage > self._last_damage:
             self._collision_count += 1
         self._last_damage = max(self._last_damage, damage)
+
+    def _max_abs_vertical_deviation(self) -> float:
+        if self._initial_z is None or self._min_z is None or self._max_z is None:
+            return 0.0
+        return max(abs(self._min_z - self._initial_z), abs(self._max_z - self._initial_z))
+
+    def _normalized_action(self, action: Action) -> Action:
+        return Action(
+            steer=_clamp(float(action.steer), -1.0, 1.0),
+            throttle=_clamp(float(action.throttle), 0.0, 1.0),
+            brake=_clamp(float(action.brake), 0.0, 1.0),
+        )
 
     def _read_damage(self) -> float:
         state = getattr(self._vehicle, "state", None)

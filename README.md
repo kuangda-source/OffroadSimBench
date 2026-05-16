@@ -98,7 +98,7 @@ BeamNG 可视自动驾驶演示：
 python scripts\run_beamng_visible_demo.py --dataset-root datasets\ORFD_Dataset_ICRA2022_ZIP --adapter orfd --sequence-id training/c2021_0228_1819 --world-model-type le_wm --world-model outputs\models\lewm_orfd_real_c2021_0228_1819 --planner le_wm_cem --scenario beamng_visible_autodrive --vehicle configs\vehicles\ugv_medium.yaml --max-steps 600
 ```
 
-可视演示脚本默认会等待 BeamNG 窗口出现、按可见节奏执行，并且跑完后不主动关闭 BeamNG。本机 BeamNG.tech 0.38.3 的 Direct3D11 自动启动路径可能黑屏，所以默认使用 Vulkan；需要回退 Direct3D11 时追加 `--beamng-gfx dx11`。需要自动关闭时追加 `--close-beamng`；需要停留更久时追加 `--hold-open-sec 300`。
+可视演示脚本默认会等待 BeamNG 窗口出现、按可见节奏执行，并且跑完后不主动关闭 BeamNG。本机 BeamNG.tech 0.38.3 的 Direct3D11 自动启动路径可能黑屏，所以默认使用 Vulkan；需要回退 Direct3D11 时追加 `--beamng-gfx dx11`。当前可视演示使用 BeamNG 自带 `gridmap_v2` offroad 路段和 `drive_mode=ai_line` 原生执行器，不等同于 ORFD 真实场景重建。需要自动关闭时追加 `--close-beamng`；需要停留更久时追加 `--hold-open-sec 300`。
 
 ### 阶段三验收
 
@@ -229,7 +229,7 @@ Visible BeamNG autonomous-driving demo:
 python scripts\run_beamng_visible_demo.py --dataset-root datasets\ORFD_Dataset_ICRA2022_ZIP --adapter orfd --sequence-id training/c2021_0228_1819 --world-model-type le_wm --world-model outputs\models\lewm_orfd_real_c2021_0228_1819 --planner le_wm_cem --scenario beamng_visible_autodrive --vehicle configs\vehicles\ugv_medium.yaml --max-steps 600
 ```
 
-The visible demo script now waits for the BeamNG window, runs with human-visible pacing, and leaves BeamNG open when the episode ends. It defaults to Vulkan because the local BeamNG.tech 0.38.3 Direct3D11 auto-launch path can render a black window; add `--beamng-gfx dx11` to force Direct3D11. Add `--close-beamng` to close it automatically or `--hold-open-sec 300` to keep the Python process attached longer.
+The visible demo script now waits for the BeamNG window, runs with human-visible pacing, and leaves BeamNG open when the episode ends. It defaults to Vulkan because the local BeamNG.tech 0.38.3 Direct3D11 auto-launch path can render a black window; add `--beamng-gfx dx11` to force Direct3D11. The current visual demo uses a stock BeamNG `gridmap_v2` offroad route with `drive_mode=ai_line`; it is not full ORFD scene reconstruction. Add `--close-beamng` to close it automatically or `--hold-open-sec 300` to keep the Python process attached longer.
 
 ### Phase 3 Acceptance
 

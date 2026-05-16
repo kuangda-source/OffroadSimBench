@@ -62,7 +62,10 @@ python scripts\run_beamng_visible_demo.py --dataset-root datasets\ORFD_Dataset_I
 
 The demo runs through the shared `route_world_model` agent so the selected
 world model and planner remain replaceable without BeamNG-specific application
-logic.
+logic. For the visible smoke demo, BeamNG execution uses `drive_mode=ai_line`
+on the configured route because this is the stable BeamNG-native way to show
+the vehicle driving on the stock map; the agent and planner diagnostics are
+still recorded for the same run.
 
 For manual viewing, the visible script intentionally differs from acceptance
 scripts: it waits briefly after loading BeamNG, adds a small wall-clock delay

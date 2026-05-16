@@ -53,6 +53,7 @@ def fake_beamngpy(monkeypatch) -> SimpleNamespace:
             module.spawned_vehicle_model = vehicle.model
             module.spawned_pos = pos
             module.spawned_rot_quat = rot_quat
+            vehicle.state["pos"] = list(pos)
 
         def make(self, bng: Any) -> None:
             module.made = True
@@ -69,7 +70,24 @@ def fake_beamngpy(monkeypatch) -> SimpleNamespace:
         def control(self, **kwargs: Any) -> None:
             self.last_control = kwargs
 
+        def ai_set_line(self, line: list[dict[str, Any]], cling: bool = True) -> None:
+            module.ai_line = line
+            module.ai_line_cling = cling
+
         def advance(self) -> None:
+            if getattr(module, "ai_line", None):
+                target = module.ai_line[min(1, len(module.ai_line) - 1)]["pos"]
+                dx = float(target[0]) - float(self.state["pos"][0])
+                dy = float(target[1]) - float(self.state["pos"][1])
+                distance = max((dx * dx + dy * dy) ** 0.5, 1e-6)
+                speed = min(2.0, distance)
+                self.state["vel"] = [dx / distance * speed, dy / distance * speed, 0.0]
+                self.state["pos"] = [
+                    float(self.state["pos"][0]) + self.state["vel"][0],
+                    float(self.state["pos"][1]) + self.state["vel"][1],
+                    float(self.state["pos"][2]),
+                ]
+                return
             throttle = float(self.last_control.get("throttle", 0.0))
             brake = float(self.last_control.get("brake", 0.0))
             speed = max(0.0, float(self.state["vel"][0]) + throttle - brake)
@@ -127,12 +145,15 @@ def test_beamng_backend_uses_visible_scenario_metadata(fake_beamngpy: SimpleName
     assert fake_beamngpy.scenario_name.startswith("beamng_visible_autodrive_")
     assert fake_beamngpy.scenario_name != "beamng_visible_autodrive"
     assert fake_beamngpy.spawned_vehicle_model == "pickup"
-    assert fake_beamngpy.spawned_pos == (0.0, 0.0, 0.5)
+    assert fake_beamngpy.spawned_pos == (1.37432313, -167.098877, 100.6)
     assert fake_beamngpy.player_camera_request[0] == "ego"
     assert fake_beamngpy.player_camera_request[1] == "orbit"
     assert fake_beamngpy.debug_spheres
     assert backend.get_metrics()["route_waypoint_count"] == 4
     assert backend.get_metrics()["level"] == "gridmap_v2"
+    assert backend.get_metrics()["drive_mode"] == "ai_line"
+    assert fake_beamngpy.ai_line_cling is True
+    assert fake_beamngpy.ai_line[0]["speed"] == 12.0
 
 
 def test_beamng_backend_reports_motion_damage_and_sensors(fake_beamngpy: SimpleNamespace) -> None:
@@ -148,7 +169,32 @@ def test_beamng_backend_reports_motion_damage_and_sensors(fake_beamngpy: SimpleN
     assert metrics["distance_traveled"] > 0.0
     assert metrics["collision_count"] == 0
     assert metrics["sensor_count"] == 2
-    assert fake_beamngpy.step_calls == [6]
+    assert metrics["horizontal_distance_traveled"] > 0.0
+    assert fake_beamngpy.step_calls == [18]
+
+
+def test_beamng_backend_clamps_control_actions(fake_beamngpy: SimpleNamespace) -> None:
+    vehicle = load_vehicle_config("configs/vehicles/ugv_medium.yaml")
+    scenario = load_scenario_config("configs/scenarios/beamng_visible_autodrive.yaml")
+    scenario.metadata["beamng"]["drive_mode"] = "manual"
+    backend = BeamNGBackend(connection=BeamNGConnectionConfig(launch=False), vehicle_config=vehicle)
+    backend.reset(scenario)
+
+    backend.step(Action(steer=2.0, throttle=-0.5, brake=1.5))
+
+    assert fake_beamngpy.vehicle.last_control["steering"] == 1.0
+    assert fake_beamngpy.vehicle.last_control["throttle"] == 0.0
+    assert fake_beamngpy.vehicle.last_control["brake"] == 1.0
+
+
+def test_beamng_backend_skips_manual_control_for_ai_line(fake_beamngpy: SimpleNamespace) -> None:
+    vehicle = load_vehicle_config("configs/vehicles/ugv_medium.yaml")
+    backend = BeamNGBackend(connection=BeamNGConnectionConfig(launch=False), vehicle_config=vehicle)
+    backend.reset(load_scenario_config("configs/scenarios/beamng_visible_autodrive.yaml"))
+
+    backend.step(Action(steer=1.0, throttle=1.0, brake=1.0))
+
+    assert fake_beamngpy.vehicle.last_control == {}
 
 
 def test_run_episode_passes_vehicle_config_to_beamng(fake_beamngpy: SimpleNamespace) -> None:
@@ -162,4 +208,4 @@ def test_run_episode_passes_vehicle_config_to_beamng(fake_beamngpy: SimpleNamesp
 
     assert result.backend == "beamng"
     assert fake_beamngpy.spawned_vehicle_model == "pickup"
-    assert fake_beamngpy.spawned_pos == (0.0, 0.0, 0.5)
+    assert fake_beamngpy.spawned_pos == (1.37432313, -167.098877, 100.6)

@@ -8,8 +8,8 @@ terrain:
 task:
   max_time_sec: 180
   success_radius_m: 8.0
-  start: [0.0, 0.0]
-  goal: [0.0, -80.0]
+  start: [1.37432313, -167.098877]
+  goal: [3.95803404, -240.085922]
 metrics:
   collision: true
   rollover: true
@@ -22,13 +22,15 @@ metadata:
     level: gridmap_v2
     vehicle_model: pickup
     vehicle_start:
-      pos: [0.0, 0.0, 0.5]
+      pos: [1.37432313, -167.098877, 100.6]
       rot_quat: [0.0, 0.0, 0.0, 1.0]
     route:
-      - [0.0, 0.0]
-      - [0.0, -25.0]
-      - [0.0, -55.0]
-      - [0.0, -80.0]
+      - [1.37432313, -167.098877]
+      - [1.29882073, -207.883331]
+      - [-0.00627199979, -232.102081]
+      - [3.95803404, -240.085922]
     camera_mode: orbit
     draw_route: true
-    steps_per_action: 6
+    drive_mode: ai_line
+    ai_line_speed: 12.0
+    steps_per_action: 18
