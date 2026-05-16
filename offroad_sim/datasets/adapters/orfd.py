@@ -5,7 +5,9 @@ from __future__ import annotations
 import csv
 import json
 import math
+import zipfile
 from pathlib import Path
+from posixpath import dirname
 from typing import Any
 
 from offroad_sim.core import VehicleState
@@ -54,15 +56,24 @@ class ORFDAdapter(DatasetAdapter):
             for sequence_dir in sorted(path for path in split_dir.iterdir() if path.is_dir()):
                 if self._find_asset_dir(sequence_dir, IMAGE_DIRS) is not None:
                     rows.append(f"{split}/{sequence_dir.name}")
+            for sequence_zip in sorted(path for path in split_dir.iterdir() if path.is_file() and path.suffix.lower() == ".zip"):
+                if self._zip_find_asset_dir(sequence_zip, IMAGE_DIRS) is not None:
+                    rows.append(f"{split}/{sequence_zip.stem}")
         if not rows and self._find_asset_dir(root, IMAGE_DIRS) is not None:
             rows.append(root.name)
+        if not rows and root.is_file() and root.suffix.lower() == ".zip" and self._zip_find_asset_dir(root, IMAGE_DIRS) is not None:
+            rows.append(root.stem)
         if not rows:
             raise FileNotFoundError(f"No ORFD sequences found under {root}")
         return rows
 
     def load_sequence(self, dataset_root: str | Path, sequence_id: str) -> DatasetSequence:
         root = Path(dataset_root)
-        sequence_dir = self._sequence_dir(root, sequence_id)
+        sequence_source = self._sequence_source(root, sequence_id)
+        if isinstance(sequence_source, _ZipSequenceSource):
+            return self._load_zip_sequence(root, sequence_id, sequence_source)
+
+        sequence_dir = sequence_source
         image_dir = self._find_asset_dir(sequence_dir, IMAGE_DIRS)
         if image_dir is None:
             raise FileNotFoundError(f"ORFD image directory not found in {sequence_dir}")
@@ -113,17 +124,71 @@ class ORFDAdapter(DatasetAdapter):
             },
         )
 
-    def _sequence_dir(self, root: Path, sequence_id: str) -> Path:
+    def _sequence_source(self, root: Path, sequence_id: str) -> Path | "_ZipSequenceSource":
         direct = root / sequence_id
         if direct.is_dir():
             return direct
+        if direct.with_suffix(".zip").is_file():
+            return _ZipSequenceSource(direct.with_suffix(".zip"))
         parts = Path(sequence_id).parts
         if len(parts) == 1 and self._find_asset_dir(root, IMAGE_DIRS) is not None:
             return root
+        if len(parts) == 1 and root.is_file() and root.suffix.lower() == ".zip":
+            return _ZipSequenceSource(root)
         candidate = root.joinpath(*parts)
         if candidate.is_dir():
             return candidate
+        if candidate.with_suffix(".zip").is_file():
+            return _ZipSequenceSource(candidate.with_suffix(".zip"))
         raise FileNotFoundError(f"ORFD sequence not found: {sequence_id}")
+
+    def _load_zip_sequence(self, root: Path, sequence_id: str, source: "_ZipSequenceSource") -> DatasetSequence:
+        image_dir = self._zip_find_asset_dir(source.path, IMAGE_DIRS)
+        if image_dir is None:
+            raise FileNotFoundError(f"ORFD image directory not found in {source.path}")
+
+        asset_index = self._zip_asset_index(source.path)
+        frame_ids = sorted(asset_index.get(Path(image_dir).name, {}))
+        calibration = self._zip_load_calibration(source.path)
+        frames: list[DatasetFrame] = []
+        for index, frame_id in enumerate(frame_ids):
+            state = self._synthetic_state(index)
+            frames.append(
+                DatasetFrame(
+                    frame_id=frame_id,
+                    timestamp=float(index),
+                    vehicle_state=state,
+                    front_rgb_path=self._zip_find_indexed_asset(asset_index, IMAGE_DIRS, frame_id),
+                    depth_path=self._zip_find_indexed_asset(asset_index, DEPTH_DIRS, frame_id),
+                    lidar_path=self._zip_find_indexed_asset(asset_index, LIDAR_DIRS, frame_id),
+                    label_path=self._zip_find_indexed_asset(asset_index, GT_DIRS, frame_id),
+                    metadata={
+                        "row_index": index,
+                        "pose_source": "synthetic_index_order",
+                        "orfd_zip_path": str(source.path.resolve()),
+                    },
+                )
+            )
+
+        if not frames:
+            raise ValueError(f"ORFD sequence has no frames: {source.path}")
+
+        last_state = frames[-1].vehicle_state
+        return DatasetSequence(
+            dataset_id="orfd",
+            dataset_type=self.name,
+            sequence_id=sequence_id,
+            root=str(root.resolve()),
+            frames=frames,
+            goal=(last_state.x, last_state.y),
+            calibration=calibration,
+            metadata={
+                "adapter": self.name,
+                "source_layout": "orfd_zip",
+                "frame_count": len(frames),
+                "zip_path": str(source.path.resolve()),
+            },
+        )
 
     def _frame_ids(self, image_dir: Path) -> list[str]:
         suffixes = {".png", ".jpg", ".jpeg", ".bmp", ".npy"}
@@ -169,6 +234,32 @@ class ORFDAdapter(DatasetAdapter):
                 return str(path.resolve())
         return None
 
+    def _zip_find_asset_dir(self, zip_path: Path, names: tuple[str, ...]) -> str | None:
+        with zipfile.ZipFile(zip_path) as archive:
+            directories = {dirname(entry.filename.rstrip("/")) for entry in archive.infolist()}
+        for directory in sorted(directories):
+            if Path(directory).name in names:
+                return directory
+        return None
+
+    def _zip_asset_index(self, zip_path: Path) -> dict[str, dict[str, str]]:
+        suffixes = {".npy", ".png", ".jpg", ".jpeg", ".bmp", ".bin", ".pcd"}
+        index: dict[str, dict[str, str]] = {}
+        with zipfile.ZipFile(zip_path) as archive:
+            for entry in archive.infolist():
+                if entry.is_dir() or Path(entry.filename).suffix.lower() not in suffixes:
+                    continue
+                directory_name = dirname(entry.filename).split("/")[-1]
+                index.setdefault(directory_name, {})[Path(entry.filename).stem] = f"zip://{zip_path.resolve()}!{entry.filename}"
+        return index
+
+    def _zip_find_indexed_asset(self, asset_index: dict[str, dict[str, str]], dirs: tuple[str, ...], frame_id: str) -> str | None:
+        for directory_name in dirs:
+            asset = asset_index.get(directory_name, {}).get(frame_id)
+            if asset is not None:
+                return asset
+        return None
+
     def _load_manifest(self, root: Path) -> dict[str, Any]:
         for name in MANIFEST_NAMES:
             path = root / name
@@ -203,3 +294,22 @@ class ORFDAdapter(DatasetAdapter):
         if value in (None, ""):
             return default
         return float(value)
+
+    def _zip_load_calibration(self, zip_path: Path) -> dict[str, Any]:
+        calibration: dict[str, Any] = {
+            "coordinate_frame": {
+                "source": "orfd",
+                "lidar_axes": "x_left_y_forward_z_up",
+            }
+        }
+        with zipfile.ZipFile(zip_path) as archive:
+            for entry in archive.infolist():
+                parts = Path(entry.filename).parts
+                if len(parts) >= 2 and parts[-2] in CALIB_DIRS and not entry.is_dir():
+                    calibration[parts[-1]] = f"zip://{zip_path.resolve()}!{entry.filename}"
+        return calibration
+
+
+class _ZipSequenceSource:
+    def __init__(self, path: Path) -> None:
+        self.path = path

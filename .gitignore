@@ -12,5 +12,6 @@ env/
 dist/
 build/
 outputs/
+/datasets/
 node_modules/
 BeamNG/

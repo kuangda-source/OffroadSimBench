@@ -72,6 +72,13 @@ python scripts\train_lewm_cost_model.py outputs\stablewm\mock_orfd_phase3.h5 --o
 python -m offroad_sim.cli run --backend dataset_replay --dataset-root outputs\mock_orfd_phase3 --adapter orfd --agent world_model --world-model-type le_wm --world-model outputs\models\lewm_cost_smoke --planner le_wm_cem --planner-horizon 4 --planner-samples 16 --planner-iterations 2 --max-steps 3 --record
 ```
 
+The ORFD adapter can also read the official ICRA 2022 ZIP layout directly:
+
+```powershell
+python examples\inspect_dataset.py datasets\ORFD_Dataset_ICRA2022_ZIP --adapter orfd
+python scripts\export_lewm_hdf5.py datasets\ORFD_Dataset_ICRA2022_ZIP outputs\stablewm\orfd_real_sample.h5 --adapter orfd --sequence-id training/c2021_0228_1819 --image-size 32
+```
+
 将 BeamNG 记录 episode 导出为 stable-worldmodel HDF5：
 
 ```powershell
@@ -172,6 +179,13 @@ Export stable-worldmodel HDF5, train an LE-WM-compatible cost checkpoint, and ru
 python scripts\export_lewm_hdf5.py outputs\mock_orfd_phase3 outputs\stablewm\mock_orfd_phase3.h5 --adapter orfd --image-size 32
 python scripts\train_lewm_cost_model.py outputs\stablewm\mock_orfd_phase3.h5 --output outputs\models\lewm_cost_smoke
 python -m offroad_sim.cli run --backend dataset_replay --dataset-root outputs\mock_orfd_phase3 --adapter orfd --agent world_model --world-model-type le_wm --world-model outputs\models\lewm_cost_smoke --planner le_wm_cem --planner-horizon 4 --planner-samples 16 --planner-iterations 2 --max-steps 3 --record
+```
+
+The ORFD adapter can also read the official ICRA 2022 ZIP layout directly:
+
+```powershell
+python examples\inspect_dataset.py datasets\ORFD_Dataset_ICRA2022_ZIP --adapter orfd
+python scripts\export_lewm_hdf5.py datasets\ORFD_Dataset_ICRA2022_ZIP outputs\stablewm\orfd_real_sample.h5 --adapter orfd --sequence-id training/c2021_0228_1819 --image-size 32
 ```
 
 Export recorded BeamNG episodes to stable-worldmodel HDF5:

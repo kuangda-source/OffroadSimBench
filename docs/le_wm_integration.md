@@ -37,6 +37,15 @@ To hand ORFD-style sequences to stable-worldmodel, export a flat HDF5 file:
 python scripts\export_lewm_hdf5.py D:\datasets\ORFD D:\stablewm-data\orfd.h5 --adapter orfd --image-size 64
 ```
 
+Official ORFD ICRA 2022 ZIP releases can be used without expanding the whole
+dataset. Select a sequence explicitly for smoke tests to avoid exporting every
+ZIP file at once:
+
+```powershell
+python examples\inspect_dataset.py datasets\ORFD_Dataset_ICRA2022_ZIP --adapter orfd
+python scripts\export_lewm_hdf5.py datasets\ORFD_Dataset_ICRA2022_ZIP outputs\stablewm\orfd_real_sample.h5 --adapter orfd --sequence-id training/c2021_0228_1819 --image-size 32
+```
+
 The export writes top-level `ep_len`, `ep_offset`, `state`, `action`,
 `timestamp`, `goal`, and optional `pixels` arrays, matching stable-worldmodel's
 `HDF5Dataset` boundary.

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import math
+import zipfile
 from pathlib import Path
 
 import numpy as np
@@ -136,13 +138,46 @@ def _load_pixels(frames: list[object], *, image_size: int) -> np.ndarray | None:
     images = []
     for frame in frames:
         path = getattr(frame, "front_rgb_path", None)
-        if path is None or Path(path).suffix.lower() != ".npy":
+        if path is None:
             return None
-        image = np.load(path)
+        image = _load_image(path)
         if image.ndim != 3 or image.shape[-1] < 3:
             return None
         images.append(_resize_nearest(image[..., :3], image_size).astype(np.uint8))
     return np.stack(images, axis=0) if images else None
+
+
+def _load_image(path: str) -> np.ndarray:
+    suffix = _asset_suffix(path)
+    if suffix == ".npy":
+        if path.startswith("zip://"):
+            zip_path, member = _split_zip_uri(path)
+            with zipfile.ZipFile(zip_path) as archive:
+                return np.load(io.BytesIO(archive.read(member)))
+        return np.load(path)
+    if suffix in {".png", ".jpg", ".jpeg", ".bmp"}:
+        from PIL import Image
+
+        if path.startswith("zip://"):
+            zip_path, member = _split_zip_uri(path)
+            with zipfile.ZipFile(zip_path) as archive:
+                with Image.open(io.BytesIO(archive.read(member))) as image:
+                    return np.asarray(image.convert("RGB"))
+        with Image.open(path) as image:
+            return np.asarray(image.convert("RGB"))
+    raise ValueError(f"Unsupported image asset for StableWM export: {path}")
+
+
+def _asset_suffix(path: str) -> str:
+    if path.startswith("zip://"):
+        return Path(path.rsplit("!", 1)[-1]).suffix.lower()
+    return Path(path).suffix.lower()
+
+
+def _split_zip_uri(path: str) -> tuple[str, str]:
+    raw = path.removeprefix("zip://")
+    zip_path, member = raw.split("!", 1)
+    return zip_path, member
 
 
 def _resize_nearest(image: np.ndarray, size: int) -> np.ndarray:
