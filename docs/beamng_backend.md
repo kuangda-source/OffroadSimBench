@@ -51,16 +51,33 @@ With both `beamngpy` and a detected executable present, the backend status becom
 ready through the shared backend registry and desktop GUI status panel
 endpoint.
 
-## Next BeamNG Pass
+The Phase 4 visible demo uses `configs/scenarios/beamng_visible_autodrive.yaml`
+on the stock `gridmap_v2` level. The scenario metadata defines the vehicle
+model, spawn pose, route waypoints, route debug markers, camera setup, and
+action step cadence. The normal run path is:
 
-The next concrete BeamNG work should map `VehicleConfig.sensors` into beamngpy
-sensors:
+```powershell
+python scripts\run_beamng_visible_demo.py --dataset-root datasets\ORFD_Dataset_ICRA2022_ZIP --adapter orfd --sequence-id training/c2021_0228_1819 --world-model-type le_wm --world-model outputs\models\lewm_orfd_real_c2021_0228_1819 --planner le_wm_cem --scenario beamng_visible_autodrive --vehicle configs\vehicles\ugv_medium.yaml --max-steps 80
+```
+
+The demo runs through the shared `route_world_model` agent so the selected
+world model and planner remain replaceable without BeamNG-specific application
+logic.
+
+## Remaining BeamNG Work
+
+Sensor attachment is best-effort across beamngpy versions. The next concrete
+BeamNG work should harden `VehicleConfig.sensors` mapping into beamngpy sensors:
 
 - camera -> RGB/depth image paths or arrays;
 - lidar -> point cloud;
 - imu -> acceleration/rotation;
 - gps -> global pose;
 - vehicle electrics -> speed and collision state.
+
+Full ORFD scene reconstruction as a BeamNG level is also still a map-building
+task. The current accepted visual loop uses real ORFD data for model selection
+and a stock BeamNG level for the closed-loop vehicle demonstration.
 
 The application layer should create this backend through `make_backend("beamng")`
 or `default_backend_registry()`, not by importing BeamNG-specific code directly.

@@ -62,6 +62,7 @@ class BeamNGBackend(OffroadSimBackend):
         self._scenario_config: Any = None
         self._step_count = 0
         self._connected = False
+        self._active_level = self.connection.level
         self._active_steps_per_action = self.connection.steps_per_action
         self._route: list[tuple[float, float]] = []
         self._distance_traveled = 0.0
@@ -120,6 +121,7 @@ class BeamNGBackend(OffroadSimBackend):
         beamngpy = importlib.import_module("beamngpy")
         Scenario = getattr(beamngpy, "Scenario")
         level = self._beamng_level_for_config(scenario_config)
+        self._active_level = level
         scenario_name = self._read_config(scenario_config, "scenario_id", self.connection.scenario_name)
         self._scenario = Scenario(level, scenario_name)
 
@@ -198,7 +200,17 @@ class BeamNGBackend(OffroadSimBackend):
     def step(self, action: Action) -> StepResult:
         self._ensure_connected()
         if self._vehicle is not None and hasattr(self._vehicle, "control"):
-            self._vehicle.control(throttle=action.throttle, steering=action.steer, brake=action.brake)
+            try:
+                self._vehicle.control(
+                    throttle=action.throttle,
+                    steering=action.steer,
+                    brake=action.brake,
+                    parkingbrake=0.0,
+                    clutch=0.0,
+                    gear=1,
+                )
+            except TypeError:
+                self._vehicle.control(throttle=action.throttle, steering=action.steer, brake=action.brake)
         if self._bng is not None and hasattr(self._bng, "step"):
             self._bng.step(self._active_steps_per_action)
 
@@ -228,7 +240,7 @@ class BeamNGBackend(OffroadSimBackend):
             "connected": self._connected,
             "episode_length": self._step_count,
             "vehicle_id": self.connection.vehicle_id,
-            "level": self.connection.level,
+            "level": self._active_level,
             "sensor_count": len(self._sensors),
             "sensor_ids": sorted(self._sensors),
             "route_waypoint_count": len(self._route),
@@ -249,6 +261,7 @@ class BeamNGBackend(OffroadSimBackend):
         self._scenario_config = None
         self._connected = False
         self._step_count = 0
+        self._active_level = self.connection.level
         self._active_steps_per_action = self.connection.steps_per_action
         self._route = []
         self._distance_traveled = 0.0
@@ -338,6 +351,7 @@ class BeamNGBackend(OffroadSimBackend):
                 "status": "connected",
                 "sensor_ids": sorted(self._sensors),
                 "sensor_payload_keys": sorted(sensor_payload),
+                "route": [list(point) for point in self._route],
                 "note": "BeamNG pose and best-effort sensor payloads are read when available.",
             },
         )

@@ -23,6 +23,7 @@ class RouteWorldModelAgent(OffroadAgent):
         self.route = _normalize_route(route)
         self.waypoint_radius_m = float(waypoint_radius_m)
         self.cursor = 0
+        world_model_kwargs.pop("seed", None)
         self.inner = WorldModelAgent(**world_model_kwargs)
         self._last_diagnostics: dict[str, Any] = {}
 

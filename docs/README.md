@@ -7,5 +7,7 @@ Design notes and backend integration guides.
 - `phase1_acceptance_report.md`: first-stage acceptance results.
 - `phase3_development_plan.md`: third-stage ORFD/world-model/BeamNG plan.
 - `phase3_acceptance_report.md`: third-stage acceptance results.
+- `phase4_development_plan.md`: visible BeamNG autonomous-driving demo plan.
+- `phase4_acceptance_report.md`: visible BeamNG autonomous-driving acceptance results.
 - `le_wm_integration.md`: LE-WM planning bridge and runtime assumptions.
 - `desktop_gui.md`: PySide6 desktop GUI scope and connected interfaces.

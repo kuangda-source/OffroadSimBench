@@ -1,6 +1,6 @@
 scenario_id: beamng_visible_autodrive
 backend: beamng
-map: west_coast_usa
+map: gridmap_v2
 weather: sunny
 terrain:
   type: mixed_offroad
@@ -9,7 +9,7 @@ task:
   max_time_sec: 180
   success_radius_m: 8.0
   start: [0.0, 0.0]
-  goal: [80.0, 30.0]
+  goal: [0.0, -80.0]
 metrics:
   collision: true
   rollover: true
@@ -19,16 +19,16 @@ metadata:
   phase: 4
   demo_type: visible_beamng_autodrive
   beamng:
-    level: west_coast_usa
+    level: gridmap_v2
     vehicle_model: pickup
     vehicle_start:
       pos: [0.0, 0.0, 0.5]
       rot_quat: [0.0, 0.0, 0.0, 1.0]
     route:
       - [0.0, 0.0]
-      - [25.0, 5.0]
-      - [55.0, 18.0]
-      - [80.0, 30.0]
+      - [0.0, -25.0]
+      - [0.0, -55.0]
+      - [0.0, -80.0]
     camera_mode: orbit
     draw_route: true
     steps_per_action: 6
