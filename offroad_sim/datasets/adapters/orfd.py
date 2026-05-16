@@ -232,6 +232,9 @@ class ORFDAdapter(DatasetAdapter):
             path = directory / f"{frame_id}{suffix}"
             if path.is_file():
                 return str(path.resolve())
+            matches = sorted(directory.glob(f"{frame_id}*{suffix}"))
+            if matches:
+                return str(matches[0].resolve())
         return None
 
     def _zip_find_asset_dir(self, zip_path: Path, names: tuple[str, ...]) -> str | None:
@@ -258,6 +261,9 @@ class ORFDAdapter(DatasetAdapter):
             asset = asset_index.get(directory_name, {}).get(frame_id)
             if asset is not None:
                 return asset
+            for stem, candidate in sorted(asset_index.get(directory_name, {}).items()):
+                if stem.startswith(frame_id):
+                    return candidate
         return None
 
     def _load_manifest(self, root: Path) -> dict[str, Any]:

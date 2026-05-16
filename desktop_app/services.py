@@ -6,9 +6,12 @@ import json
 import math
 import subprocess
 import sys
+import time
 from dataclasses import asdict, dataclass, is_dataclass
 from pathlib import Path
 from typing import Any
+
+import numpy as np
 
 from offroad_sim.agents import default_agent_registry
 from offroad_sim.backends import default_backend_registry
@@ -45,6 +48,23 @@ class RunRequest:
     sequence_id: str = ""
     adapter: str = ""
     load_assets: bool = False
+
+
+@dataclass(slots=True)
+class PipelineRequest:
+    dataset_root: str
+    adapter: str = "orfd"
+    sequence_id: str = ""
+    hdf5_path: str = ""
+    model_dir: str = ""
+    image_size: int = 64
+    planner_horizon: int = 4
+    planner_samples: int = 16
+    planner_iterations: int = 2
+    max_steps: int = 3
+    seed: int = 7
+    run_beamng: bool = True
+    beamng_scenario: str = "beamng_orfd_eval"
 
 
 def config_entries(kind: str, id_field: str) -> list[dict[str, Any]]:
@@ -99,6 +119,51 @@ def inspect_dataset(dataset_root: str, adapter: str = "", sequence_id: str = "")
         "frame_count": len(sequence.frames),
         "asset_counts": asset_counts,
         "metadata": sequence.metadata,
+    }
+
+
+def preview_dataset_frame(
+    dataset_root: str,
+    adapter: str = "",
+    sequence_id: str = "",
+    *,
+    frame_index: int = 0,
+    output_dir: str | Path | None = None,
+) -> dict[str, Any]:
+    if not dataset_root:
+        raise ValueError("Dataset root is required.")
+    registry = default_dataset_registry()
+    resolved_adapter = registry.resolve(dataset_root, adapter or None)
+    sequences = resolved_adapter.list_sequences(dataset_root)
+    if not sequences:
+        raise ValueError("No dataset sequences found.")
+    selected = sequence_id or sequences[0]
+    sequence = resolved_adapter.load_sequence(dataset_root, selected)
+    if not sequence.frames:
+        raise ValueError("Selected sequence has no frames.")
+    index = min(max(0, int(frame_index)), len(sequence.frames) - 1)
+    frame = sequence.frames[index]
+    out = Path(output_dir or ROOT / "outputs" / "gui_previews" / _safe_name(selected))
+    out.mkdir(parents=True, exist_ok=True)
+
+    previews: dict[str, str] = {}
+    for name, asset_path in frame.available_assets().items():
+        if name not in {"front_rgb", "depth", "label", "local_bev", "terrain_map"}:
+            continue
+        preview_path = _write_preview_image(asset_path, out / f"{index:06d}_{name}.png")
+        if preview_path is not None:
+            previews[name] = str(preview_path.resolve())
+
+    return {
+        "dataset_root": str(Path(dataset_root).resolve()),
+        "adapter": resolved_adapter.name,
+        "sequence_id": selected,
+        "frame_index": index,
+        "frame_count": len(sequence.frames),
+        "frame_id": frame.frame_id,
+        "assets": frame.available_assets(),
+        "previews": previews,
+        "metadata": frame.metadata,
     }
 
 
@@ -190,6 +255,130 @@ def train_lewm_cost_model(input_hdf5: str, output_dir: str) -> dict[str, Any]:
             output_dir,
         ]
     )
+
+
+def run_orfd_lewm_pipeline(request: PipelineRequest) -> dict[str, Any]:
+    if not request.dataset_root:
+        raise ValueError("Dataset root is required.")
+    selected_info = inspect_dataset(request.dataset_root, request.adapter, request.sequence_id)
+    sequence_id = str(selected_info["selected_sequence"])
+    stamp = time.strftime("%Y%m%dT%H%M%S")
+    hdf5_path = request.hdf5_path or str(ROOT / "outputs" / "stablewm" / f"gui_orfd_{_safe_name(sequence_id)}_{stamp}.h5")
+    model_dir = request.model_dir or str(ROOT / "outputs" / "models" / f"gui_lewm_{_safe_name(sequence_id)}_{stamp}")
+
+    export = export_lewm_hdf5(
+        request.dataset_root,
+        hdf5_path,
+        adapter=request.adapter,
+        sequence_id=sequence_id,
+        image_size=request.image_size,
+    )
+    training = train_lewm_cost_model(str(export["output_hdf5"]), model_dir)
+    replay_request = RunRequest(
+        backend="dataset_replay",
+        scenario=f"dataset_{Path(request.dataset_root).name}",
+        agent="world_model",
+        seed=request.seed,
+        max_steps=request.max_steps,
+        record=True,
+        world_model_type="le_wm",
+        world_model_path=model_dir,
+        planner="le_wm_cem",
+        planner_horizon=request.planner_horizon,
+        planner_samples=request.planner_samples,
+        planner_iterations=request.planner_iterations,
+        dataset_root=request.dataset_root,
+        sequence_id=sequence_id,
+        adapter=request.adapter,
+        load_assets=False,
+    )
+    replay = run_episode_from_request(replay_request)
+
+    beamng: dict[str, Any] | None = None
+    if request.run_beamng:
+        beamng_request = RunRequest(
+            backend="beamng",
+            scenario=request.beamng_scenario,
+            agent="world_model",
+            seed=request.seed,
+            max_steps=max(1, request.max_steps),
+            record=True,
+            world_model_type="le_wm",
+            world_model_path=model_dir,
+            planner="le_wm_cem",
+            planner_horizon=request.planner_horizon,
+            planner_samples=request.planner_samples,
+            planner_iterations=request.planner_iterations,
+        )
+        beamng = run_episode_from_request(beamng_request)
+
+    return {
+        "status": "completed",
+        "dataset": selected_info,
+        "hdf5": export,
+        "training": training,
+        "dataset_replay": replay,
+        "beamng": beamng,
+        "output_dir": model_dir,
+        "model_dir": model_dir,
+        "hdf5_path": str(export["output_hdf5"]),
+    }
+
+
+def export_orfd_beamng_terrain_draft(
+    dataset_root: str,
+    adapter: str = "",
+    sequence_id: str = "",
+    *,
+    frame_index: int = 0,
+    output_dir: str | Path | None = None,
+    grid_size: int = 64,
+    terrain_size_m: float = 40.0,
+) -> dict[str, Any]:
+    if not dataset_root:
+        raise ValueError("Dataset root is required.")
+    registry = default_dataset_registry()
+    resolved_adapter = registry.resolve(dataset_root, adapter or None)
+    sequence_ids = resolved_adapter.list_sequences(dataset_root)
+    selected = sequence_id or sequence_ids[0]
+    sequence = resolved_adapter.load_sequence(dataset_root, selected)
+    if not sequence.frames:
+        raise ValueError("Selected sequence has no frames.")
+    index = min(max(0, int(frame_index)), len(sequence.frames) - 1)
+    frame = sequence.frames[index]
+    out = Path(output_dir or ROOT / "outputs" / "beamng_terrain_drafts" / _safe_name(selected))
+    out.mkdir(parents=True, exist_ok=True)
+
+    depth_source = frame.depth_path or frame.lidar_path or frame.front_rgb_path
+    if depth_source is None:
+        raise ValueError("Selected frame has no depth, lidar, or RGB asset to derive a terrain draft.")
+    height = _height_grid_from_asset(depth_source, grid_size=grid_size)
+    height_png = out / "heightmap.png"
+    mesh_obj = out / "terrain_mesh.obj"
+    preview_png = out / "terrain_preview.png"
+    manifest_path = out / "beamng_map_draft.json"
+    _write_height_png(height, height_png)
+    _write_mesh_obj(height, mesh_obj, terrain_size_m=terrain_size_m)
+    _write_preview_array(height, preview_png)
+    manifest = {
+        "status": "draft_ready",
+        "beamng_import_ready": False,
+        "note": "This is a local ORFD-derived heightmap/mesh draft. It is not a packaged BeamNG level yet.",
+        "dataset_root": str(Path(dataset_root).resolve()),
+        "adapter": resolved_adapter.name,
+        "sequence_id": selected,
+        "frame_index": index,
+        "frame_id": frame.frame_id,
+        "source_asset": depth_source,
+        "terrain_size_m": terrain_size_m,
+        "grid_size": grid_size,
+        "heightmap": str(height_png.resolve()),
+        "mesh_obj": str(mesh_obj.resolve()),
+        "preview": str(preview_png.resolve()),
+    }
+    manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
+    manifest["manifest"] = str(manifest_path.resolve())
+    return manifest
 
 
 def backend_options(request: RunRequest) -> dict[str, Any]:
@@ -301,9 +490,9 @@ def display_value(value: Any) -> str:
 
 def unfinished_features() -> list[dict[str, str]]:
     return [
-        {"name": "LE-WM 训练向导", "status": UNFINISHED_TEXT},
+        {"name": "完整 ORFD 场景级 BeamNG level 自动打包", "status": UNFINISHED_TEXT},
+        {"name": "完整原版 LE-WM 视觉 latent 训练", "status": UNFINISHED_TEXT},
         {"name": "UE5 实时桥接监控", "status": UNFINISHED_TEXT},
-        {"name": "实时相机/深度图面板", "status": UNFINISHED_TEXT},
         {"name": "运行中断/暂停恢复", "status": UNFINISHED_TEXT},
     ]
 
@@ -342,3 +531,167 @@ def _float_or_nan(value: Any) -> float:
         return float(value)
     except (TypeError, ValueError):
         return math.nan
+
+
+def _write_preview_image(asset_path: str, output_path: Path) -> Path | None:
+    try:
+        image = _load_asset_image(asset_path)
+    except (OSError, ValueError):
+        return None
+    _write_preview_array(image, output_path)
+    return output_path
+
+
+def _load_asset_image(asset_path: str) -> np.ndarray:
+    from scripts.export_lewm_hdf5 import _load_image
+
+    suffix = Path(asset_path.rsplit("!", 1)[-1]).suffix.lower()
+    if suffix == ".bin":
+        points = _load_lidar_points(asset_path)
+        return _lidar_preview(points)
+    image = _load_image(asset_path)
+    if image.ndim == 2:
+        return image
+    return image[..., :3]
+
+
+def _height_grid_from_asset(asset_path: str, *, grid_size: int) -> np.ndarray:
+    suffix = Path(asset_path.rsplit("!", 1)[-1]).suffix.lower()
+    if suffix == ".bin":
+        points = _load_lidar_points(asset_path)
+        if points.size == 0:
+            return np.zeros((grid_size, grid_size), dtype=np.float32)
+        return _points_to_height_grid(points, grid_size=grid_size)
+    image = _load_asset_image(asset_path)
+    if image.ndim == 3:
+        image = np.mean(image[..., :3], axis=2)
+    image = _resize_nearest(np.asarray(image, dtype=np.float32), grid_size)
+    finite = image[np.isfinite(image)]
+    if finite.size == 0:
+        return np.zeros((grid_size, grid_size), dtype=np.float32)
+    low, high = np.percentile(finite, [2, 98])
+    if math.isclose(float(low), float(high)):
+        return np.zeros((grid_size, grid_size), dtype=np.float32)
+    height = np.clip((image - low) / (high - low), 0.0, 1.0)
+    height[~np.isfinite(height)] = 0.0
+    return height.astype(np.float32)
+
+
+def _load_lidar_points(asset_path: str) -> np.ndarray:
+    raw = _read_asset_bytes(asset_path)
+    values = np.frombuffer(raw, dtype=np.float32)
+    if values.size < 3:
+        return np.empty((0, 3), dtype=np.float32)
+    stride = 4 if values.size % 4 == 0 else 3
+    return values[: values.size // stride * stride].reshape(-1, stride)[:, :3]
+
+
+def _read_asset_bytes(asset_path: str) -> bytes:
+    if asset_path.startswith("zip://"):
+        import zipfile
+
+        raw = asset_path.removeprefix("zip://")
+        zip_path, member = raw.split("!", 1)
+        with zipfile.ZipFile(zip_path) as archive:
+            return archive.read(member)
+    return Path(asset_path).read_bytes()
+
+
+def _lidar_preview(points: np.ndarray, *, size: int = 512) -> np.ndarray:
+    if points.size == 0:
+        return np.zeros((size, size), dtype=np.uint8)
+    xy = points[:, :2]
+    finite = xy[np.isfinite(xy).all(axis=1)]
+    if finite.size == 0:
+        return np.zeros((size, size), dtype=np.uint8)
+    mins = np.percentile(finite, 2, axis=0)
+    maxs = np.percentile(finite, 98, axis=0)
+    span = np.maximum(maxs - mins, 1e-6)
+    coords = np.clip((finite - mins) / span * (size - 1), 0, size - 1).astype(int)
+    canvas = np.zeros((size, size), dtype=np.uint8)
+    canvas[size - 1 - coords[:, 1], coords[:, 0]] = 255
+    return canvas
+
+
+def _points_to_height_grid(points: np.ndarray, *, grid_size: int) -> np.ndarray:
+    finite = points[np.isfinite(points).all(axis=1)]
+    if finite.size == 0:
+        return np.zeros((grid_size, grid_size), dtype=np.float32)
+    xy = finite[:, :2]
+    z = finite[:, 2]
+    mins = np.percentile(xy, 2, axis=0)
+    maxs = np.percentile(xy, 98, axis=0)
+    span = np.maximum(maxs - mins, 1e-6)
+    coords = np.clip((xy - mins) / span * (grid_size - 1), 0, grid_size - 1).astype(int)
+    grid = np.full((grid_size, grid_size), np.nan, dtype=np.float32)
+    for (x, y), value in zip(coords, z, strict=False):
+        row = grid_size - 1 - y
+        grid[row, x] = value if np.isnan(grid[row, x]) else max(grid[row, x], value)
+    fill = float(np.nanmedian(grid)) if np.isfinite(grid).any() else 0.0
+    grid = np.nan_to_num(grid, nan=fill)
+    low, high = np.percentile(grid, [2, 98])
+    if math.isclose(float(low), float(high)):
+        return np.zeros((grid_size, grid_size), dtype=np.float32)
+    return np.clip((grid - low) / (high - low), 0.0, 1.0).astype(np.float32)
+
+
+def _write_height_png(height: np.ndarray, output_path: Path) -> None:
+    from PIL import Image
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    data = np.clip(height, 0.0, 1.0)
+    Image.fromarray((data * 65535).astype(np.uint16)).save(output_path)
+
+
+def _write_preview_array(image: np.ndarray, output_path: Path) -> None:
+    from PIL import Image
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    array = np.asarray(image)
+    if array.ndim == 2:
+        finite = array[np.isfinite(array)]
+        if finite.size == 0:
+            scaled = np.zeros(array.shape, dtype=np.uint8)
+        else:
+            low, high = np.percentile(finite, [2, 98])
+            if math.isclose(float(low), float(high)):
+                scaled = np.zeros(array.shape, dtype=np.uint8)
+            else:
+                scaled = np.clip((array - low) / (high - low) * 255, 0, 255).astype(np.uint8)
+        Image.fromarray(scaled).save(output_path)
+        return
+    Image.fromarray(np.clip(array[..., :3], 0, 255).astype(np.uint8)).save(output_path)
+
+
+def _write_mesh_obj(height: np.ndarray, output_path: Path, *, terrain_size_m: float) -> None:
+    rows, cols = height.shape
+    scale_x = terrain_size_m / max(cols - 1, 1)
+    scale_y = terrain_size_m / max(rows - 1, 1)
+    z_scale = max(terrain_size_m * 0.12, 1.0)
+    lines = ["# ORFD-derived local terrain mesh draft"]
+    for row in range(rows):
+        for col in range(cols):
+            x = col * scale_x - terrain_size_m / 2.0
+            y = row * scale_y
+            z = float(height[row, col]) * z_scale
+            lines.append(f"v {x:.4f} {y:.4f} {z:.4f}")
+    for row in range(rows - 1):
+        for col in range(cols - 1):
+            a = row * cols + col + 1
+            b = a + 1
+            c = a + cols
+            d = c + 1
+            lines.append(f"f {a} {c} {b}")
+            lines.append(f"f {b} {c} {d}")
+    output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _resize_nearest(image: np.ndarray, size: int) -> np.ndarray:
+    height, width = image.shape[:2]
+    rows = np.linspace(0, height - 1, size).astype(int)
+    cols = np.linspace(0, width - 1, size).astype(int)
+    return image[rows][:, cols]
+
+
+def _safe_name(value: str) -> str:
+    return "".join(char if char.isalnum() or char in {"-", "_"} else "_" for char in value).strip("_") or "default"

@@ -5,17 +5,21 @@ from __future__ import annotations
 import math
 import sys
 from collections.abc import Callable
+from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import QObject, QRectF, QThread, Qt, Signal, Slot
-from PySide6.QtGui import QColor, QFont, QPainter, QPen
+from PySide6.QtGui import QColor, QFont, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QFileDialog,
     QFrame,
+    QFormLayout,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
@@ -40,6 +44,24 @@ from PySide6.QtWidgets import (
 from desktop_app import services
 
 
+@dataclass
+class GuiSettings:
+    max_steps: int = 5
+    seed: int = 7
+    planner_horizon: int = 4
+    planner_samples: int = 16
+    planner_iterations: int = 2
+    image_size: int = 64
+    preview_frame_index: int = 0
+    terrain_frame_index: int = 0
+    terrain_grid_size: int = 64
+    terrain_size_m: int = 40
+    record: bool = True
+    record_arrays: bool = False
+    load_assets: bool = False
+    pipeline_runs_beamng: bool = True
+
+
 class TaskWorker(QObject):
     finished = Signal(object)
     failed = Signal(str)
@@ -56,6 +78,62 @@ class TaskWorker(QObject):
             self.finished.emit(self.fn(*self.args, **self.kwargs))
         except Exception as exc:
             self.failed.emit(str(exc))
+
+
+class AdvancedSettingsDialog(QDialog):
+    def __init__(self, settings: GuiSettings, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("高级参数")
+        self.setMinimumWidth(420)
+        self.controls: dict[str, QSpinBox | QCheckBox] = {}
+
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+
+        for name, label, minimum, maximum in [
+            ("max_steps", "最大步数", 1, 100000),
+            ("seed", "随机种子", 0, 999999),
+            ("planner_horizon", "Planner horizon", 1, 200),
+            ("planner_samples", "Planner samples", 4, 5000),
+            ("planner_iterations", "Planner iterations", 1, 100),
+            ("image_size", "HDF5 图像尺寸", 16, 512),
+            ("preview_frame_index", "预览帧索引", 0, 1000000),
+            ("terrain_frame_index", "地形帧索引", 0, 1000000),
+            ("terrain_grid_size", "地形网格", 16, 256),
+            ("terrain_size_m", "地形尺寸 m", 5, 500),
+        ]:
+            spin = QSpinBox()
+            spin.setRange(minimum, maximum)
+            spin.setValue(int(getattr(settings, name)))
+            self.controls[name] = spin
+            form.addRow(label, spin)
+
+        for name, label in [
+            ("record", "记录 episode"),
+            ("record_arrays", "记录数组"),
+            ("load_assets", "回放时加载数据资产"),
+            ("pipeline_runs_beamng", "一键流程完成后运行 BeamNG"),
+        ]:
+            checkbox = QCheckBox()
+            checkbox.setChecked(bool(getattr(settings, name)))
+            self.controls[name] = checkbox
+            form.addRow(label, checkbox)
+
+        layout.addLayout(form)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def values(self) -> GuiSettings:
+        data: dict[str, Any] = {}
+        for key, control in self.controls.items():
+            if isinstance(control, QCheckBox):
+                data[key] = control.isChecked()
+            else:
+                data[key] = control.value()
+        return GuiSettings(**data)
 
 
 class MetricCard(QFrame):
@@ -79,7 +157,7 @@ class TrajectoryCanvas(QWidget):
     def __init__(self) -> None:
         super().__init__()
         self.trace: list[dict[str, Any]] = []
-        self.setMinimumHeight(320)
+        self.setMinimumHeight(300)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
     def set_trace(self, trace: list[dict[str, Any]]) -> None:
@@ -124,13 +202,13 @@ class TrajectoryCanvas(QWidget):
 
         projected = [project(point) for point in points]
         painter.setPen(QPen(QColor("#43d9ad"), 3))
-        for start, end in zip(projected, projected[1:]):
+        for start, end in zip(projected, projected[1:], strict=False):
             painter.drawLine(int(start[0]), int(start[1]), int(end[0]), int(end[1]))
 
-        start = projected[0]
-        end = projected[-1]
         painter.setBrush(QColor("#f6c85f"))
         painter.setPen(Qt.PenStyle.NoPen)
+        start = projected[0]
+        end = projected[-1]
         painter.drawEllipse(QRectF(start[0] - 5, start[1] - 5, 10, 10))
         painter.setBrush(QColor("#ff6b6b"))
         painter.drawEllipse(QRectF(end[0] - 6, end[1] - 6, 12, 12))
@@ -147,7 +225,8 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("OffroadSimBench Desktop")
-        self.resize(1360, 860)
+        self.resize(1380, 880)
+        self.settings = GuiSettings()
         self.catalog: dict[str, list[dict[str, Any]]] = {}
         self.threads: list[QThread] = []
         self.workers: list[TaskWorker] = []
@@ -159,7 +238,6 @@ class MainWindow(QMainWindow):
         root_layout = QHBoxLayout(root)
         root_layout.setContentsMargins(0, 0, 0, 0)
         root_layout.setSpacing(0)
-
         root_layout.addWidget(self._build_sidebar())
         root_layout.addWidget(self._build_main_area(), 1)
         self.refresh_catalogs()
@@ -177,13 +255,13 @@ class MainWindow(QMainWindow):
         layout.addWidget(title)
         layout.addWidget(subtitle)
         layout.addSpacing(18)
-        for label in ["总览", "数据集", "世界模型", "路径规划", "BeamNG", "实验记录", "设置"]:
+        for label in ["总览", "数据集", "世界模型", "路径规划", "BeamNG", "实验记录"]:
             button = QPushButton(label)
             button.setObjectName("navButton")
-            button.setEnabled(label in {"总览", "数据集", "世界模型", "路径规划", "BeamNG", "实验记录"})
+            button.setEnabled(False)
             layout.addWidget(button)
         layout.addStretch(1)
-        self.runtime_label = QLabel("Runtime: NaN")
+        self.runtime_label = QLabel("BeamNG: NaN")
         self.runtime_label.setObjectName("mutedText")
         layout.addWidget(self.runtime_label)
         return sidebar
@@ -198,13 +276,16 @@ class MainWindow(QMainWindow):
         title_box = QVBoxLayout()
         title = QLabel("实验控制台")
         title.setObjectName("pageTitle")
-        subtitle = QLabel("已实现接口接真实运行链路；未完成能力只显示 NaN 或 未完成")
+        subtitle = QLabel("首页只放常用路径；复杂参数在高级参数里调整。未完成能力显示 NaN 或未完成。")
         subtitle.setObjectName("mutedText")
         title_box.addWidget(title)
         title_box.addWidget(subtitle)
         header.addLayout(title_box, 1)
+        advanced_button = QPushButton("高级参数")
+        advanced_button.clicked.connect(self.open_advanced_settings)
         self.refresh_button = QPushButton("刷新状态")
         self.refresh_button.clicked.connect(self.refresh_catalogs)
+        header.addWidget(advanced_button)
         header.addWidget(self.refresh_button)
         layout.addLayout(header)
 
@@ -226,92 +307,100 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 12, 0)
         layout.setSpacing(12)
 
-        self.backend_combo = self._combo()
-        self.scenario_combo = self._combo()
-        self.agent_combo = self._combo()
-        self.world_model_combo = self._combo()
-        self.planner_combo = self._combo()
         self.dataset_root_edit = QLineEdit()
-        self.dataset_root_edit.setPlaceholderText("D:\\datasets\\ORFD 或 outputs\\mock_orfd_phase3")
+        self.dataset_root_edit.setPlaceholderText(r"D:\programs\OffroadSimBench\datasets\ORFD_Dataset_ICRA2022_ZIP")
         self.sequence_combo = self._combo(editable=True)
-        self.adapter_edit = QLineEdit()
-        self.adapter_edit.setPlaceholderText("orfd / 留空自动识别")
-        self.model_path_edit = QLineEdit()
-        self.model_path_edit.setPlaceholderText("outputs\\models\\phase3_tiny_world_model")
+        self.adapter_edit = QLineEdit("orfd")
         self.stablewm_hdf5_edit = QLineEdit()
-        self.stablewm_hdf5_edit.setPlaceholderText("outputs\\stablewm\\orfd_or_beamng.h5")
-
-        layout.addWidget(self._group("运行配置", [
-            self._field("Backend", self.backend_combo),
-            self._field("Scenario", self.scenario_combo),
-            self._field("Agent", self.agent_combo),
-            self._field("World model", self.world_model_combo),
-            self._field("Planner", self.planner_combo),
-        ]))
+        self.stablewm_hdf5_edit.setPlaceholderText(r"outputs\stablewm\orfd_gui.h5")
+        self.model_path_edit = QLineEdit()
+        self.model_path_edit.setPlaceholderText(r"outputs\models\lewm_orfd_gui")
 
         dataset_browse = QPushButton("选择")
         dataset_browse.clicked.connect(lambda: self._browse_dir(self.dataset_root_edit))
         model_browse = QPushButton("选择")
         model_browse.clicked.connect(lambda: self._browse_path_or_dir(self.model_path_edit))
-        layout.addWidget(self._group("数据与模型", [
-            self._field("Dataset root", self._with_button(self.dataset_root_edit, dataset_browse)),
-            self._field("Sequence", self.sequence_combo),
-            self._field("Adapter", self.adapter_edit),
-            self._field("Model path", self._with_button(self.model_path_edit, model_browse)),
-            self._field("StableWM HDF5", self.stablewm_hdf5_edit),
-        ]))
+        layout.addWidget(
+            self._group(
+                "数据与模型",
+                [
+                    self._field("Dataset root", self._with_button(self.dataset_root_edit, dataset_browse)),
+                    self._field("Sequence", self.sequence_combo),
+                    self._field("Adapter", self.adapter_edit),
+                    self._field("StableWM HDF5", self.stablewm_hdf5_edit),
+                    self._field("Model path", self._with_button(self.model_path_edit, model_browse)),
+                ],
+            )
+        )
 
-        self.max_steps_spin = self._spin(1, 100000, 120)
-        self.seed_spin = self._spin(0, 999999, 7)
-        self.planner_horizon_spin = self._spin(1, 200, 10)
-        self.planner_samples_spin = self._spin(4, 5000, 128)
-        self.planner_iterations_spin = self._spin(1, 100, 4)
-        self.record_check = QCheckBox("记录 episode")
-        self.record_check.setChecked(True)
-        self.record_arrays_check = QCheckBox("记录数组")
-        self.load_assets_check = QCheckBox("加载数据集资产")
-        layout.addWidget(self._group("参数", [
-            self._field("Max steps", self.max_steps_spin),
-            self._field("Seed", self.seed_spin),
-            self._field("Planner horizon", self.planner_horizon_spin),
-            self._field("Planner samples", self.planner_samples_spin),
-            self._field("Planner iterations", self.planner_iterations_spin),
-            self.record_check,
-            self.record_arrays_check,
-            self.load_assets_check,
-        ]))
+        self.backend_combo = self._combo()
+        self.scenario_combo = self._combo()
+        self.agent_combo = self._combo()
+        self.world_model_combo = self._combo()
+        self.planner_combo = self._combo()
+        layout.addWidget(
+            self._group(
+                "运行选择",
+                [
+                    self._field("Backend", self.backend_combo),
+                    self._field("Scenario", self.scenario_combo),
+                    self._field("Agent", self.agent_combo),
+                    self._field("World model", self.world_model_combo),
+                    self._field("Planner", self.planner_combo),
+                ],
+            )
+        )
 
         run_button = QPushButton("开始测试")
         run_button.setObjectName("primaryButton")
         run_button.clicked.connect(self.run_episode)
+        pipeline_button = QPushButton("一键 ORFD → LE-WM → BeamNG")
+        pipeline_button.setObjectName("primaryButton")
+        pipeline_button.clicked.connect(self.run_orfd_lewm_pipeline)
         inspect_button = QPushButton("检查数据集")
         inspect_button.clicked.connect(self.inspect_dataset)
-        train_button = QPushButton("训练 tiny world model")
-        train_button.clicked.connect(self.train_tiny_model)
+        preview_button = QPushButton("预览 ORFD 图像")
+        preview_button.clicked.connect(self.preview_dataset)
         export_hdf5_button = QPushButton("导出 StableWM HDF5")
         export_hdf5_button.clicked.connect(self.export_stablewm_hdf5)
         train_lewm_button = QPushButton("训练 LE-WM cost model")
         train_lewm_button.clicked.connect(self.train_lewm_cost_model)
+        terrain_button = QPushButton("导出 BeamNG 地形草案")
+        terrain_button.clicked.connect(self.export_beamng_terrain_draft)
+        train_tiny_button = QPushButton("训练 tiny world model")
+        train_tiny_button.clicked.connect(self.train_tiny_model)
         beamng_button = QPushButton("检查 BeamNG")
         beamng_button.clicked.connect(self.check_beamng)
-        stop_button = QPushButton("停止 / 暂停")
-        stop_button.setEnabled(False)
-        stop_button.setToolTip("运行中断接口未完成")
-        layout.addWidget(self._group("动作", [run_button, inspect_button, train_button, export_hdf5_button, train_lewm_button, beamng_button, stop_button]))
+        layout.addWidget(
+            self._group(
+                "动作",
+                [
+                    pipeline_button,
+                    run_button,
+                    inspect_button,
+                    preview_button,
+                    export_hdf5_button,
+                    train_lewm_button,
+                    terrain_button,
+                    train_tiny_button,
+                    beamng_button,
+                ],
+            )
+        )
         layout.addStretch(1)
         return scroll
 
     def _build_workbench(self) -> QWidget:
         tabs = QTabWidget()
         tabs.addTab(self._build_overview_tab(), "总览")
-        tabs.addTab(self._build_catalog_tab(), "运行时状态")
+        tabs.addTab(self._build_preview_tab(), "数据预览")
+        tabs.addTab(self._build_catalog_tab(), "运行状态")
         tabs.addTab(self._build_unfinished_tab(), "预留接口")
         return tabs
 
     def _build_overview_tab(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
-        layout.setSpacing(12)
         metrics = QGridLayout()
         for index, key in enumerate(["steps", "done", "best_cost", "final_speed", "max_risk", "reward"]):
             card = MetricCard(key.replace("_", " ").title())
@@ -336,6 +425,23 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(0, 3)
         splitter.setStretchFactor(1, 2)
         layout.addWidget(splitter, 1)
+        return page
+
+    def _build_preview_tab(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        image_row = QHBoxLayout()
+        self.rgb_preview = self._preview_label("RGB: NaN")
+        self.depth_preview = self._preview_label("Depth: NaN")
+        self.terrain_preview = self._preview_label("Terrain: NaN")
+        image_row.addWidget(self.rgb_preview, 1)
+        image_row.addWidget(self.depth_preview, 1)
+        image_row.addWidget(self.terrain_preview, 1)
+        layout.addLayout(image_row, 2)
+        self.preview_summary = QTextEdit()
+        self.preview_summary.setReadOnly(True)
+        self.preview_summary.setPlaceholderText("数据集预览与地形草案信息")
+        layout.addWidget(self.preview_summary, 1)
         return page
 
     def _build_catalog_tab(self) -> QWidget:
@@ -370,34 +476,50 @@ class MainWindow(QMainWindow):
     def refresh_catalogs(self) -> None:
         self.catalog = services.catalog_snapshot()
         self._fill_combo(self.backend_combo, self.catalog["backends"], "name", default="gym_heightmap")
-        self._fill_combo(self.scenario_combo, self.catalog["scenarios"], "id", default="forest_trail_001")
-        self._fill_combo(self.agent_combo, self.catalog["agents"], "name", default="rule_based")
-        self._fill_combo(self.world_model_combo, self.catalog["world_models"], "name", default="simple_kinematic")
-        self._fill_combo(self.planner_combo, [{"name": ""}] + self.catalog["planners"], "name", default="")
+        self._fill_combo(self.scenario_combo, self.catalog["scenarios"], "id", default="beamng_orfd_eval")
+        self._fill_combo(self.agent_combo, self.catalog["agents"], "name", default="world_model")
+        self._fill_combo(self.world_model_combo, self.catalog["world_models"], "name", default="le_wm")
+        self._fill_combo(self.planner_combo, [{"name": ""}] + self.catalog["planners"], "name", default="le_wm_cem")
         self._fill_catalog_table()
         self._fill_episode_list()
         beamng = _find_named(self.catalog["backends"], "beamng")
         self.runtime_label.setText(f"BeamNG: {services.display_value(beamng.get('available') if beamng else None)}")
         self.log("状态已刷新")
 
+    def open_advanced_settings(self) -> None:
+        dialog = AdvancedSettingsDialog(self.settings, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.settings = dialog.values()
+            self.log(f"高级参数已更新: {_compact_json(asdict(self.settings))}")
+
     def run_episode(self) -> None:
         request = self._current_request()
         self.log(f"开始运行：backend={request.backend}, agent={request.agent}, planner={request.planner or 'none'}")
-        self._run_task(
-            lambda: services.run_episode_from_request(request),
-            self._episode_finished,
-            "episode failed",
-        )
+        self._run_task(lambda: services.run_episode_from_request(request), self._episode_finished, "episode failed")
 
     def inspect_dataset(self) -> None:
         self.log("检查数据集...")
-        root = self.dataset_root_edit.text().strip()
-        adapter = self.adapter_edit.text().strip()
-        sequence_id = self.sequence_combo.currentText().strip()
         self._run_task(
-            lambda: services.inspect_dataset(root, adapter=adapter, sequence_id=sequence_id),
+            lambda: services.inspect_dataset(
+                self.dataset_root_edit.text().strip(),
+                adapter=self.adapter_edit.text().strip(),
+                sequence_id=self.sequence_combo.currentText().strip(),
+            ),
             self._dataset_inspected,
             "dataset inspect failed",
+        )
+
+    def preview_dataset(self) -> None:
+        self.log("生成 ORFD 预览...")
+        self._run_task(
+            lambda: services.preview_dataset_frame(
+                self.dataset_root_edit.text().strip(),
+                adapter=self.adapter_edit.text().strip(),
+                sequence_id=self.sequence_combo.currentText().strip(),
+                frame_index=self.settings.preview_frame_index,
+            ),
+            self._preview_ready,
+            "dataset preview failed",
         )
 
     def train_tiny_model(self) -> None:
@@ -406,11 +528,14 @@ class MainWindow(QMainWindow):
             self.log("训练 tiny world model 需要 dataset root")
             return
         output = self.model_path_edit.text().strip() or str(services.ROOT / "outputs" / "models" / "gui_tiny_world_model")
-        adapter = self.adapter_edit.text().strip()
-        sequence_id = self.sequence_combo.currentText().strip()
         self.log(f"训练 tiny world model -> {output}")
         self._run_task(
-            lambda: services.train_tiny_world_model(root, output, adapter=adapter, sequence_id=sequence_id),
+            lambda: services.train_tiny_world_model(
+                root,
+                output,
+                adapter=self.adapter_edit.text().strip(),
+                sequence_id=self.sequence_combo.currentText().strip(),
+            ),
             self._training_finished,
             "training failed",
         )
@@ -418,11 +543,15 @@ class MainWindow(QMainWindow):
     def export_stablewm_hdf5(self) -> None:
         root = self.dataset_root_edit.text().strip()
         output = self.stablewm_hdf5_edit.text().strip() or str(services.ROOT / "outputs" / "stablewm" / "gui_export.h5")
-        adapter = self.adapter_edit.text().strip()
-        sequence_id = self.sequence_combo.currentText().strip()
         self.log(f"导出 StableWM HDF5 -> {output}")
         self._run_task(
-            lambda: services.export_lewm_hdf5(root, output, adapter=adapter, sequence_id=sequence_id, image_size=64),
+            lambda: services.export_lewm_hdf5(
+                root,
+                output,
+                adapter=self.adapter_edit.text().strip(),
+                sequence_id=self.sequence_combo.currentText().strip(),
+                image_size=self.settings.image_size,
+            ),
             self._hdf5_exported,
             "stablewm export failed",
         )
@@ -435,6 +564,40 @@ class MainWindow(QMainWindow):
             lambda: services.train_lewm_cost_model(hdf5_path, output),
             self._training_finished,
             "lewm training failed",
+        )
+
+    def run_orfd_lewm_pipeline(self) -> None:
+        request = services.PipelineRequest(
+            dataset_root=self.dataset_root_edit.text().strip(),
+            adapter=self.adapter_edit.text().strip() or "orfd",
+            sequence_id=self.sequence_combo.currentText().strip(),
+            hdf5_path=self.stablewm_hdf5_edit.text().strip(),
+            model_dir=self.model_path_edit.text().strip(),
+            image_size=self.settings.image_size,
+            planner_horizon=self.settings.planner_horizon,
+            planner_samples=self.settings.planner_samples,
+            planner_iterations=self.settings.planner_iterations,
+            max_steps=self.settings.max_steps,
+            seed=self.settings.seed,
+            run_beamng=self.settings.pipeline_runs_beamng,
+            beamng_scenario=self.scenario_combo.currentData() or self.scenario_combo.currentText(),
+        )
+        self.log("启动一键流程：ORFD -> HDF5 -> LE-WM cost -> dataset replay -> BeamNG")
+        self._run_task(lambda: services.run_orfd_lewm_pipeline(request), self._pipeline_finished, "pipeline failed")
+
+    def export_beamng_terrain_draft(self) -> None:
+        self.log("导出 ORFD 局部 BeamNG 地形草案...")
+        self._run_task(
+            lambda: services.export_orfd_beamng_terrain_draft(
+                self.dataset_root_edit.text().strip(),
+                adapter=self.adapter_edit.text().strip(),
+                sequence_id=self.sequence_combo.currentText().strip(),
+                frame_index=self.settings.terrain_frame_index,
+                grid_size=self.settings.terrain_grid_size,
+                terrain_size_m=float(self.settings.terrain_size_m),
+            ),
+            self._terrain_exported,
+            "terrain export failed",
         )
 
     def check_beamng(self) -> None:
@@ -458,17 +621,48 @@ class MainWindow(QMainWindow):
         self.trajectory.set_trace(services.load_episode_trace(path) if path else [])
         self.refresh_catalogs()
 
+    def _pipeline_finished(self, payload: dict[str, Any]) -> None:
+        self.stablewm_hdf5_edit.setText(str(payload.get("hdf5_path", "")))
+        self.model_path_edit.setText(str(payload.get("model_dir", "")))
+        replay = payload.get("dataset_replay") if isinstance(payload.get("dataset_replay"), dict) else {}
+        beamng = payload.get("beamng") if isinstance(payload.get("beamng"), dict) else None
+        metrics_source = beamng or replay
+        if isinstance(metrics_source, dict):
+            metrics = metrics_source.get("metrics", {}) if isinstance(metrics_source.get("metrics"), dict) else {}
+            self._update_metrics(metrics)
+            path = metrics_source.get("episode_path")
+            self.trajectory.set_trace(services.load_episode_trace(path) if path else [])
+        self.dataset_summary.setText(_compact_json(payload))
+        self.log("一键流程完成")
+        self.refresh_catalogs()
+
     def _dataset_inspected(self, payload: dict[str, Any]) -> None:
         self.dataset_info = payload
         self.dataset_summary.setText(_compact_json(payload))
         self.sequence_combo.clear()
         for sequence_id in payload.get("sequences", []):
             self.sequence_combo.addItem(str(sequence_id))
+        selected = str(payload.get("selected_sequence", ""))
+        index = self.sequence_combo.findText(selected)
+        if index >= 0:
+            self.sequence_combo.setCurrentIndex(index)
         self.log(f"数据集 OK: {payload.get('dataset_id')} / frames={payload.get('frame_count')}")
+
+    def _preview_ready(self, payload: dict[str, Any]) -> None:
+        previews = payload.get("previews", {}) if isinstance(payload.get("previews"), dict) else {}
+        self._set_preview(self.rgb_preview, previews.get("front_rgb"), "RGB: NaN")
+        self._set_preview(self.depth_preview, previews.get("depth") or previews.get("label"), "Depth/Label: NaN")
+        self.preview_summary.setText(_compact_json(payload))
+        self.log(f"预览完成: frame={payload.get('frame_id', services.NAN_TEXT)}")
+
+    def _terrain_exported(self, payload: dict[str, Any]) -> None:
+        self._set_preview(self.terrain_preview, payload.get("preview"), "Terrain: NaN")
+        self.preview_summary.setText(_compact_json(payload))
+        self.log(f"地形草案已导出: {payload.get('manifest', services.NAN_TEXT)}")
 
     def _training_finished(self, payload: dict[str, Any]) -> None:
         self.model_path_edit.setText(str(payload.get("output_dir", "")))
-        self.log(f"模型训练完成: {payload.get('model_path', services.NAN_TEXT)}")
+        self.log(f"模型训练完成: {payload.get('model_path', payload.get('checkpoint_path', services.NAN_TEXT))}")
         self.refresh_catalogs()
 
     def _hdf5_exported(self, payload: dict[str, Any]) -> None:
@@ -514,20 +708,20 @@ class MainWindow(QMainWindow):
             backend=self.backend_combo.currentData() or self.backend_combo.currentText(),
             scenario=self.scenario_combo.currentData() or self.scenario_combo.currentText(),
             agent=self.agent_combo.currentData() or self.agent_combo.currentText(),
-            seed=self.seed_spin.value(),
-            max_steps=self.max_steps_spin.value(),
-            record=self.record_check.isChecked(),
-            record_arrays=self.record_arrays_check.isChecked(),
+            seed=self.settings.seed,
+            max_steps=self.settings.max_steps,
+            record=self.settings.record,
+            record_arrays=self.settings.record_arrays,
             world_model_type=self.world_model_combo.currentData() or self.world_model_combo.currentText(),
             world_model_path=self.model_path_edit.text().strip(),
             planner=self.planner_combo.currentData() or "",
-            planner_horizon=self.planner_horizon_spin.value(),
-            planner_samples=self.planner_samples_spin.value(),
-            planner_iterations=self.planner_iterations_spin.value(),
+            planner_horizon=self.settings.planner_horizon,
+            planner_samples=self.settings.planner_samples,
+            planner_iterations=self.settings.planner_iterations,
             dataset_root=self.dataset_root_edit.text().strip(),
             sequence_id=self.sequence_combo.currentText().strip(),
             adapter=self.adapter_edit.text().strip(),
-            load_assets=self.load_assets_check.isChecked(),
+            load_assets=self.settings.load_assets,
         )
 
     def _run_task(self, fn: Callable[[], Any], on_success: Callable[[Any], None], failure_label: str) -> None:
@@ -559,12 +753,6 @@ class MainWindow(QMainWindow):
         combo = QComboBox()
         combo.setEditable(editable)
         return combo
-
-    def _spin(self, minimum: int, maximum: int, value: int) -> QSpinBox:
-        spin = QSpinBox()
-        spin.setRange(minimum, maximum)
-        spin.setValue(value)
-        return spin
 
     def _fill_combo(self, combo: QComboBox, rows: list[dict[str, Any]], key: str, *, default: str = "") -> None:
         current = combo.currentData() or combo.currentText()
@@ -604,6 +792,26 @@ class MainWindow(QMainWindow):
         layout.addWidget(widget, 1)
         layout.addWidget(button)
         return frame
+
+    def _preview_label(self, placeholder: str) -> QLabel:
+        label = QLabel(placeholder)
+        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        label.setMinimumHeight(260)
+        label.setObjectName("previewPane")
+        label.setScaledContents(False)
+        return label
+
+    def _set_preview(self, label: QLabel, path: Any, placeholder: str) -> None:
+        if not path or not Path(str(path)).exists():
+            label.setPixmap(QPixmap())
+            label.setText(placeholder)
+            return
+        pixmap = QPixmap(str(path))
+        if pixmap.isNull():
+            label.setText(placeholder)
+            return
+        label.setText("")
+        label.setPixmap(pixmap.scaled(label.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
 
     def _browse_dir(self, target: QLineEdit) -> None:
         path = QFileDialog.getExistingDirectory(self, "选择目录", target.text() or str(services.ROOT))
@@ -681,10 +889,6 @@ QWidget {
     background: transparent;
     border: 1px solid transparent;
 }
-#navButton:hover {
-    background: #172633;
-    border-color: #2a4357;
-}
 QGroupBox {
     border: 1px solid #253746;
     border-radius: 8px;
@@ -726,7 +930,7 @@ QPushButton:disabled {
 #fieldLabel {
     color: #9fb1c1;
 }
-#metricCard, #todoCard {
+#metricCard, #todoCard, #previewPane {
     background: #121c25;
     border: 1px solid #253746;
     border-radius: 8px;

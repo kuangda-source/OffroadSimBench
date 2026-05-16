@@ -17,18 +17,25 @@ offroad-sim-gui
 - Dataset inspection through the registered dataset adapters.
 - Episode execution through `offroad_sim.evaluation.run_episode`.
 - Tiny learned world-model training through `TinyLearnedWorldModel.fit`.
+- StableWM HDF5 export with configurable image size from the advanced settings dialog.
+- LE-WM-compatible cost-model training from exported HDF5 files.
+- One-click ORFD -> HDF5 -> LE-WM cost checkpoint -> dataset replay -> optional BeamNG run.
+- ORFD frame preview for RGB, depth, and label assets, including official ORFD ZIP releases.
+- ORFD-derived local heightmap/OBJ terrain draft export for BeamNG map prototyping.
 - Episode list loading from `outputs/episodes`.
 - BEV-style trajectory preview from recorded episode state traces.
 - Metric cards populated from real episode metrics and agent diagnostics.
+- Advanced settings dialog for planner samples/iterations, image export size, preview frame,
+  terrain grid size, recording flags, and BeamNG pipeline behavior.
 
 ## Explicit Placeholders
 
 The GUI intentionally shows `NaN` or `未完成` for capabilities whose runtime
 path is not implemented yet:
 
-- LE-WM training wizard.
+- Full ORFD scene-level BeamNG level packaging.
+- Full upstream LE-WM visual latent training.
 - UE5 live bridge monitor.
-- Live camera/depth sensor panels.
 - Mid-episode pause, resume, and cancellation.
 
 These placeholders should be replaced only when the corresponding backend or

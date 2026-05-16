@@ -40,7 +40,7 @@ powershell -ExecutionPolicy Bypass -File scripts\phase3_acceptance.ps1 -BeamNGCo
 
 Result:
 
-- Python tests: `51 passed, 1 skipped`
+- Python tests: `55 passed, 1 skipped`
 - ORFD inspection: adapter `orfd`, sequence `training/seq_0001`, `8` frames
 - ORFD asset counts: `front_rgb=8`, `depth=8`, `lidar_points=8`, `label=8`
 - Tiny learned model training:
