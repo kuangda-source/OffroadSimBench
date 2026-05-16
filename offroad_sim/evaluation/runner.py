@@ -11,6 +11,7 @@ from offroad_sim.agents import make_agent
 from offroad_sim.backends.registry import make_backend
 from offroad_sim.replay import EpisodeRecorder
 from offroad_sim.scenarios import ScenarioConfig, load_scenario_config
+from offroad_sim.vehicles import VehicleConfig, load_vehicle_config
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -58,11 +59,13 @@ def run_episode(
     record_arrays: bool = False,
     backend_options: Mapping[str, Any] | None = None,
     agent_options: Mapping[str, Any] | None = None,
+    vehicle: VehicleConfig | str | Path | None = None,
 ) -> EpisodeRunResult:
     """Run one benchmark episode through any registered backend and agent."""
 
     scenario_config = _load_scenario(scenario)
-    backend = _create_backend(backend_name, seed=seed, options=backend_options)
+    vehicle_config = _load_vehicle(vehicle)
+    backend = _create_backend(backend_name, seed=seed, options=backend_options, vehicle_config=vehicle_config)
     agent = make_agent(agent_name, seed=seed, **dict(agent_options or {}))
     recorder = EpisodeRecorder(save_arrays=record_arrays) if record else None
     scenario_id = _scenario_id(scenario_config)
@@ -84,6 +87,7 @@ def run_episode(
                     "seed": seed,
                     "agent_options": dict(agent_options or {}),
                     "backend_options": dict(backend_options or {}),
+                    "vehicle": vehicle_config.vehicle_id if vehicle_config is not None else None,
                 }
             )
 
@@ -165,8 +169,24 @@ def _scenario_id(scenario: Any) -> str:
     return str(getattr(scenario, "scenario_id", "adhoc_scenario"))
 
 
-def _create_backend(name: str, *, seed: int, options: Mapping[str, Any] | None = None) -> Any:
+def _load_vehicle(vehicle: VehicleConfig | str | Path | None) -> VehicleConfig | None:
+    if vehicle is None:
+        return None
+    if isinstance(vehicle, VehicleConfig):
+        return vehicle
+    return load_vehicle_config(vehicle)
+
+
+def _create_backend(
+    name: str,
+    *,
+    seed: int,
+    options: Mapping[str, Any] | None = None,
+    vehicle_config: VehicleConfig | None = None,
+) -> Any:
     kwargs = dict(options or {})
+    if name == "beamng" and vehicle_config is not None:
+        kwargs["vehicle_config"] = vehicle_config
     try:
         return make_backend(name, seed=seed, **kwargs)
     except TypeError as exc:

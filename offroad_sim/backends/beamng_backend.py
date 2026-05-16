@@ -17,7 +17,7 @@ from typing import Any, Mapping
 from offroad_sim.backends.base import OffroadSimBackend
 from offroad_sim.backends.registry import BackendStatus
 from offroad_sim.core import Action, Observation, StepResult, VehicleState
-from offroad_sim.scenarios import ScenarioConfig
+from offroad_sim.scenarios import ScenarioConfig, scenario_metadata_section
 from offroad_sim.vehicles import VehicleConfig
 
 
@@ -62,6 +62,12 @@ class BeamNGBackend(OffroadSimBackend):
         self._scenario_config: Any = None
         self._step_count = 0
         self._connected = False
+        self._active_steps_per_action = self.connection.steps_per_action
+        self._route: list[tuple[float, float]] = []
+        self._distance_traveled = 0.0
+        self._last_position: tuple[float, float, float] | None = None
+        self._collision_count = 0
+        self._last_damage = 0.0
         if auto_connect:
             self.connect()
 
@@ -122,13 +128,14 @@ class BeamNGBackend(OffroadSimBackend):
         beamngpy = importlib.import_module("beamngpy")
         Vehicle = getattr(beamngpy, "Vehicle")
         config = vehicle_config or self.vehicle_config
-        model = config.template if config is not None else self.connection.vehicle_model
+        model = self._beamng_vehicle_model_for_config(self._scenario_config, config)
         try:
             self._vehicle = Vehicle(self.connection.vehicle_id, model=model, license="OSB")
         except TypeError:
             self._vehicle = Vehicle(self.connection.vehicle_id, model=model, licence="OSB")
         if self._scenario is not None:
-            self._scenario.add_vehicle(self._vehicle, pos=(0.0, 0.0, 0.0), rot_quat=(0.0, 0.0, 0.0, 1.0))
+            pos, rot_quat = self._beamng_vehicle_start_for_config(self._scenario_config)
+            self._scenario.add_vehicle(self._vehicle, pos=pos, rot_quat=rot_quat)
 
     def attach_sensors(self, vehicle_config: VehicleConfig | None = None) -> None:
         self._ensure_connected()
@@ -155,6 +162,13 @@ class BeamNGBackend(OffroadSimBackend):
 
     def reset(self, scenario_config: Any = None) -> Observation:
         self._scenario_config = scenario_config
+        beamng_options = self._beamng_metadata(scenario_config)
+        self._active_steps_per_action = int(beamng_options.get("steps_per_action", self.connection.steps_per_action))
+        self._route = self._beamng_route_for_config(scenario_config)
+        self._distance_traveled = 0.0
+        self._last_position = None
+        self._collision_count = 0
+        self._last_damage = 0.0
         if not self._connected:
             self.connect()
         if self._scenario is None:
@@ -174,9 +188,11 @@ class BeamNGBackend(OffroadSimBackend):
             scenario_api.start()
         elif hasattr(self._bng, "start_scenario"):
             self._bng.start_scenario()
+        self._configure_visible_helpers()
 
         self._step_count = 0
         self._last_observation = self._build_placeholder_observation(scenario_config)
+        self._update_motion_metrics(self._last_observation.vehicle_state)
         return self._last_observation
 
     def step(self, action: Action) -> StepResult:
@@ -184,7 +200,7 @@ class BeamNGBackend(OffroadSimBackend):
         if self._vehicle is not None and hasattr(self._vehicle, "control"):
             self._vehicle.control(throttle=action.throttle, steering=action.steer, brake=action.brake)
         if self._bng is not None and hasattr(self._bng, "step"):
-            self._bng.step(self.connection.steps_per_action)
+            self._bng.step(self._active_steps_per_action)
 
         self._step_count += 1
         self._sensor_cache = self._poll_sensors()
@@ -192,6 +208,7 @@ class BeamNGBackend(OffroadSimBackend):
             self._scenario_config,
             timestamp=float(self._step_count),
         )
+        self._update_motion_metrics(self._last_observation.vehicle_state)
         return StepResult(
             observation=self._last_observation,
             reward=0.0,
@@ -214,6 +231,10 @@ class BeamNGBackend(OffroadSimBackend):
             "level": self.connection.level,
             "sensor_count": len(self._sensors),
             "sensor_ids": sorted(self._sensors),
+            "route_waypoint_count": len(self._route),
+            "distance_traveled": self._distance_traveled,
+            "collision_count": self._collision_count,
+            "damage": self._last_damage,
         }
 
     def close(self) -> None:
@@ -228,6 +249,12 @@ class BeamNGBackend(OffroadSimBackend):
         self._scenario_config = None
         self._connected = False
         self._step_count = 0
+        self._active_steps_per_action = self.connection.steps_per_action
+        self._route = []
+        self._distance_traveled = 0.0
+        self._last_position = None
+        self._collision_count = 0
+        self._last_damage = 0.0
 
     @classmethod
     def _resolve_bng_home(cls, bng_home: str | Path | None = None) -> Path | None:
@@ -323,12 +350,89 @@ class BeamNGBackend(OffroadSimBackend):
         return getattr(task, key, default)
 
     def _beamng_level_for_config(self, config: Any) -> str:
+        beamng_options = self._beamng_metadata(config)
+        if beamng_options.get("level"):
+            return str(beamng_options["level"])
         explicit_level = self._read_config(config, "beamng_level", None) or self._read_config(config, "level", None)
         if explicit_level:
             return str(explicit_level)
         if self._read_config(config, "backend", None) == "beamng":
             return str(self._read_config(config, "map", self.connection.level))
         return self.connection.level
+
+    def _beamng_metadata(self, config: Any) -> dict[str, Any]:
+        if isinstance(config, ScenarioConfig):
+            return scenario_metadata_section(config, "beamng")
+        metadata = self._read_config(config, "metadata", {})
+        if isinstance(metadata, Mapping):
+            value = metadata.get("beamng", {})
+            return dict(value) if isinstance(value, Mapping) else {}
+        return {}
+
+    def _beamng_vehicle_model_for_config(self, config: Any, vehicle_config: VehicleConfig | None) -> str:
+        beamng_options = self._beamng_metadata(config)
+        if beamng_options.get("vehicle_model"):
+            return str(beamng_options["vehicle_model"])
+        if vehicle_config is not None:
+            return vehicle_config.template
+        return self.connection.vehicle_model
+
+    def _beamng_vehicle_start_for_config(self, config: Any) -> tuple[tuple[float, float, float], tuple[float, float, float, float]]:
+        beamng_options = self._beamng_metadata(config)
+        start = beamng_options.get("vehicle_start", {}) if isinstance(beamng_options.get("vehicle_start", {}), Mapping) else {}
+        pos = self._tuple_float(start.get("pos"), (0.0, 0.0, 0.5), 3)
+        rot_quat = self._tuple_float(start.get("rot_quat"), (0.0, 0.0, 0.0, 1.0), 4)
+        return pos, rot_quat
+
+    def _beamng_route_for_config(self, config: Any) -> list[tuple[float, float]]:
+        beamng_options = self._beamng_metadata(config)
+        raw_route = beamng_options.get("route", [])
+        route: list[tuple[float, float]] = []
+        if isinstance(raw_route, list):
+            for point in raw_route:
+                try:
+                    route.append((float(point[0]), float(point[1])))
+                except (TypeError, ValueError, IndexError):
+                    continue
+        if route:
+            return route
+        task = self._read_config(config, "task", None)
+        return [
+            tuple(float(value) for value in self._read_task_value(task, "start", (0.0, 0.0))),
+            tuple(float(value) for value in self._read_task_value(task, "goal", (0.0, 0.0))),
+        ]
+
+    def _tuple_float(self, value: Any, default: tuple[float, ...], length: int) -> tuple[float, ...]:
+        if value is None:
+            return default
+        try:
+            items = tuple(float(item) for item in value)
+        except (TypeError, ValueError):
+            return default
+        return items if len(items) == length else default
+
+    def _configure_visible_helpers(self) -> None:
+        beamng_options = self._beamng_metadata(self._scenario_config)
+        if not self._bng:
+            return
+        pos, _ = self._beamng_vehicle_start_for_config(self._scenario_config)
+        if str(beamng_options.get("camera_mode", "")).lower() in {"orbit", "free"}:
+            camera = getattr(self._bng, "camera", None)
+            set_free = getattr(camera, "set_free", None)
+            if callable(set_free):
+                try:
+                    set_free(pos=(pos[0] - 8.0, pos[1] - 8.0, pos[2] + 5.0), dir=(1.0, 1.0, -0.4))
+                except Exception:
+                    pass
+        if bool(beamng_options.get("draw_route", False)) and self._route:
+            debug = getattr(self._bng, "debug", None)
+            add_spheres = getattr(debug, "add_spheres", None)
+            if callable(add_spheres):
+                points = [(x, y, pos[2] + 0.5) for x, y in self._route]
+                try:
+                    add_spheres(points, radii=[0.8] * len(points), colors=[(0.0, 1.0, 0.0, 0.8)] * len(points))
+                except Exception:
+                    pass
 
     def _read_vehicle_state(self) -> VehicleState | None:
         vehicle = self._vehicle
@@ -373,6 +477,28 @@ class BeamNGBackend(OffroadSimBackend):
             yaw=yaw,
             speed=speed,
         )
+
+    def _update_motion_metrics(self, state: VehicleState) -> None:
+        current = (float(state.x), float(state.y), float(state.z))
+        if self._last_position is not None:
+            self._distance_traveled += math.sqrt(sum((current[index] - self._last_position[index]) ** 2 for index in range(3)))
+        self._last_position = current
+        damage = self._read_damage()
+        if damage > self._last_damage:
+            self._collision_count += 1
+        self._last_damage = max(self._last_damage, damage)
+
+    def _read_damage(self) -> float:
+        state = getattr(self._vehicle, "state", None)
+        if not isinstance(state, Mapping):
+            return self._last_damage
+        for key in ("damage", "damage_total"):
+            if key in state:
+                try:
+                    return float(state[key])
+                except (TypeError, ValueError):
+                    return self._last_damage
+        return self._last_damage
 
     def _make_sensor(self, sensors_module: Any, sensor: Any) -> Any | None:
         sensor_type = getattr(sensor, "sensor_type", "")

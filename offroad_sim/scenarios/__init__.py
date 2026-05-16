@@ -6,6 +6,7 @@ from offroad_sim.scenarios.config import (
     TaskConfig,
     TerrainConfig,
     load_scenario_config,
+    scenario_metadata_section,
 )
 
 __all__ = [
@@ -14,4 +15,5 @@ __all__ = [
     "TaskConfig",
     "TerrainConfig",
     "load_scenario_config",
+    "scenario_metadata_section",
 ]
