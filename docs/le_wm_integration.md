@@ -56,6 +56,25 @@ Recorded BeamNG episodes can be exported with:
 python scripts\export_episodes_hdf5.py outputs\episodes\beamng_orfd_eval_world_model_YYYYMMDDTHHMMSSZ outputs\stablewm\beamng_lewm_smoke.h5
 ```
 
+For BeamNG expert/route recordings, derive training actions from observed
+state deltas so the HDF5 reflects the motion that actually happened in the
+simulator:
+
+```powershell
+python scripts\export_episodes_hdf5.py outputs\episodes\beamng_visible_autodrive_route_world_model_YYYYMMDDTHHMMSSZ outputs\stablewm\beamng_map_lewm.h5 --actions-from-state
+```
+
+The BeamNG map smoke loop can run the complete local cycle:
+
+```powershell
+python scripts\run_beamng_lewm_closed_loop.py --collect-steps 160 --eval-steps 120 --output-dir outputs\beamng_map_lewm\demo
+```
+
+That command records a BeamNG `gridmap_v2` route episode, exports it to
+stable-worldmodel HDF5 with state-derived actions, trains an LE-WM-compatible
+cost checkpoint, and evaluates the checkpoint through `route_world_model` with
+`le_wm_cem`.
+
 ## Required External Runtime
 
 `le_wm_cem` requires:

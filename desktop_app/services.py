@@ -87,6 +87,22 @@ class VisibleBeamNGDemoRequest:
     beamng_gfx: str = "vk"
 
 
+@dataclass(slots=True)
+class BeamNGMapLeWMClosedLoopRequest:
+    scenario: str = "beamng_visible_autodrive"
+    vehicle: str = "configs/vehicles/ugv_medium.yaml"
+    output_dir: str = ""
+    collect_steps: int = 160
+    eval_steps: int = 120
+    seed: int = 7
+    planner: str = "le_wm_cem"
+    beamng_gfx: str = "vk"
+    close_beamng: bool = True
+    step_delay_sec: float = 0.0
+    pre_run_hold_sec: float = 0.0
+    post_run_hold_sec: float = 0.0
+
+
 def config_entries(kind: str, id_field: str) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for path in sorted((CONFIG_ROOT / kind).glob("*.yaml")):
@@ -261,6 +277,22 @@ def export_lewm_hdf5(
     return _run_json_command(command)
 
 
+def export_episodes_hdf5(episode_root: str, output_hdf5: str, *, actions_from_state: bool = False) -> dict[str, Any]:
+    if not episode_root:
+        raise ValueError("Episode root is required.")
+    if not output_hdf5:
+        raise ValueError("Output HDF5 path is required.")
+    command = [
+        sys.executable,
+        str(ROOT / "scripts" / "export_episodes_hdf5.py"),
+        episode_root,
+        output_hdf5,
+    ]
+    if actions_from_state:
+        command.append("--actions-from-state")
+    return _run_json_command(command)
+
+
 def train_lewm_cost_model(input_hdf5: str, output_dir: str) -> dict[str, Any]:
     if not input_hdf5:
         raise ValueError("Input HDF5 path is required.")
@@ -396,6 +428,79 @@ def run_visible_beamng_demo(request: VisibleBeamNGDemoRequest) -> dict[str, Any]
         "vehicle": request.vehicle,
         "beamng_gfx": request.beamng_gfx,
     }
+    return payload
+
+
+def run_beamng_map_lewm_closed_loop(request: BeamNGMapLeWMClosedLoopRequest) -> dict[str, Any]:
+    stamp = time.strftime("%Y%m%dT%H%M%S")
+    output_dir = Path(request.output_dir or ROOT / "outputs" / "beamng_map_lewm" / stamp)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    collection = run_visible_beamng_demo(
+        VisibleBeamNGDemoRequest(
+            world_model_type="simple_kinematic",
+            world_model_path="",
+            planner="",
+            scenario=request.scenario,
+            vehicle=request.vehicle,
+            max_steps=max(1, int(request.collect_steps)),
+            seed=request.seed,
+            record=True,
+            pre_run_hold_sec=request.pre_run_hold_sec,
+            step_delay_sec=request.step_delay_sec,
+            post_run_hold_sec=0.0,
+            close_beamng=True,
+            beamng_gfx=request.beamng_gfx,
+        )
+    )
+    episode_path = collection.get("episode_path")
+    if not episode_path:
+        raise RuntimeError("BeamNG collection did not produce an episode path.")
+
+    hdf5_path = output_dir / "beamng_map_lewm.h5"
+    hdf5 = export_episodes_hdf5(str(episode_path), str(hdf5_path), actions_from_state=True)
+
+    model_dir = output_dir / "model"
+    training = train_lewm_cost_model(str(hdf5["output_hdf5"]), str(model_dir))
+    model_path = str(training.get("output_dir") or model_dir)
+
+    evaluation = run_visible_beamng_demo(
+        VisibleBeamNGDemoRequest(
+            world_model_type="le_wm",
+            world_model_path=model_path,
+            planner=request.planner,
+            scenario=request.scenario,
+            vehicle=request.vehicle,
+            max_steps=max(1, int(request.eval_steps)),
+            seed=request.seed,
+            record=True,
+            pre_run_hold_sec=0.0,
+            step_delay_sec=request.step_delay_sec,
+            post_run_hold_sec=request.post_run_hold_sec,
+            close_beamng=request.close_beamng,
+            beamng_gfx=request.beamng_gfx,
+        )
+    )
+
+    payload: dict[str, Any] = {
+        "status": "completed",
+        "output_dir": str(output_dir.resolve()),
+        "hdf5_path": str(hdf5.get("output_hdf5", hdf5_path)),
+        "model_dir": model_path,
+        "collection": collection,
+        "hdf5": hdf5,
+        "training": training,
+        "evaluation": evaluation,
+        "acceptance": {
+            "collection_horizontal_distance": metric_value(collection.get("metrics", {}), "horizontal_distance_traveled"),
+            "evaluation_horizontal_distance": metric_value(evaluation.get("metrics", {}), "horizontal_distance_traveled"),
+            "world_model_type": "le_wm",
+            "planner": request.planner,
+        },
+    }
+    summary_path = output_dir / "closed_loop_summary.json"
+    summary_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    payload["summary_path"] = str(summary_path.resolve())
     return payload
 
 

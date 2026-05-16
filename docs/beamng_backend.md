@@ -60,6 +60,17 @@ action step cadence. The normal run path is:
 python scripts\run_beamng_visible_demo.py --dataset-root datasets\ORFD_Dataset_ICRA2022_ZIP --adapter orfd --sequence-id training/c2021_0228_1819 --world-model-type le_wm --world-model outputs\models\lewm_orfd_real_c2021_0228_1819 --planner le_wm_cem --scenario beamng_visible_autodrive --vehicle configs\vehicles\ugv_medium.yaml --max-steps 600
 ```
 
+For a local BeamNG-map LE-WM smoke loop, use:
+
+```powershell
+python scripts\run_beamng_lewm_closed_loop.py --collect-steps 160 --eval-steps 120 --output-dir outputs\beamng_map_lewm\demo
+```
+
+The loop collects an expert route episode on `gridmap_v2`, exports the
+recording to stable-worldmodel HDF5 with state-derived actions, trains a local
+LE-WM-compatible cost checkpoint, then launches a second visible BeamNG run
+using `world_model_type=le_wm` and `planner=le_wm_cem`.
+
 The demo runs through the shared `route_world_model` agent so the selected
 world model and planner remain replaceable without BeamNG-specific application
 logic. For the visible smoke demo, BeamNG execution uses `drive_mode=ai_line`

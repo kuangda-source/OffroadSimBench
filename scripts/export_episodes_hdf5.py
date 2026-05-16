@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("episode_root", help="One episode directory or a directory containing episode directories.")
     parser.add_argument("output_hdf5")
+    parser.add_argument(
+        "--actions-from-state",
+        action="store_true",
+        help="Derive actions from vehicle state deltas instead of recorded controls.",
+    )
     args = parser.parse_args()
 
     try:
@@ -43,7 +49,10 @@ def main() -> int:
         state = np.asarray([row["state"] for row in rows], dtype=np.float32)
         goal = np.asarray([row["goal"] for row in rows], dtype=np.float32)
         states.append(state)
-        actions.append(np.asarray([row["action"] for row in rows], dtype=np.float32))
+        if args.actions_from_state:
+            actions.append(_pseudo_actions(state))
+        else:
+            actions.append(np.asarray([row["action"] for row in rows], dtype=np.float32))
         rewards.append(np.asarray([row["reward"] for row in rows], dtype=np.float32))
         goals.append(goal)
         timestamps.append(np.asarray([row["timestamp"] for row in rows], dtype=np.float32))
@@ -59,6 +68,7 @@ def main() -> int:
         h5.attrs["schema"] = "stable_worldmodel_flat_v1"
         h5.attrs["source_episode_root"] = str(Path(args.episode_root).resolve())
         h5.attrs["episode_metadata"] = json.dumps(metadata, default=str)
+        h5.attrs["action_source"] = "state_delta" if args.actions_from_state else "recorded_action"
         h5.create_dataset("ep_len", data=np.asarray(ep_lengths, dtype=np.int64))
         h5.create_dataset("ep_offset", data=np.asarray(ep_offsets, dtype=np.int64))
         h5.create_dataset("state", data=np.concatenate(states, axis=0), compression="gzip")
@@ -67,7 +77,17 @@ def main() -> int:
         h5.create_dataset("goal", data=np.concatenate(goals, axis=0), compression="gzip")
         h5.create_dataset("timestamp", data=np.concatenate(timestamps, axis=0), compression="gzip")
 
-    print(json.dumps({"output_hdf5": str(output.resolve()), "episode_count": len(ep_lengths), "total_frames": offset}, indent=2))
+    print(
+        json.dumps(
+            {
+                "output_hdf5": str(output.resolve()),
+                "episode_count": len(ep_lengths),
+                "total_frames": offset,
+                "action_source": "state_delta" if args.actions_from_state else "recorded_action",
+            },
+            indent=2,
+        )
+    )
     return 0
 
 
@@ -104,6 +124,28 @@ def _read_episode_steps(path: Path) -> list[dict[str, Any]]:
                 }
             )
     return rows
+
+
+def _pseudo_actions(states: np.ndarray) -> np.ndarray:
+    if len(states) == 0:
+        return np.zeros((0, 3), dtype=np.float32)
+    if len(states) == 1:
+        return np.zeros((1, 3), dtype=np.float32)
+
+    actions: list[list[float]] = []
+    for current, nxt in zip(states, states[1:]):
+        speed_delta = float(nxt[4] - current[4])
+        yaw_delta = _wrap_angle(float(nxt[3] - current[3]))
+        steer = float(np.clip(yaw_delta / 0.25, -1.0, 1.0))
+        throttle = float(np.clip(speed_delta / 2.0 + 0.35, 0.0, 1.0))
+        brake = float(np.clip(-speed_delta / 2.0, 0.0, 1.0))
+        actions.append([steer, throttle, brake])
+    actions.append(actions[-1])
+    return np.asarray(actions, dtype=np.float32)
+
+
+def _wrap_angle(angle: float) -> float:
+    return (angle + math.pi) % (2.0 * math.pi) - math.pi
 
 
 def _read_json(path: Path) -> dict[str, Any]:

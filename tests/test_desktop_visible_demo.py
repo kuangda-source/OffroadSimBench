@@ -71,6 +71,7 @@ def test_beamng_page_has_visible_demo_action() -> None:
 
     texts = [button.text() for button in window.findChildren(QPushButton)]
 
+    assert "BeamNG LE-WM 闭环训练评估" in texts
     assert "启动 BeamNG 可视自动驾驶" in texts
     window.close()
 
@@ -87,4 +88,37 @@ def test_gui_visible_demo_uses_minimum_human_visible_steps(monkeypatch) -> None:
     window.run_visible_beamng_demo()
 
     assert captured["request"].max_steps >= 600
+    window.close()
+
+
+def test_gui_closed_loop_uses_beamng_map_request(monkeypatch) -> None:
+    _ensure_app()
+    window = MainWindow()
+    window.settings.max_steps = 5
+    captured: dict[str, services.BeamNGMapLeWMClosedLoopRequest] = {}
+
+    monkeypatch.setattr(services, "run_beamng_map_lewm_closed_loop", lambda request: captured.setdefault("request", request))
+    monkeypatch.setattr(window, "_run_task", lambda task, callback, label: task())
+
+    window.run_beamng_lewm_closed_loop()
+
+    assert captured["request"].collect_steps >= 160
+    assert captured["request"].eval_steps >= 80
+    assert captured["request"].close_beamng is False
+    window.close()
+
+
+def test_gui_pipeline_finished_reads_closed_loop_evaluation() -> None:
+    _ensure_app()
+    window = MainWindow()
+
+    window._pipeline_finished(
+        {
+            "hdf5_path": "map.h5",
+            "model_dir": "model",
+            "evaluation": {"metrics": {"steps": 12}, "episode_path": ""},
+        }
+    )
+
+    assert window.metric_cards["steps"].value_label.text() == "12"
     window.close()

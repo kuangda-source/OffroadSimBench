@@ -495,6 +495,7 @@ class MainWindow(QMainWindow):
             "BeamNG 与地形草案",
             [
                 self._action_button("启动 BeamNG 可视自动驾驶", self.run_visible_beamng_demo, primary=True),
+                self._action_button("BeamNG LE-WM 闭环训练评估", self.run_beamng_lewm_closed_loop),
                 self._action_button("检查 BeamNG", self.check_beamng),
                 self._action_button("导出 BeamNG 地形草案", self.export_beamng_terrain_draft),
             ],
@@ -700,6 +701,22 @@ class MainWindow(QMainWindow):
         self.log("启动 BeamNG 可视自动驾驶...")
         self._run_task(lambda: services.run_visible_beamng_demo(request), self._visible_demo_finished, "visible BeamNG demo failed")
 
+    def run_beamng_lewm_closed_loop(self) -> None:
+        request = services.BeamNGMapLeWMClosedLoopRequest(
+            scenario=self.scenario_combo.currentData() or self.scenario_combo.currentText() or "beamng_visible_autodrive",
+            collect_steps=max(int(self.settings.max_steps), 160),
+            eval_steps=max(int(self.settings.max_steps), 80),
+            seed=self.settings.seed,
+            planner=self.planner_combo.currentData() or self.planner_combo.currentText() or "le_wm_cem",
+            close_beamng=False,
+        )
+        self.log("BeamNG LE-WM 闭环：采集 -> HDF5 -> 训练 -> 评估")
+        self._run_task(
+            lambda: services.run_beamng_map_lewm_closed_loop(request),
+            self._pipeline_finished,
+            "beamng lewm closed loop failed",
+        )
+
     def load_selected_episode(self, item: QListWidgetItem) -> None:
         path = item.data(Qt.ItemDataRole.UserRole)
         if not path:
@@ -721,7 +738,8 @@ class MainWindow(QMainWindow):
         self.model_path_edit.setText(str(payload.get("model_dir", "")))
         replay = payload.get("dataset_replay") if isinstance(payload.get("dataset_replay"), dict) else {}
         beamng = payload.get("beamng") if isinstance(payload.get("beamng"), dict) else None
-        metrics_source = beamng or replay
+        evaluation = payload.get("evaluation") if isinstance(payload.get("evaluation"), dict) else None
+        metrics_source = beamng or evaluation or replay
         if isinstance(metrics_source, dict):
             metrics = metrics_source.get("metrics", {}) if isinstance(metrics_source.get("metrics"), dict) else {}
             self._update_metrics(metrics)

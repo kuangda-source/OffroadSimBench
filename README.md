@@ -216,6 +216,19 @@ Export recorded BeamNG episodes to stable-worldmodel HDF5:
 python scripts\export_episodes_hdf5.py outputs\episodes\beamng_orfd_eval_world_model_YYYYMMDDTHHMMSSZ outputs\stablewm\beamng_lewm_smoke.h5
 ```
 
+Derive actions from BeamNG state deltas when the episode was driven by the
+simulator route controller:
+
+```powershell
+python scripts\export_episodes_hdf5.py outputs\episodes\beamng_visible_autodrive_route_world_model_YYYYMMDDTHHMMSSZ outputs\stablewm\beamng_map_lewm.h5 --actions-from-state
+```
+
+Run the BeamNG-map LE-WM closed loop:
+
+```powershell
+python scripts\run_beamng_lewm_closed_loop.py --collect-steps 160 --eval-steps 120 --output-dir outputs\beamng_map_lewm\demo
+```
+
 BeamNG checks and LE-WM CEM smoke:
 
 ```powershell
