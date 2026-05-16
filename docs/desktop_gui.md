@@ -13,6 +13,9 @@ offroad-sim-gui
 
 ## Connected Features
 
+- Left navigation is organized by workflow: overview, dataset, world model,
+  path planning, BeamNG, and episode records.
+- The overview page keeps only basic run configuration and the start button.
 - Runtime catalogs for backends, agents, world models, and planners.
 - Dataset inspection through the registered dataset adapters.
 - Episode execution through `offroad_sim.evaluation.run_episode`.
