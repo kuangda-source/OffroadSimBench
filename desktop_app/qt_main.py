@@ -29,19 +29,28 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMainWindow,
     QPushButton,
-    QScrollArea,
     QSizePolicy,
     QSpinBox,
     QSplitter,
     QStackedWidget,
-    QTableWidget,
-    QTableWidgetItem,
     QTextEdit,
     QVBoxLayout,
     QWidget,
 )
 
 from desktop_app import services
+
+
+PAGE_SPACING = 16
+CARD_SPACING = 12
+FIELD_SPACING = 6
+CARD_MARGINS = (16, 20, 16, 16)
+CONTROL_HEIGHT = 36
+BUTTON_HEIGHT = 36
+PRIMARY_BUTTON_HEIGHT = 42
+NAV_BUTTON_HEIGHT = 40
+METRIC_CARD_HEIGHT = 82
+PREVIEW_MIN_HEIGHT = 280
 
 
 @dataclass
@@ -88,8 +97,12 @@ class AdvancedSettingsDialog(QDialog):
         self.controls: dict[str, QSpinBox | QCheckBox] = {}
 
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(14)
         form = QFormLayout()
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        form.setHorizontalSpacing(12)
+        form.setVerticalSpacing(10)
 
         for name, label, minimum, maximum in [
             ("max_steps", "最大步数", 1, 100000),
@@ -106,6 +119,7 @@ class AdvancedSettingsDialog(QDialog):
             spin = QSpinBox()
             spin.setRange(minimum, maximum)
             spin.setValue(int(getattr(settings, name)))
+            spin.setMinimumHeight(CONTROL_HEIGHT)
             self.controls[name] = spin
             form.addRow(label, spin)
 
@@ -140,8 +154,10 @@ class MetricCard(QFrame):
     def __init__(self, title: str, value: str = services.NAN_TEXT) -> None:
         super().__init__()
         self.setObjectName("metricCard")
+        self.setMinimumHeight(METRIC_CARD_HEIGHT)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(14, 10, 14, 12)
+        layout.setContentsMargins(16, 12, 16, 14)
+        layout.setSpacing(6)
         self.title_label = QLabel(title)
         self.title_label.setObjectName("metricTitle")
         self.value_label = QLabel(value)
@@ -270,26 +286,31 @@ class MainWindow(QMainWindow):
         self.stablewm_hdf5_edit.setPlaceholderText(r"outputs\stablewm\orfd_gui.h5")
         self.model_path_edit = QLineEdit()
         self.model_path_edit.setPlaceholderText(r"outputs\models\lewm_orfd_gui")
+        for edit in (self.dataset_root_edit, self.adapter_edit, self.stablewm_hdf5_edit, self.model_path_edit):
+            self._configure_control(edit)
 
     def _build_sidebar(self) -> QWidget:
         sidebar = QFrame()
         sidebar.setObjectName("sidebar")
-        sidebar.setFixedWidth(220)
+        sidebar.setFixedWidth(232)
         layout = QVBoxLayout(sidebar)
-        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setContentsMargins(18, 20, 18, 18)
+        layout.setSpacing(6)
 
         title = QLabel("OffroadSimBench")
         title.setObjectName("appTitle")
         subtitle = QLabel("本地越野仿真实验台")
         subtitle.setObjectName("mutedText")
+        subtitle.setWordWrap(True)
         layout.addWidget(title)
         layout.addWidget(subtitle)
-        layout.addSpacing(18)
+        layout.addSpacing(16)
 
         for index, (label, _) in enumerate(self.PAGE_TITLES):
             button = QPushButton(label)
             button.setObjectName("navButton")
             button.setCheckable(True)
+            self._configure_button(button, height=NAV_BUTTON_HEIGHT)
             button.clicked.connect(lambda checked=False, page=index: self.select_page(page))
             self.nav_buttons.append(button)
             layout.addWidget(button)
@@ -303,22 +324,29 @@ class MainWindow(QMainWindow):
     def _build_main_area(self) -> QWidget:
         area = QWidget()
         layout = QVBoxLayout(area)
-        layout.setContentsMargins(22, 18, 22, 18)
-        layout.setSpacing(16)
+        layout.setContentsMargins(24, 20, 24, 22)
+        layout.setSpacing(PAGE_SPACING)
 
         header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        header.setSpacing(12)
         title_box = QVBoxLayout()
+        title_box.setContentsMargins(0, 0, 0, 0)
+        title_box.setSpacing(4)
         self.page_title = QLabel()
         self.page_title.setObjectName("pageTitle")
         self.page_subtitle = QLabel()
         self.page_subtitle.setObjectName("mutedText")
+        self.page_subtitle.setWordWrap(True)
         title_box.addWidget(self.page_title)
         title_box.addWidget(self.page_subtitle)
         header.addLayout(title_box, 1)
 
         advanced_button = QPushButton("高级参数")
+        self._configure_button(advanced_button)
         advanced_button.clicked.connect(self.open_advanced_settings)
         self.refresh_button = QPushButton("刷新状态")
+        self._configure_button(self.refresh_button)
         self.refresh_button.clicked.connect(self.refresh_catalogs)
         header.addWidget(advanced_button)
         header.addWidget(self.refresh_button)
@@ -335,11 +363,9 @@ class MainWindow(QMainWindow):
         return area
 
     def _build_overview_page(self) -> QWidget:
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setSpacing(14)
+        page, layout = self._page()
 
-        config_row = QHBoxLayout()
+        config_row = self._row_layout()
         config_row.addWidget(
             self._group(
                 "基础运行配置",
@@ -354,32 +380,39 @@ class MainWindow(QMainWindow):
             1,
         )
 
-        action_panel = QGroupBox("开始")
-        action_layout = QVBoxLayout(action_panel)
+        action_panel, action_layout = self._new_group("开始")
         run_button = QPushButton("开始测试")
-        run_button.setObjectName("primaryButton")
+        self._configure_button(run_button, primary=True)
         run_button.clicked.connect(self.run_episode)
+        hint = QLabel("数据集路径、模型训练、地形草案等操作请从左侧对应页面进入。")
+        hint.setObjectName("mutedText")
+        hint.setWordWrap(True)
         action_layout.addWidget(run_button)
-        action_layout.addWidget(QLabel("数据集路径、模型训练、地形草案等操作请从左侧对应页面进入。"))
+        action_layout.addWidget(hint)
         action_layout.addStretch(1)
         config_row.addWidget(action_panel, 1)
         layout.addLayout(config_row)
 
+        metrics_box, metrics_layout = self._new_group("运行指标")
         metrics = QGridLayout()
+        metrics.setContentsMargins(0, 0, 0, 0)
+        metrics.setHorizontalSpacing(CARD_SPACING)
+        metrics.setVerticalSpacing(CARD_SPACING)
         for index, key in enumerate(["steps", "done", "best_cost", "final_speed", "max_risk", "reward"]):
             card = MetricCard(key.replace("_", " ").title())
             self.metric_cards[key] = card
             metrics.addWidget(card, index // 3, index % 3)
-        layout.addLayout(metrics)
+        metrics_layout.addLayout(metrics)
+        layout.addWidget(metrics_box)
         layout.addStretch(1)
         return page
 
     def _build_dataset_page(self) -> QWidget:
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        body = QHBoxLayout()
+        page, layout = self._page()
+        body = self._row_layout()
 
         dataset_browse = QPushButton("选择")
+        self._configure_button(dataset_browse)
         dataset_browse.clicked.connect(lambda: self._browse_dir(self.dataset_root_edit))
         controls = self._group(
             "数据集导入与转换",
@@ -395,9 +428,8 @@ class MainWindow(QMainWindow):
         )
         body.addWidget(controls, 1)
 
-        preview_box = QGroupBox("数据预览")
-        preview_layout = QVBoxLayout(preview_box)
-        image_row = QHBoxLayout()
+        preview_box, preview_layout = self._new_group("数据预览")
+        image_row = self._row_layout(spacing=CARD_SPACING)
         self.rgb_preview = self._preview_label("RGB: NaN")
         self.depth_preview = self._preview_label("Depth/Label: NaN")
         image_row.addWidget(self.rgb_preview, 1)
@@ -412,11 +444,11 @@ class MainWindow(QMainWindow):
         return page
 
     def _build_world_model_page(self) -> QWidget:
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        body = QHBoxLayout()
+        page, layout = self._page()
+        body = self._row_layout()
 
         model_browse = QPushButton("选择")
+        self._configure_button(model_browse)
         model_browse.clicked.connect(lambda: self._browse_path_or_dir(self.model_path_edit))
         controls = self._group(
             "模型训练与加载",
@@ -428,31 +460,36 @@ class MainWindow(QMainWindow):
             ],
         )
         body.addWidget(controls, 1)
+        output_box, output_layout = self._new_group("模型输出")
         self.model_summary = QTextEdit()
         self.model_summary.setReadOnly(True)
         self.model_summary.setPlaceholderText("模型训练/一键流程结果：NaN")
-        body.addWidget(self.model_summary, 2)
+        output_layout.addWidget(self.model_summary, 1)
+        body.addWidget(output_box, 2)
         layout.addLayout(body, 1)
         return page
 
     def _build_planning_page(self) -> QWidget:
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.addWidget(QLabel("规划器选择在总览页，详细 CEM 参数在高级参数中调整。"))
+        page, layout = self._page()
+        body = self._row_layout()
+        hint = QLabel("规划器选择在总览页，详细 CEM 参数在高级参数中调整。")
+        hint.setObjectName("mutedText")
+        hint.setWordWrap(True)
         self.planner_summary = QTextEdit()
         self.planner_summary.setReadOnly(True)
         self.planner_summary.setMaximumHeight(220)
-        layout.addWidget(self.planner_summary)
+        body.addWidget(self._group("当前规划参数", [hint, self.planner_summary]), 2)
         advanced_button = QPushButton("打开高级参数")
+        self._configure_button(advanced_button)
         advanced_button.clicked.connect(self.open_advanced_settings)
-        layout.addWidget(advanced_button)
+        body.addWidget(self._group("操作", [advanced_button]), 1)
+        layout.addLayout(body)
         layout.addStretch(1)
         return page
 
     def _build_beamng_page(self) -> QWidget:
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        body = QHBoxLayout()
+        page, layout = self._page()
+        body = self._row_layout()
 
         controls = self._group(
             "BeamNG 与地形草案",
@@ -462,8 +499,7 @@ class MainWindow(QMainWindow):
             ],
         )
         body.addWidget(controls, 1)
-        preview_box = QGroupBox("地形草案预览")
-        preview_layout = QVBoxLayout(preview_box)
+        preview_box, preview_layout = self._new_group("地形草案预览")
         self.terrain_preview = self._preview_label("Terrain: NaN")
         preview_layout.addWidget(self.terrain_preview, 2)
         self.beamng_summary = QTextEdit()
@@ -475,19 +511,26 @@ class MainWindow(QMainWindow):
         return page
 
     def _build_records_page(self) -> QWidget:
-        page = QWidget()
-        layout = QVBoxLayout(page)
+        page, layout = self._page()
         splitter = QSplitter(Qt.Orientation.Vertical)
+        splitter.setChildrenCollapsible(False)
+        trajectory_box, trajectory_layout = self._new_group("轨迹预览")
         self.trajectory = TrajectoryCanvas()
-        splitter.addWidget(self.trajectory)
+        trajectory_layout.addWidget(self.trajectory, 1)
+        splitter.addWidget(trajectory_box)
         bottom = QSplitter(Qt.Orientation.Horizontal)
+        bottom.setChildrenCollapsible(False)
+        log_box, log_layout = self._new_group("运行日志")
         self.log_view = QTextEdit()
         self.log_view.setReadOnly(True)
         self.log_view.setPlaceholderText("运行日志")
+        log_layout.addWidget(self.log_view, 1)
+        episode_box, episode_layout = self._new_group("Episode")
         self.episode_list = QListWidget()
         self.episode_list.itemClicked.connect(self.load_selected_episode)
-        bottom.addWidget(self.log_view)
-        bottom.addWidget(self.episode_list)
+        episode_layout.addWidget(self.episode_list, 1)
+        bottom.addWidget(log_box)
+        bottom.addWidget(episode_box)
         bottom.setStretchFactor(0, 2)
         bottom.setStretchFactor(1, 1)
         splitter.addWidget(bottom)
@@ -790,9 +833,44 @@ class MainWindow(QMainWindow):
     def log(self, text: str) -> None:
         self.log_view.append(text)
 
+    def _page(self) -> tuple[QWidget, QVBoxLayout]:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(PAGE_SPACING)
+        return page, layout
+
+    def _row_layout(self, *, spacing: int = PAGE_SPACING) -> QHBoxLayout:
+        layout = QHBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(spacing)
+        return layout
+
+    def _new_group(self, title: str) -> tuple[QGroupBox, QVBoxLayout]:
+        group = QGroupBox(title)
+        group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        layout = QVBoxLayout(group)
+        layout.setContentsMargins(*CARD_MARGINS)
+        layout.setSpacing(CARD_SPACING)
+        return group, layout
+
+    def _configure_control(self, widget: QWidget) -> None:
+        widget.setMinimumHeight(CONTROL_HEIGHT)
+        widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+    def _configure_button(self, button: QPushButton, *, primary: bool = False, height: int = BUTTON_HEIGHT) -> None:
+        if primary:
+            button.setObjectName("primaryButton")
+            height = max(height, PRIMARY_BUTTON_HEIGHT)
+        button.setMinimumHeight(height)
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
+
     def _combo(self, *, editable: bool = False) -> QComboBox:
         combo = QComboBox()
         combo.setEditable(editable)
+        self._configure_control(combo)
+        if editable and combo.lineEdit() is not None:
+            self._configure_control(combo.lineEdit())
         return combo
 
     def _fill_combo(self, combo: QComboBox, rows: list[dict[str, Any]], key: str, *, default: str = "") -> None:
@@ -810,8 +888,7 @@ class MainWindow(QMainWindow):
         combo.setCurrentIndex(selected_index)
 
     def _group(self, title: str, widgets: list[QWidget]) -> QGroupBox:
-        group = QGroupBox(title)
-        layout = QVBoxLayout(group)
+        group, layout = self._new_group(title)
         for widget in widgets:
             layout.addWidget(widget)
         return group
@@ -820,8 +897,12 @@ class MainWindow(QMainWindow):
         frame = QWidget()
         layout = QVBoxLayout(frame)
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(FIELD_SPACING)
         caption = QLabel(label)
         caption.setObjectName("fieldLabel")
+        caption.setFixedHeight(18)
+        if isinstance(widget, (QLineEdit, QComboBox, QSpinBox)):
+            self._configure_control(widget)
         layout.addWidget(caption)
         layout.addWidget(widget)
         return frame
@@ -830,23 +911,27 @@ class MainWindow(QMainWindow):
         frame = QWidget()
         layout = QHBoxLayout(frame)
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+        if isinstance(widget, (QLineEdit, QComboBox, QSpinBox)):
+            self._configure_control(widget)
+        self._configure_button(button)
         layout.addWidget(widget, 1)
         layout.addWidget(button)
         return frame
 
     def _action_button(self, text: str, slot: Callable[[], None], *, primary: bool = False) -> QPushButton:
         button = QPushButton(text)
-        if primary:
-            button.setObjectName("primaryButton")
+        self._configure_button(button, primary=primary)
         button.clicked.connect(slot)
         return button
 
     def _preview_label(self, placeholder: str) -> QLabel:
         label = QLabel(placeholder)
         label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        label.setMinimumHeight(260)
+        label.setMinimumHeight(PREVIEW_MIN_HEIGHT)
         label.setObjectName("previewPane")
         label.setScaledContents(False)
+        label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         return label
 
     def _set_preview(self, label: QLabel, path: Any, placeholder: str) -> None:
@@ -910,90 +995,96 @@ def run() -> int:
 
 STYLESHEET = """
 QWidget {
-    background: #0f151c;
-    color: #e7edf3;
+    background: #0b1117;
+    color: #e9eff4;
     font-family: "Segoe UI", "Microsoft YaHei";
     font-size: 13px;
 }
 #sidebar {
-    background: #111b24;
-    border-right: 1px solid #22313d;
+    background: #0f1820;
+    border-right: 1px solid #233340;
 }
 #appTitle {
     font-size: 22px;
     font-weight: 700;
+    color: #f3f7fa;
 }
 #pageTitle {
     font-size: 24px;
     font-weight: 700;
+    color: #f3f7fa;
 }
 #mutedText, .mutedText {
-    color: #7f91a2;
+    color: #8da1af;
 }
 #navButton {
     text-align: left;
-    padding: 10px 12px;
-    border-radius: 7px;
+    padding: 0 12px;
+    border-radius: 6px;
     background: transparent;
     border: 1px solid transparent;
 }
 #navButton:hover {
-    background: #172633;
-    border-color: #2a4357;
+    background: #152631;
+    border-color: #315064;
 }
 #navButton:checked {
-    background: #1a2a38;
-    border-color: #43d9ad;
-    color: #43d9ad;
+    background: #14352f;
+    border-color: #3bd1a6;
+    color: #6ee8c5;
 }
 QGroupBox {
-    border: 1px solid #253746;
-    border-radius: 8px;
-    margin-top: 12px;
-    padding: 12px;
-    background: #121c25;
+    border: 1px solid #263946;
+    border-radius: 7px;
+    margin-top: 14px;
+    padding-top: 4px;
+    background: #101922;
 }
 QGroupBox::title {
     subcontrol-origin: margin;
-    left: 10px;
-    padding: 0 5px;
-    color: #9fb1c1;
+    left: 12px;
+    padding: 0 6px;
+    color: #a6b7c3;
 }
 QLineEdit, QComboBox, QSpinBox {
-    background: #0d141b;
-    border: 1px solid #2a3c4c;
-    border-radius: 7px;
-    padding: 8px;
+    background: #0a1219;
+    border: 1px solid #2a3e4d;
+    border-radius: 6px;
+    padding: 6px 8px;
+    selection-background-color: #1ba783;
 }
 QPushButton {
-    background: #182735;
-    border: 1px solid #2f485b;
-    border-radius: 7px;
-    padding: 9px 12px;
+    background: #162635;
+    border: 1px solid #315064;
+    border-radius: 6px;
+    padding: 6px 12px;
 }
 QPushButton:hover {
-    background: #213648;
+    background: #203748;
 }
 QPushButton:disabled {
     color: #667582;
     background: #141c24;
 }
 #primaryButton {
-    background: #19a884;
-    color: #06120f;
+    background: #20b58f;
+    color: #06130f;
     font-weight: 700;
-    border-color: #43d9ad;
+    border-color: #58e0bd;
+}
+#primaryButton:hover {
+    background: #2cc6a0;
 }
 #fieldLabel {
-    color: #9fb1c1;
+    color: #a7b7c4;
 }
 #metricCard, #todoCard, #previewPane {
-    background: #121c25;
-    border: 1px solid #253746;
-    border-radius: 8px;
+    background: #0d161e;
+    border: 1px solid #253846;
+    border-radius: 7px;
 }
 #metricTitle {
-    color: #89a1b5;
+    color: #91a7b6;
 }
 #metricValue {
     font-size: 24px;
@@ -1005,14 +1096,43 @@ QPushButton:disabled {
     font-weight: 700;
 }
 QTextEdit, QListWidget, QTableWidget {
-    background: #0d141b;
-    border: 1px solid #253746;
-    border-radius: 8px;
+    background: #0a1219;
+    border: 1px solid #253846;
+    border-radius: 7px;
+    padding: 8px;
+    selection-background-color: #1ba783;
+}
+QListWidget::item {
+    min-height: 28px;
+    padding: 4px 6px;
+}
+QListWidget::item:selected {
+    background: #14352f;
+    color: #6ee8c5;
 }
 QHeaderView::section {
     background: #172633;
     color: #c7d4df;
     border: 0;
     padding: 7px;
+}
+QSplitter::handle {
+    background: #0b1117;
+}
+QSplitter::handle:horizontal {
+    width: 10px;
+}
+QSplitter::handle:vertical {
+    height: 10px;
+}
+QScrollBar:vertical, QScrollBar:horizontal {
+    background: #0b1117;
+    border: 0;
+}
+QScrollBar::handle:vertical, QScrollBar::handle:horizontal {
+    background: #334857;
+    border-radius: 4px;
+    min-height: 28px;
+    min-width: 28px;
 }
 """
