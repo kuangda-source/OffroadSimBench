@@ -14,7 +14,7 @@ from typing import Any
 import numpy as np
 
 from offroad_sim.agents import default_agent_registry
-from offroad_sim.backends import default_backend_registry
+from offroad_sim.backends import BeamNGConnectionConfig, default_backend_registry
 from offroad_sim.datasets import default_dataset_registry
 from offroad_sim.evaluation import run_episode
 from offroad_sim.evaluation.runner import DEFAULT_OUTPUT_ROOT
@@ -84,6 +84,7 @@ class VisibleBeamNGDemoRequest:
     step_delay_sec: float = 0.05
     post_run_hold_sec: float = 0.0
     close_beamng: bool = False
+    beamng_gfx: str = "vk"
 
 
 def config_entries(kind: str, id_field: str) -> list[dict[str, Any]]:
@@ -375,7 +376,7 @@ def run_visible_beamng_demo(request: VisibleBeamNGDemoRequest) -> dict[str, Any]
         record=run_request.record,
         output_root=DEFAULT_OUTPUT_ROOT,
         record_arrays=run_request.record_arrays,
-        backend_options=backend_options(run_request),
+        backend_options={**backend_options(run_request), "connection": BeamNGConnectionConfig(gfx=request.beamng_gfx or None)},
         agent_options=agent_options(run_request),
         vehicle=request.vehicle,
         pre_run_hold_sec=request.pre_run_hold_sec,
@@ -393,6 +394,7 @@ def run_visible_beamng_demo(request: VisibleBeamNGDemoRequest) -> dict[str, Any]
         "planner": request.planner or None,
         "scenario": request.scenario,
         "vehicle": request.vehicle,
+        "beamng_gfx": request.beamng_gfx,
     }
     return payload
 

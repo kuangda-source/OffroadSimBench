@@ -40,6 +40,7 @@ class BeamNGConnectionConfig:
     vehicle_model: str = "pickup"
     vehicle_id: str = "ego"
     steps_per_action: int = 6
+    gfx: str | None = "vk"
 
 
 class BeamNGBackend(OffroadSimBackend):
@@ -113,6 +114,8 @@ class BeamNGBackend(OffroadSimBackend):
         kwargs = {"home": str(self._resolve_bng_home(self.connection.bng_home))}
         if self.connection.user_dir:
             kwargs["user"] = str(Path(self.connection.user_dir))
+        if self.connection.gfx:
+            kwargs["gfx"] = self.connection.gfx
         self._bng = BeamNGpy(self.connection.host, self.connection.port, **kwargs)
         self._bng.open(launch=self.connection.launch)
         self._connected = True
@@ -221,6 +224,7 @@ class BeamNGBackend(OffroadSimBackend):
             self._scenario_config,
             timestamp=float(self._step_count),
         )
+        self._configure_visible_camera(self._last_observation.vehicle_state)
         self._update_motion_metrics(self._last_observation.vehicle_state)
         return StepResult(
             observation=self._last_observation,
@@ -436,14 +440,7 @@ class BeamNGBackend(OffroadSimBackend):
         if not self._bng:
             return
         pos, _ = self._beamng_vehicle_start_for_config(self._scenario_config)
-        if str(beamng_options.get("camera_mode", "")).lower() in {"orbit", "free"}:
-            camera = getattr(self._bng, "camera", None)
-            set_free = getattr(camera, "set_free", None)
-            if callable(set_free):
-                try:
-                    set_free(pos=(pos[0] - 8.0, pos[1] - 8.0, pos[2] + 5.0), dir=(1.0, 1.0, -0.4))
-                except Exception:
-                    pass
+        self._configure_visible_camera()
         if bool(beamng_options.get("draw_route", False)) and self._route:
             debug = getattr(self._bng, "debug", None)
             add_spheres = getattr(debug, "add_spheres", None)
@@ -453,6 +450,61 @@ class BeamNGBackend(OffroadSimBackend):
                     add_spheres(points, radii=[0.8] * len(points), colors=[(0.0, 1.0, 0.0, 0.8)] * len(points))
                 except Exception:
                     pass
+
+    def _configure_visible_camera(self, state: VehicleState | None = None) -> None:
+        beamng_options = self._beamng_metadata(self._scenario_config)
+        if str(beamng_options.get("camera_mode", "")).lower() not in {"orbit", "free", "follow"}:
+            return
+        if not self._bng:
+            return
+        camera = getattr(self._bng, "camera", None)
+        set_player_mode = getattr(camera, "set_player_mode", None)
+        if callable(set_player_mode):
+            try:
+                set_player_mode(
+                    self.connection.vehicle_id,
+                    "orbit",
+                    {"distance": 12.0, "fov": 65.0, "rotation": (0.0, 0.0, 0.0)},
+                )
+                return
+            except Exception:
+                pass
+        set_free = getattr(camera, "set_free", None)
+        if not callable(set_free):
+            return
+
+        if state is None:
+            pos, _ = self._beamng_vehicle_start_for_config(self._scenario_config)
+            if len(self._route) >= 2:
+                target = self._route[min(1, len(self._route) - 1)]
+                dx = target[0] - pos[0]
+                dy = target[1] - pos[1]
+                yaw = math.atan2(dy, dx) if abs(dx) + abs(dy) > 1e-6 else 0.0
+            else:
+                yaw = 0.0
+            z = pos[2]
+            x = pos[0]
+            y = pos[1]
+        else:
+            yaw = float(state.yaw)
+            x = float(state.x)
+            y = float(state.y)
+            z = float(state.z)
+
+        cam_pos = (
+            x - math.cos(yaw) * 9.0,
+            y - math.sin(yaw) * 9.0,
+            z + 5.0,
+        )
+        direction = (
+            math.cos(yaw),
+            math.sin(yaw),
+            -0.35,
+        )
+        try:
+            set_free(pos=cam_pos, direction=direction)
+        except Exception:
+            pass
 
     def _read_vehicle_state(self) -> VehicleState | None:
         vehicle = self._vehicle

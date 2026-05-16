@@ -4,6 +4,7 @@ from pathlib import Path
 
 import numpy as np
 
+from offroad_sim.backends import BeamNGConnectionConfig
 from offroad_sim.core import Action, Observation, VehicleState
 from offroad_sim.replay import EpisodePlayer, EpisodeRecorder
 
@@ -60,3 +61,18 @@ def test_episode_recorder_can_save_arrays(tmp_path: Path) -> None:
     assert local_bev_path.exists()
     assert np.load(local_bev_path).shape == (4, 3, 3)
 
+
+def test_episode_recorder_serializes_dataclass_metadata(tmp_path: Path) -> None:
+    recorder = EpisodeRecorder()
+    recorder.start_episode(
+        {
+            "scenario_id": "beamng_visible_autodrive",
+            "backend_options": {"connection": BeamNGConnectionConfig(gfx="vk")},
+        }
+    )
+    recorder.end_episode({"success": True})
+
+    episode_path = recorder.save(tmp_path / "episode_dataclass")
+    player = EpisodePlayer.load(episode_path)
+
+    assert player.metadata["backend_options"]["connection"]["gfx"] == "vk"

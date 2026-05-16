@@ -49,6 +49,7 @@ def test_visible_demo_service_runs_route_world_model_episode() -> None:
     assert run_episode.call_args.kwargs["backend_name"] == "beamng"
     assert run_episode.call_args.kwargs["agent_name"] == "route_world_model"
     assert run_episode.call_args.kwargs["vehicle"] == "configs/vehicles/ugv_medium.yaml"
+    assert run_episode.call_args.kwargs["backend_options"]["connection"].gfx == "vk"
 
 
 def test_visible_demo_defaults_are_human_visible() -> None:

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict
+from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -13,6 +13,8 @@ from offroad_sim.core import Action, Observation, VehicleState
 
 
 def _json_default(value: Any) -> Any:
+    if is_dataclass(value):
+        return asdict(value)
     if isinstance(value, np.integer):
         return int(value)
     if isinstance(value, np.floating):
@@ -177,4 +179,3 @@ class EpisodePlayer:
 
 def load_episode(path: str | Path) -> EpisodePlayer:
     return EpisodePlayer.load(path)
-

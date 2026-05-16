@@ -29,6 +29,7 @@ def main() -> int:
     parser.add_argument("--pre-run-hold-sec", type=float, default=8.0)
     parser.add_argument("--step-delay-sec", type=float, default=0.05)
     parser.add_argument("--hold-open-sec", type=float, default=0.0)
+    parser.add_argument("--beamng-gfx", choices=["vk", "dx11"], default="vk")
     parser.add_argument("--close-beamng", action="store_true")
     parser.add_argument("--no-record", action="store_true")
     args = parser.parse_args()
@@ -50,6 +51,7 @@ def main() -> int:
             step_delay_sec=args.step_delay_sec,
             post_run_hold_sec=args.hold_open_sec,
             close_beamng=args.close_beamng,
+            beamng_gfx=args.beamng_gfx,
         )
     )
     print(json.dumps(payload, indent=2, ensure_ascii=False, default=str))

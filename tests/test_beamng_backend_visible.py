@@ -23,7 +23,10 @@ def fake_beamngpy(monkeypatch) -> SimpleNamespace:
             self.port = port
             self.kwargs = kwargs
             self.scenario = SimpleNamespace(load=lambda scenario: setattr(module, "loaded_scenario", scenario), start=lambda: setattr(module, "started", True))
-            self.camera = SimpleNamespace(set_free=lambda **kwargs: setattr(module, "camera_request", kwargs))
+            self.camera = SimpleNamespace(
+                set_free=lambda **kwargs: setattr(module, "camera_request", kwargs),
+                set_player_mode=lambda vehicle, mode, config: setattr(module, "player_camera_request", (vehicle, mode, config)),
+            )
             self.debug = SimpleNamespace(add_spheres=lambda *args, **kwargs: setattr(module, "debug_spheres", (args, kwargs)))
             module.bng = self
 
@@ -119,12 +122,14 @@ def test_beamng_backend_uses_visible_scenario_metadata(fake_beamngpy: SimpleName
     observation = backend.reset(load_scenario_config("configs/scenarios/beamng_visible_autodrive.yaml"))
 
     assert observation.info["backend"] == "beamng"
+    assert fake_beamngpy.bng.kwargs["gfx"] == "vk"
     assert fake_beamngpy.scenario_level == "gridmap_v2"
     assert fake_beamngpy.scenario_name.startswith("beamng_visible_autodrive_")
     assert fake_beamngpy.scenario_name != "beamng_visible_autodrive"
     assert fake_beamngpy.spawned_vehicle_model == "pickup"
     assert fake_beamngpy.spawned_pos == (0.0, 0.0, 0.5)
-    assert fake_beamngpy.camera_request
+    assert fake_beamngpy.player_camera_request[0] == "ego"
+    assert fake_beamngpy.player_camera_request[1] == "orbit"
     assert fake_beamngpy.debug_spheres
     assert backend.get_metrics()["route_waypoint_count"] == 4
     assert backend.get_metrics()["level"] == "gridmap_v2"

@@ -68,6 +68,10 @@ For manual viewing, the visible script intentionally differs from acceptance
 scripts: it waits briefly after loading BeamNG, adds a small wall-clock delay
 between control steps, and does not close BeamNG by default. Add
 `--close-beamng` for automated runs that should clean up the simulator process.
+The default graphics backend is Vulkan (`gfx="vk"`) because the local
+BeamNG.tech 0.38.3 Direct3D11 auto-launch path can produce a black render
+window while simulation continues in the background. Use `--beamng-gfx dx11`
+only when Direct3D11 is known to render correctly on the machine.
 
 ## Remaining BeamNG Work
 

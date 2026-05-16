@@ -68,8 +68,13 @@ if ($null -ne $exitCode -and $exitCode -ne 0) {
     Write-Output $stderrText
     throw "Visible BeamNG demo failed with exit code $exitCode."
 }
-$text = ($stdoutText, $stderrText) -join [Environment]::NewLine
-$start = $text.IndexOf("{")
+$text = $stdoutText
+$marker = $text.IndexOf('"episode_id"')
+if ($marker -lt 0) {
+    $text = ($stdoutText, $stderrText) -join [Environment]::NewLine
+    $marker = $text.IndexOf('"episode_id"')
+}
+$start = if ($marker -ge 0) { $text.LastIndexOf("{", $marker) } else { -1 }
 $end = $text.LastIndexOf("}")
 if ($start -lt 0 -or $end -le $start) {
     $text | Write-Output

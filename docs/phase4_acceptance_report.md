@@ -49,6 +49,7 @@ python scripts\run_beamng_visible_demo.py `
 
 - BeamNG connected: `true`
 - BeamNG level: `gridmap_v2`
+- BeamNG graphics backend: `Vulkan`
 - Agent: `route_world_model`
 - World model: `le_wm`
 - Planner: `le_wm_cem`
