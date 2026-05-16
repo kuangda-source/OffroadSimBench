@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import shutil
+import zipfile
+
+import numpy as np
+
 from offroad_sim.backends import DatasetReplayBackend
 from offroad_sim.core import Action
-from offroad_sim.datasets import create_mock_dataset, default_dataset_registry
+from offroad_sim.datasets import create_mock_dataset, create_mock_orfd_dataset, default_dataset_registry
 
 
 def test_registry_autodetects_manifest_dataset(tmp_path) -> None:
@@ -56,3 +61,22 @@ def test_dataset_replay_backend_can_switch_sequence_at_reset(tmp_path) -> None:
     assert first.info["sequence_id"] == "seq_a"
     assert second.info["sequence_id"] == "seq_b"
     assert backend.get_metrics()["frames_total"] == 3
+
+
+def test_dataset_replay_backend_loads_npy_assets_from_zip_sequences(tmp_path) -> None:
+    dataset_root = create_mock_orfd_dataset(tmp_path / "orfd", frame_count=2)
+    sequence_dir = dataset_root / "training" / "seq_0001"
+    zip_path = sequence_dir.with_suffix(".zip")
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        for path in sequence_dir.rglob("*"):
+            if path.is_file():
+                archive.write(path, path.relative_to(sequence_dir).as_posix())
+    shutil.rmtree(sequence_dir)
+
+    backend = DatasetReplayBackend(dataset_root, sequence_id="training/seq_0001", adapter="orfd", load_assets=True)
+    observation = backend.reset()
+
+    assert isinstance(observation.front_rgb, np.ndarray)
+    assert observation.front_rgb.shape == (10, 12, 3)
+    assert isinstance(observation.depth, np.ndarray)
+    assert observation.info["assets"]["front_rgb"].startswith("zip://")

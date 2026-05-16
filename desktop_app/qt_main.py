@@ -279,7 +279,7 @@ class MainWindow(QMainWindow):
         self.planner_combo = self._combo()
 
         self.dataset_root_edit = QLineEdit()
-        self.dataset_root_edit.setPlaceholderText(r"D:\programs\OffroadSimBench\datasets\ORFD_Dataset_ICRA2022_ZIP")
+        self.dataset_root_edit.setPlaceholderText(r"datasets\ORFD_Dataset_ICRA2022_ZIP")
         self.sequence_combo = self._combo(editable=True)
         self.adapter_edit = QLineEdit("orfd")
         self.stablewm_hdf5_edit = QLineEdit()

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import io
+import zipfile
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -156,7 +158,20 @@ class DatasetReplayBackend(OffroadSimBackend):
     def _load_npy_asset(self, path: str | None) -> Any:
         if not self.load_assets or path is None:
             return None
+        if path.startswith("zip://"):
+            member_suffix = Path(path.rsplit("!", 1)[-1]).suffix
+            if member_suffix != ".npy":
+                return path
+            zip_path, member = _split_zip_uri(path)
+            with zipfile.ZipFile(zip_path) as archive:
+                return np.load(io.BytesIO(archive.read(member)))
         asset_path = Path(path)
         if asset_path.suffix != ".npy":
             return path
         return np.load(asset_path)
+
+
+def _split_zip_uri(path: str) -> tuple[str, str]:
+    raw = path.removeprefix("zip://")
+    zip_path, member = raw.split("!", 1)
+    return zip_path, member
