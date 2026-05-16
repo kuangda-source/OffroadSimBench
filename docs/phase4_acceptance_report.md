@@ -54,10 +54,10 @@ python scripts\run_beamng_visible_demo.py `
 - Planner: `le_wm_cem`
 - Steps: `80`
 - Route waypoints: `4`
-- Distance traveled: `221.6034793242292m`
-- Episode: `beamng_visible_autodrive_route_world_model_20260516T111813Z`
+- Distance traveled: `238.49808425341425m`
+- Episode: `beamng_visible_autodrive_route_world_model_20260516T143734Z`
 - Episode path:
-  `D:\programs\OffroadSimBench\outputs\episodes\beamng_visible_autodrive_route_world_model_20260516T111813Z`
+  `D:\programs\OffroadSimBench\outputs\episodes\beamng_visible_autodrive_route_world_model_20260516T143734Z`
 
 ## Known Limits
 

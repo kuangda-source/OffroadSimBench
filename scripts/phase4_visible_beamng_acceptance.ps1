@@ -34,7 +34,11 @@ $demoArgs = @(
     "--world-model-type", $WorldModelType,
     "--scenario", "beamng_visible_autodrive",
     "--vehicle", "configs\vehicles\ugv_medium.yaml",
-    "--max-steps", [string]$MaxSteps
+    "--max-steps", [string]$MaxSteps,
+    "--pre-run-hold-sec", "0",
+    "--step-delay-sec", "0",
+    "--hold-open-sec", "0",
+    "--close-beamng"
 )
 if ($WorldModelPath) {
     $demoArgs += @("--world-model", $WorldModelPath)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -60,6 +61,10 @@ def run_episode(
     backend_options: Mapping[str, Any] | None = None,
     agent_options: Mapping[str, Any] | None = None,
     vehicle: VehicleConfig | str | Path | None = None,
+    pre_run_hold_sec: float = 0.0,
+    step_delay_sec: float = 0.0,
+    post_run_hold_sec: float = 0.0,
+    close_backend: bool = True,
 ) -> EpisodeRunResult:
     """Run one benchmark episode through any registered backend and agent."""
 
@@ -73,10 +78,13 @@ def run_episode(
     result = None
     steps = 0
     done = False
+    completed = False
 
     try:
         obs = backend.reset(scenario_config)
         agent.reset({"scenario_id": scenario_id, "backend": backend_name})
+        if pre_run_hold_sec > 0.0:
+            time.sleep(float(pre_run_hold_sec))
         if recorder is not None:
             recorder.start_episode(
                 {
@@ -110,6 +118,8 @@ def run_episode(
             if result.done:
                 done = True
                 break
+            if step_delay_sec > 0.0:
+                time.sleep(float(step_delay_sec))
 
         metrics = backend.get_metrics()
         metrics.update(
@@ -133,6 +143,7 @@ def run_episode(
             saved_path = Path(episode_path) if episode_path is not None else Path(output_root) / episode_id
             saved_path = recorder.save(saved_path)
 
+        completed = True
         return EpisodeRunResult(
             episode_id=episode_id,
             metrics=metrics,
@@ -147,7 +158,10 @@ def run_episode(
         )
     finally:
         agent.close()
-        backend.close()
+        if completed and post_run_hold_sec > 0.0:
+            time.sleep(float(post_run_hold_sec))
+        if close_backend:
+            backend.close()
 
 
 def _load_scenario(scenario: ScenarioConfig | str | Path | Mapping[str, Any] | None) -> Any:

@@ -24,8 +24,12 @@ def main() -> int:
     parser.add_argument("--planner", default="")
     parser.add_argument("--scenario", default="beamng_visible_autodrive")
     parser.add_argument("--vehicle", default="configs/vehicles/ugv_medium.yaml")
-    parser.add_argument("--max-steps", type=int, default=240)
+    parser.add_argument("--max-steps", type=int, default=600)
     parser.add_argument("--seed", type=int, default=7)
+    parser.add_argument("--pre-run-hold-sec", type=float, default=8.0)
+    parser.add_argument("--step-delay-sec", type=float, default=0.05)
+    parser.add_argument("--hold-open-sec", type=float, default=0.0)
+    parser.add_argument("--close-beamng", action="store_true")
     parser.add_argument("--no-record", action="store_true")
     args = parser.parse_args()
 
@@ -42,6 +46,10 @@ def main() -> int:
             max_steps=args.max_steps,
             seed=args.seed,
             record=not args.no_record,
+            pre_run_hold_sec=args.pre_run_hold_sec,
+            step_delay_sec=args.step_delay_sec,
+            post_run_hold_sec=args.hold_open_sec,
+            close_beamng=args.close_beamng,
         )
     )
     print(json.dumps(payload, indent=2, ensure_ascii=False, default=str))

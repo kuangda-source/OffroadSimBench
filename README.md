@@ -95,8 +95,10 @@ python examples\run_beamng_world_model.py --scenario configs\scenarios\beamng_or
 BeamNG 可视自动驾驶演示：
 
 ```powershell
-python scripts\run_beamng_visible_demo.py --dataset-root datasets\ORFD_Dataset_ICRA2022_ZIP --adapter orfd --sequence-id training/c2021_0228_1819 --world-model-type le_wm --world-model outputs\models\lewm_orfd_real_c2021_0228_1819 --planner le_wm_cem --scenario beamng_visible_autodrive --vehicle configs\vehicles\ugv_medium.yaml --max-steps 80
+python scripts\run_beamng_visible_demo.py --dataset-root datasets\ORFD_Dataset_ICRA2022_ZIP --adapter orfd --sequence-id training/c2021_0228_1819 --world-model-type le_wm --world-model outputs\models\lewm_orfd_real_c2021_0228_1819 --planner le_wm_cem --scenario beamng_visible_autodrive --vehicle configs\vehicles\ugv_medium.yaml --max-steps 600
 ```
+
+可视演示脚本默认会等待 BeamNG 窗口出现、按可见节奏执行，并且跑完后不主动关闭 BeamNG。需要自动关闭时追加 `--close-beamng`；需要停留更久时追加 `--hold-open-sec 300`。
 
 ### 阶段三验收
 
@@ -224,8 +226,10 @@ python examples\run_beamng_world_model.py --scenario configs\scenarios\beamng_or
 Visible BeamNG autonomous-driving demo:
 
 ```powershell
-python scripts\run_beamng_visible_demo.py --dataset-root datasets\ORFD_Dataset_ICRA2022_ZIP --adapter orfd --sequence-id training/c2021_0228_1819 --world-model-type le_wm --world-model outputs\models\lewm_orfd_real_c2021_0228_1819 --planner le_wm_cem --scenario beamng_visible_autodrive --vehicle configs\vehicles\ugv_medium.yaml --max-steps 80
+python scripts\run_beamng_visible_demo.py --dataset-root datasets\ORFD_Dataset_ICRA2022_ZIP --adapter orfd --sequence-id training/c2021_0228_1819 --world-model-type le_wm --world-model outputs\models\lewm_orfd_real_c2021_0228_1819 --planner le_wm_cem --scenario beamng_visible_autodrive --vehicle configs\vehicles\ugv_medium.yaml --max-steps 600
 ```
+
+The visible demo script now waits for the BeamNG window, runs with human-visible pacing, and leaves BeamNG open when the episode ends. Add `--close-beamng` to close it automatically or `--hold-open-sec 300` to keep the Python process attached longer.
 
 ### Phase 3 Acceptance
 

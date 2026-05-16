@@ -77,9 +77,13 @@ class VisibleBeamNGDemoRequest:
     planner: str = "le_wm_cem"
     scenario: str = "beamng_visible_autodrive"
     vehicle: str = "configs/vehicles/ugv_medium.yaml"
-    max_steps: int = 240
+    max_steps: int = 600
     seed: int = 7
     record: bool = True
+    pre_run_hold_sec: float = 8.0
+    step_delay_sec: float = 0.05
+    post_run_hold_sec: float = 0.0
+    close_beamng: bool = False
 
 
 def config_entries(kind: str, id_field: str) -> list[dict[str, Any]]:
@@ -374,6 +378,10 @@ def run_visible_beamng_demo(request: VisibleBeamNGDemoRequest) -> dict[str, Any]
         backend_options=backend_options(run_request),
         agent_options=agent_options(run_request),
         vehicle=request.vehicle,
+        pre_run_hold_sec=request.pre_run_hold_sec,
+        step_delay_sec=request.step_delay_sec,
+        post_run_hold_sec=request.post_run_hold_sec,
+        close_backend=request.close_beamng,
     )
     payload = result.to_dict()
     payload["visible_demo"] = {

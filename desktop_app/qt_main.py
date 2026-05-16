@@ -693,7 +693,7 @@ class MainWindow(QMainWindow):
             world_model_path=self.model_path_edit.text().strip(),
             planner=self.planner_combo.currentData() or self.planner_combo.currentText() or "",
             scenario=self.scenario_combo.currentData() or self.scenario_combo.currentText() or "beamng_visible_autodrive",
-            max_steps=self.settings.max_steps,
+            max_steps=max(int(self.settings.max_steps), 600),
             seed=self.settings.seed,
             record=self.settings.record,
         )

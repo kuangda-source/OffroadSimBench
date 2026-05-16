@@ -51,6 +51,19 @@ def test_visible_demo_service_runs_route_world_model_episode() -> None:
     assert run_episode.call_args.kwargs["vehicle"] == "configs/vehicles/ugv_medium.yaml"
 
 
+def test_visible_demo_defaults_are_human_visible() -> None:
+    request = services.VisibleBeamNGDemoRequest(world_model_type="simple_kinematic", planner="")
+    with patch("desktop_app.services.run_episode") as run_episode:
+        run_episode.return_value.to_dict.return_value = {"episode_id": "visible", "metrics": {"connected": True}}
+
+        services.run_visible_beamng_demo(request)
+
+    kwargs = run_episode.call_args.kwargs
+    assert kwargs["pre_run_hold_sec"] >= 5.0
+    assert kwargs["step_delay_sec"] > 0.0
+    assert kwargs["close_backend"] is False
+
+
 def test_beamng_page_has_visible_demo_action() -> None:
     _ensure_app()
     window = MainWindow()
@@ -58,4 +71,19 @@ def test_beamng_page_has_visible_demo_action() -> None:
     texts = [button.text() for button in window.findChildren(QPushButton)]
 
     assert "启动 BeamNG 可视自动驾驶" in texts
+    window.close()
+
+
+def test_gui_visible_demo_uses_minimum_human_visible_steps(monkeypatch) -> None:
+    _ensure_app()
+    window = MainWindow()
+    window.settings.max_steps = 5
+    captured: dict[str, services.VisibleBeamNGDemoRequest] = {}
+
+    monkeypatch.setattr(services, "run_visible_beamng_demo", lambda request: captured.setdefault("request", request))
+    monkeypatch.setattr(window, "_run_task", lambda task, callback, label: task())
+
+    window.run_visible_beamng_demo()
+
+    assert captured["request"].max_steps >= 600
     window.close()
