@@ -218,7 +218,7 @@ def _backend_options(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def _agent_options(args: argparse.Namespace) -> dict[str, Any]:
-    if args.agent != "world_model":
+    if args.agent not in {"world_model", "route_world_model"}:
         return {}
     options: dict[str, Any] = {"world_model_name": args.world_model_type}
     if args.world_model:

@@ -67,6 +67,21 @@ class PipelineRequest:
     beamng_scenario: str = "beamng_orfd_eval"
 
 
+@dataclass(slots=True)
+class VisibleBeamNGDemoRequest:
+    dataset_root: str = ""
+    adapter: str = "orfd"
+    sequence_id: str = ""
+    world_model_type: str = "le_wm"
+    world_model_path: str = ""
+    planner: str = "le_wm_cem"
+    scenario: str = "beamng_visible_autodrive"
+    vehicle: str = "configs/vehicles/ugv_medium.yaml"
+    max_steps: int = 240
+    seed: int = 7
+    record: bool = True
+
+
 def config_entries(kind: str, id_field: str) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for path in sorted((CONFIG_ROOT / kind).glob("*.yaml")):
@@ -325,6 +340,55 @@ def run_orfd_lewm_pipeline(request: PipelineRequest) -> dict[str, Any]:
     }
 
 
+def build_visible_beamng_demo_request(request: VisibleBeamNGDemoRequest) -> RunRequest:
+    return RunRequest(
+        backend="beamng",
+        scenario=request.scenario,
+        agent="route_world_model",
+        seed=request.seed,
+        max_steps=request.max_steps,
+        record=request.record,
+        world_model_type=request.world_model_type,
+        world_model_path=request.world_model_path,
+        planner=request.planner,
+        planner_horizon=4,
+        planner_samples=16,
+        planner_iterations=2,
+        dataset_root=request.dataset_root,
+        sequence_id=request.sequence_id,
+        adapter=request.adapter,
+    )
+
+
+def run_visible_beamng_demo(request: VisibleBeamNGDemoRequest) -> dict[str, Any]:
+    run_request = build_visible_beamng_demo_request(request)
+    result = run_episode(
+        backend_name=run_request.backend,
+        scenario=scenario_for_request(run_request),
+        agent_name=run_request.agent,
+        seed=run_request.seed,
+        max_steps=run_request.max_steps,
+        record=run_request.record,
+        output_root=DEFAULT_OUTPUT_ROOT,
+        record_arrays=run_request.record_arrays,
+        backend_options=backend_options(run_request),
+        agent_options=agent_options(run_request),
+        vehicle=request.vehicle,
+    )
+    payload = result.to_dict()
+    payload["visible_demo"] = {
+        "dataset_root": request.dataset_root or None,
+        "adapter": request.adapter or None,
+        "sequence_id": request.sequence_id or None,
+        "world_model_type": request.world_model_type,
+        "world_model_path": request.world_model_path or None,
+        "planner": request.planner or None,
+        "scenario": request.scenario,
+        "vehicle": request.vehicle,
+    }
+    return payload
+
+
 def export_orfd_beamng_terrain_draft(
     dataset_root: str,
     adapter: str = "",
@@ -395,7 +459,7 @@ def backend_options(request: RunRequest) -> dict[str, Any]:
 
 
 def agent_options(request: RunRequest) -> dict[str, Any]:
-    if request.agent != "world_model":
+    if request.agent not in {"world_model", "route_world_model"}:
         return {}
     options: dict[str, Any] = {"world_model_name": request.world_model_type}
     if request.world_model_path:

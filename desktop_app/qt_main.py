@@ -494,6 +494,7 @@ class MainWindow(QMainWindow):
         controls = self._group(
             "BeamNG 与地形草案",
             [
+                self._action_button("启动 BeamNG 可视自动驾驶", self.run_visible_beamng_demo, primary=True),
                 self._action_button("检查 BeamNG", self.check_beamng),
                 self._action_button("导出 BeamNG 地形草案", self.export_beamng_terrain_draft),
             ],
@@ -552,7 +553,7 @@ class MainWindow(QMainWindow):
     def refresh_catalogs(self) -> None:
         self.catalog = services.catalog_snapshot()
         self._fill_combo(self.backend_combo, self.catalog["backends"], "name", default="gym_heightmap")
-        self._fill_combo(self.scenario_combo, self.catalog["scenarios"], "id", default="beamng_orfd_eval")
+        self._fill_combo(self.scenario_combo, self.catalog["scenarios"], "id", default="beamng_visible_autodrive")
         self._fill_combo(self.agent_combo, self.catalog["agents"], "name", default="world_model")
         self._fill_combo(self.world_model_combo, self.catalog["world_models"], "name", default="le_wm")
         self._fill_combo(self.planner_combo, [{"name": ""}] + self.catalog["planners"], "name", default="le_wm_cem")
@@ -683,6 +684,22 @@ class MainWindow(QMainWindow):
         self.log(f"BeamNG: {status.get('message', services.NAN_TEXT)}")
         self.refresh_catalogs()
 
+    def run_visible_beamng_demo(self) -> None:
+        request = services.VisibleBeamNGDemoRequest(
+            dataset_root=self.dataset_root_edit.text().strip(),
+            adapter=self.adapter_edit.text().strip() or "orfd",
+            sequence_id=self.sequence_combo.currentText().strip(),
+            world_model_type=self.world_model_combo.currentData() or self.world_model_combo.currentText() or "simple_kinematic",
+            world_model_path=self.model_path_edit.text().strip(),
+            planner=self.planner_combo.currentData() or self.planner_combo.currentText() or "",
+            scenario=self.scenario_combo.currentData() or self.scenario_combo.currentText() or "beamng_visible_autodrive",
+            max_steps=self.settings.max_steps,
+            seed=self.settings.seed,
+            record=self.settings.record,
+        )
+        self.log("启动 BeamNG 可视自动驾驶...")
+        self._run_task(lambda: services.run_visible_beamng_demo(request), self._visible_demo_finished, "visible BeamNG demo failed")
+
     def load_selected_episode(self, item: QListWidgetItem) -> None:
         path = item.data(Qt.ItemDataRole.UserRole)
         if not path:
@@ -748,6 +765,15 @@ class MainWindow(QMainWindow):
         self.stablewm_hdf5_edit.setText(str(payload.get("output_hdf5", "")))
         self.dataset_summary.setText(_compact_json(payload))
         self.log(f"HDF5 导出完成: {payload.get('output_hdf5', services.NAN_TEXT)}")
+
+    def _visible_demo_finished(self, payload: dict[str, Any]) -> None:
+        self.beamng_summary.setText(_compact_json(payload))
+        metrics = payload.get("metrics", {}) if isinstance(payload.get("metrics"), dict) else {}
+        self._update_metrics(metrics)
+        path = payload.get("episode_path")
+        self.trajectory.set_trace(services.load_episode_trace(path) if path else [])
+        self.log(f"BeamNG 可视自动驾驶完成: {payload.get('episode_id', services.NAN_TEXT)}")
+        self.refresh_catalogs()
 
     def _update_metrics(self, metrics: dict[str, Any]) -> None:
         diagnostics = metrics.get("agent_diagnostics", {}) if isinstance(metrics.get("agent_diagnostics"), dict) else {}
