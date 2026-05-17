@@ -88,6 +88,17 @@ External algorithm packages can follow the same `algorithm.yaml + adapter.py`
 contract and declare whether they provide a full agent, world model, cost model,
 or trajectory model.
 
+Region navigation tasks are the preferred path for start/goal experiments:
+
+```powershell
+python scripts\run_region_navigation_loop.py --task configs\tasks\beamng_region_nav_001.yaml --algorithm local_lewm_cost --collect-steps 160 --eval-steps 120 --output-dir outputs\region_navigation\beamng_region_nav_001
+```
+
+The task is defined as `navigation_region_v1`: region polygon, start pose, goal,
+success radius, constraints, and an expert route used only during collection.
+The evaluation scenario keeps only start and goal, then reports final/minimum
+goal distance, first reached step, region membership, and success status.
+
 ## Required External Runtime
 
 `le_wm_cem` requires:

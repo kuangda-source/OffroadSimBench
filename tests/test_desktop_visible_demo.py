@@ -73,6 +73,7 @@ def test_beamng_page_has_visible_demo_action() -> None:
 
     assert "BeamNG LE-WM 闭环训练评估" in texts
     assert "启动 BeamNG 可视自动驾驶" in texts
+    assert "区域起终点 LE-WM 闭环" in texts
     window.close()
 
 
@@ -131,4 +132,22 @@ def test_gui_pipeline_finished_reads_closed_loop_evaluation() -> None:
     )
 
     assert window.metric_cards["steps"].value_label.text() == "12"
+    window.close()
+
+
+def test_gui_region_navigation_loop_uses_task_path(monkeypatch) -> None:
+    _ensure_app()
+    window = MainWindow()
+    window.settings.max_steps = 5
+    window.task_path_edit.setText("configs/tasks/beamng_region_nav_001.yaml")
+    captured: dict[str, services.RegionNavigationClosedLoopRequest] = {}
+
+    monkeypatch.setattr(services, "run_region_navigation_closed_loop", lambda request: captured.setdefault("request", request))
+    monkeypatch.setattr(window, "_run_task", lambda task, callback, label: task())
+
+    window.run_region_navigation_loop()
+
+    assert captured["request"].task_path == "configs/tasks/beamng_region_nav_001.yaml"
+    assert captured["request"].collect_steps >= 160
+    assert captured["request"].close_beamng is False
     window.close()

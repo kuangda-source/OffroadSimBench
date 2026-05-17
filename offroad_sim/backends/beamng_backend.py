@@ -80,6 +80,8 @@ class BeamNGBackend(OffroadSimBackend):
         self._max_z: float | None = None
         self._collision_count = 0
         self._last_damage = 0.0
+        self._last_goal_distance = math.nan
+        self._last_goal_reached = False
         if auto_connect:
             self.connect()
 
@@ -242,12 +244,18 @@ class BeamNGBackend(OffroadSimBackend):
         )
         self._configure_visible_camera(self._last_observation.vehicle_state)
         self._update_motion_metrics(self._last_observation.vehicle_state)
+        terminated = self._goal_reached(self._last_observation)
         return StepResult(
             observation=self._last_observation,
             reward=0.0,
-            terminated=False,
+            terminated=terminated,
             truncated=False,
-            info={"backend": "beamng", "step_count": self._step_count},
+            info={
+                "backend": "beamng",
+                "step_count": self._step_count,
+                "distance_to_goal": self._last_goal_distance,
+                "goal_reached": self._last_goal_reached,
+            },
         )
 
     def get_observation(self) -> Observation:
@@ -274,6 +282,8 @@ class BeamNGBackend(OffroadSimBackend):
             "max_abs_vertical_deviation": self._max_abs_vertical_deviation(),
             "collision_count": self._collision_count,
             "damage": self._last_damage,
+            "distance_to_goal": self._last_goal_distance,
+            "goal_reached": self._last_goal_reached,
         }
 
     def close(self) -> None:
@@ -300,6 +310,8 @@ class BeamNGBackend(OffroadSimBackend):
         self._max_z = None
         self._collision_count = 0
         self._last_damage = 0.0
+        self._last_goal_distance = math.nan
+        self._last_goal_reached = False
 
     @classmethod
     def _resolve_bng_home(cls, bng_home: str | Path | None = None) -> Path | None:
@@ -399,6 +411,19 @@ class BeamNGBackend(OffroadSimBackend):
         if isinstance(task, Mapping):
             return task.get(key, default)
         return getattr(task, key, default)
+
+    def _goal_reached(self, observation: Observation) -> bool:
+        task = self._read_config(self._scenario_config, "task", None)
+        radius = float(self._read_task_value(task, "success_radius_m", 0.0) or 0.0)
+        if radius <= 0.0:
+            self._last_goal_distance = math.nan
+            self._last_goal_reached = False
+            return False
+        state = observation.vehicle_state
+        distance = math.hypot(float(state.x) - observation.goal[0], float(state.y) - observation.goal[1])
+        self._last_goal_distance = distance
+        self._last_goal_reached = distance <= radius
+        return self._last_goal_reached
 
     def _beamng_level_for_config(self, config: Any) -> str:
         beamng_options = self._beamng_metadata(config)

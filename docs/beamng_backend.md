@@ -75,6 +75,19 @@ Internally this loop now uses the `local_lewm_cost` algorithm adapter, so future
 models can replace the data-preparation/training/inference pieces through the
 same pluggable adapter contract instead of changing BeamNG backend code.
 
+For an explicit region/start/goal task, use:
+
+```powershell
+python scripts\run_region_navigation_loop.py --task configs\tasks\beamng_region_nav_001.yaml --algorithm local_lewm_cost --collect-steps 160 --eval-steps 120 --output-dir outputs\region_navigation\beamng_region_nav_001
+```
+
+The task YAML contains a polygonal region, start pose, goal radius, and expert
+route. Collection uses the expert route for demonstration data; evaluation
+omits the route from BeamNG metadata, leaving the backend to derive a direct
+start-to-goal line from the task. The BeamNG backend terminates the episode
+when the vehicle enters the configured goal radius and records distance-to-goal
+metrics.
+
 The demo runs through the shared `route_world_model` agent so the selected
 world model and planner remain replaceable without BeamNG-specific application
 logic. For the visible smoke demo, BeamNG execution uses `drive_mode=ai_line`

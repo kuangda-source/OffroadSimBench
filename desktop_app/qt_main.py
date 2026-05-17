@@ -287,7 +287,8 @@ class MainWindow(QMainWindow):
         self.stablewm_hdf5_edit.setPlaceholderText(r"outputs\stablewm\orfd_gui.h5")
         self.model_path_edit = QLineEdit()
         self.model_path_edit.setPlaceholderText(r"outputs\models\lewm_orfd_gui")
-        for edit in (self.dataset_root_edit, self.adapter_edit, self.stablewm_hdf5_edit, self.model_path_edit):
+        self.task_path_edit = QLineEdit(r"configs\tasks\beamng_region_nav_001.yaml")
+        for edit in (self.dataset_root_edit, self.adapter_edit, self.stablewm_hdf5_edit, self.model_path_edit, self.task_path_edit):
             self._configure_control(edit)
 
     def _build_sidebar(self) -> QWidget:
@@ -496,6 +497,8 @@ class MainWindow(QMainWindow):
         controls = self._group(
             "BeamNG 与地形草案",
             [
+                self._field("Region task", self.task_path_edit),
+                self._action_button("区域起终点 LE-WM 闭环", self.run_region_navigation_loop, primary=True),
                 self._action_button("启动 BeamNG 可视自动驾驶", self.run_visible_beamng_demo, primary=True),
                 self._action_button("BeamNG LE-WM 闭环训练评估", self.run_beamng_lewm_closed_loop),
                 self._action_button("检查 BeamNG", self.check_beamng),
@@ -719,6 +722,23 @@ class MainWindow(QMainWindow):
             lambda: services.run_beamng_map_lewm_closed_loop(request),
             self._pipeline_finished,
             "beamng lewm closed loop failed",
+        )
+
+    def run_region_navigation_loop(self) -> None:
+        request = services.RegionNavigationClosedLoopRequest(
+            task_path=self.task_path_edit.text().strip() or r"configs\tasks\beamng_region_nav_001.yaml",
+            algorithm=self.algorithm_combo.currentData() or self.algorithm_combo.currentText() or "local_lewm_cost",
+            collect_steps=max(int(self.settings.max_steps), 160),
+            eval_steps=max(int(self.settings.max_steps), 80),
+            seed=self.settings.seed,
+            planner=self.planner_combo.currentData() or self.planner_combo.currentText() or "le_wm_cem",
+            close_beamng=False,
+        )
+        self.log("区域导航闭环：task -> expert采集 -> HDF5 -> 训练 -> start/goal评估")
+        self._run_task(
+            lambda: services.run_region_navigation_closed_loop(request),
+            self._pipeline_finished,
+            "region navigation loop failed",
         )
 
     def load_selected_episode(self, item: QListWidgetItem) -> None:

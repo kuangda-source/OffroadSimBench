@@ -197,6 +197,34 @@ def test_beamng_backend_skips_manual_control_for_ai_line(fake_beamngpy: SimpleNa
     assert fake_beamngpy.vehicle.last_control == {}
 
 
+def test_beamng_backend_terminates_when_goal_radius_is_reached(fake_beamngpy: SimpleNamespace) -> None:
+    vehicle = load_vehicle_config("configs/vehicles/ugv_medium.yaml")
+    scenario = {
+        "scenario_id": "beamng_goal_stop",
+        "backend": "beamng",
+        "task": {"start": [0.0, 0.0], "goal": [2.0, 0.0], "success_radius_m": 0.5},
+        "metadata": {
+            "beamng": {
+                "level": "gridmap_v2",
+                "vehicle_start": {"pos": [0.0, 0.0, 0.5], "rot_quat": [0.0, 0.0, 0.0, 1.0]},
+                "route": [[0.0, 0.0], [2.0, 0.0]],
+                "drive_mode": "ai_line",
+                "steps_per_action": 1,
+            }
+        },
+    }
+    backend = BeamNGBackend(connection=BeamNGConnectionConfig(launch=False), vehicle_config=vehicle)
+    backend.reset(scenario)
+
+    result = backend.step(Action())
+
+    assert result.terminated is True
+    assert result.done is True
+    assert result.info["goal_reached"] is True
+    assert result.info["distance_to_goal"] <= 0.5
+    assert backend.get_metrics()["goal_reached"] is True
+
+
 def test_run_episode_passes_vehicle_config_to_beamng(fake_beamngpy: SimpleNamespace) -> None:
     result = run_episode(
         backend_name="beamng",

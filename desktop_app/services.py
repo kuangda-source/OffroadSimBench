@@ -20,6 +20,7 @@ from offroad_sim.datasets import default_dataset_registry
 from offroad_sim.evaluation import run_episode
 from offroad_sim.evaluation.runner import DEFAULT_OUTPUT_ROOT
 from offroad_sim.planning import default_planner_registry
+from offroad_sim.tasks import NavigationRegionTask, load_navigation_region_task
 from offroad_sim.utils.yaml_io import load_yaml_file
 from offroad_sim.world_models import TinyLearnedWorldModel, default_world_model_registry
 
@@ -92,6 +93,23 @@ class VisibleBeamNGDemoRequest:
 class BeamNGMapLeWMClosedLoopRequest:
     algorithm: str = "local_lewm_cost"
     scenario: str = "beamng_visible_autodrive"
+    vehicle: str = "configs/vehicles/ugv_medium.yaml"
+    output_dir: str = ""
+    collect_steps: int = 160
+    eval_steps: int = 120
+    seed: int = 7
+    planner: str = "le_wm_cem"
+    beamng_gfx: str = "vk"
+    close_beamng: bool = True
+    step_delay_sec: float = 0.0
+    pre_run_hold_sec: float = 0.0
+    post_run_hold_sec: float = 0.0
+
+
+@dataclass(slots=True)
+class RegionNavigationClosedLoopRequest:
+    task_path: str
+    algorithm: str = "local_lewm_cost"
     vehicle: str = "configs/vehicles/ugv_medium.yaml"
     output_dir: str = ""
     collect_steps: int = 160
@@ -513,6 +531,168 @@ def run_beamng_map_lewm_closed_loop(request: BeamNGMapLeWMClosedLoopRequest) -> 
     summary_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
     payload["summary_path"] = str(summary_path.resolve())
     return payload
+
+
+def run_region_navigation_closed_loop(request: RegionNavigationClosedLoopRequest) -> dict[str, Any]:
+    task = load_navigation_region_task(request.task_path)
+    stamp = time.strftime("%Y%m%dT%H%M%S")
+    output_dir = Path(request.output_dir or ROOT / "outputs" / "region_navigation" / _safe_name(task.task_id) / stamp)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    collection_scenario = task.to_beamng_scenario(mode="collection")
+    evaluation_scenario = task.to_beamng_scenario(mode="evaluation")
+
+    collection = _run_region_beamng_episode(
+        scenario=collection_scenario,
+        vehicle=request.vehicle,
+        max_steps=min(max(1, int(request.collect_steps)), task.max_steps),
+        seed=request.seed,
+        world_model_type="simple_kinematic",
+        world_model_path="",
+        planner="",
+        record=True,
+        beamng_gfx=request.beamng_gfx,
+        pre_run_hold_sec=request.pre_run_hold_sec,
+        step_delay_sec=request.step_delay_sec,
+        post_run_hold_sec=0.0,
+        close_beamng=True,
+    )
+    episode_path = collection.get("episode_path")
+    if not episode_path:
+        raise RuntimeError("Region navigation collection did not produce an episode path.")
+
+    algorithm = make_algorithm_adapter(request.algorithm)
+    hdf5_path = output_dir / f"{_safe_name(task.task_id)}.h5"
+    prep = algorithm.prepare_data(DataPrepRequest(episode_root=str(episode_path), output_path=str(hdf5_path), actions_from_state=True))
+    hdf5 = {"output_hdf5": prep.output_path, **prep.metadata}
+
+    model_dir = output_dir / "model"
+    trained = algorithm.train(TrainRequest(input_path=str(hdf5["output_hdf5"]), output_dir=str(model_dir)))
+    training = {"output_dir": trained.output_dir, "checkpoint_path": trained.checkpoint_path, **trained.metadata}
+    model_path = str(training.get("output_dir") or model_dir)
+
+    evaluation = _run_region_beamng_episode(
+        scenario=evaluation_scenario,
+        vehicle=request.vehicle,
+        max_steps=min(max(1, int(request.eval_steps)), task.max_steps),
+        seed=request.seed,
+        world_model_type="le_wm",
+        world_model_path=model_path,
+        planner=request.planner,
+        record=True,
+        beamng_gfx=request.beamng_gfx,
+        pre_run_hold_sec=0.0,
+        step_delay_sec=request.step_delay_sec,
+        post_run_hold_sec=request.post_run_hold_sec,
+        close_beamng=request.close_beamng,
+    )
+    acceptance = _navigation_acceptance(evaluation, task)
+    payload: dict[str, Any] = {
+        "status": "completed",
+        "algorithm": algorithm.algorithm_id,
+        "task": task.to_dict(),
+        "output_dir": str(output_dir.resolve()),
+        "hdf5_path": str(hdf5.get("output_hdf5", hdf5_path)),
+        "model_dir": model_path,
+        "collection": collection,
+        "hdf5": hdf5,
+        "training": training,
+        "evaluation": evaluation,
+        "acceptance": acceptance,
+    }
+    summary_path = output_dir / "region_navigation_summary.json"
+    summary_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    payload["summary_path"] = str(summary_path.resolve())
+    return payload
+
+
+def _run_region_beamng_episode(
+    *,
+    scenario: dict[str, Any],
+    vehicle: str,
+    max_steps: int,
+    seed: int,
+    world_model_type: str,
+    world_model_path: str,
+    planner: str,
+    record: bool,
+    beamng_gfx: str,
+    pre_run_hold_sec: float,
+    step_delay_sec: float,
+    post_run_hold_sec: float,
+    close_beamng: bool,
+) -> dict[str, Any]:
+    planner_config = {"horizon": 4, "num_samples": 16, "iterations": 2}
+    agent_options_payload: dict[str, Any] = {"world_model_name": world_model_type}
+    if world_model_path:
+        agent_options_payload["world_model_path"] = world_model_path
+    if planner:
+        agent_options_payload["planner_name"] = planner
+        agent_options_payload["planner_config"] = planner_config
+    result = run_episode(
+        backend_name="beamng",
+        scenario=scenario,
+        agent_name="route_world_model",
+        seed=seed,
+        max_steps=max_steps,
+        record=record,
+        output_root=DEFAULT_OUTPUT_ROOT,
+        backend_options={"connection": BeamNGConnectionConfig(gfx=beamng_gfx or None)},
+        agent_options=agent_options_payload,
+        vehicle=vehicle,
+        pre_run_hold_sec=pre_run_hold_sec,
+        step_delay_sec=step_delay_sec,
+        post_run_hold_sec=post_run_hold_sec,
+        close_backend=close_beamng,
+    )
+    payload = result.to_dict()
+    payload["region_navigation"] = {
+        "world_model_type": world_model_type,
+        "world_model_path": world_model_path or None,
+        "planner": planner or None,
+        "scenario_id": scenario.get("scenario_id"),
+        "beamng_gfx": beamng_gfx,
+    }
+    return payload
+
+
+def _navigation_acceptance(evaluation: dict[str, Any], task: NavigationRegionTask) -> dict[str, Any]:
+    trace = load_episode_trace(evaluation.get("episode_path", ""))
+    final = trace[-1] if trace else {}
+    x = _float_or_nan(final.get("x"))
+    y = _float_or_nan(final.get("y"))
+    final_distance = math.hypot(x - task.goal_pos[0], y - task.goal_pos[1]) if math.isfinite(x) and math.isfinite(y) else math.nan
+    in_region = task.contains_point((x, y)) if math.isfinite(x) and math.isfinite(y) else False
+    min_distance = math.inf
+    min_step: int | None = None
+    reached_in_region = False
+    for row in trace:
+        row_x = _float_or_nan(row.get("x"))
+        row_y = _float_or_nan(row.get("y"))
+        if not math.isfinite(row_x) or not math.isfinite(row_y):
+            continue
+        distance = math.hypot(row_x - task.goal_pos[0], row_y - task.goal_pos[1])
+        if distance < min_distance:
+            min_distance = distance
+            min_step = int(row.get("step_index") or 0)
+        if distance <= task.goal_radius and task.contains_point((row_x, row_y)):
+            reached_in_region = True
+    if not math.isfinite(min_distance):
+        min_distance = math.nan
+    metrics = evaluation.get("metrics", {}) if isinstance(evaluation.get("metrics"), dict) else {}
+    collision_count = int(metrics.get("collision_count", 0) or 0)
+    goal_success = math.isfinite(min_distance) and min_distance <= task.goal_radius
+    return {
+        "goal_success": bool(goal_success and reached_in_region and collision_count <= task.max_collision_count),
+        "goal_reached": bool(goal_success),
+        "final_goal_distance": final_distance,
+        "min_goal_distance": min_distance,
+        "min_goal_step": min_step,
+        "goal_radius": task.goal_radius,
+        "final_in_region": bool(in_region),
+        "reached_in_region": bool(reached_in_region),
+        "collision_count": collision_count,
+        "max_collision_count": task.max_collision_count,
+    }
 
 
 def export_orfd_beamng_terrain_draft(

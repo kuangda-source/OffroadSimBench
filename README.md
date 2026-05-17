@@ -229,6 +229,16 @@ Run the BeamNG-map LE-WM closed loop:
 python scripts\run_beamng_lewm_closed_loop.py --collect-steps 160 --eval-steps 120 --output-dir outputs\beamng_map_lewm\demo
 ```
 
+Run a region/start/goal navigation loop. The collection stage uses
+`expert_route`; the evaluation stage removes that route and keeps only
+`start_pose + goal` in the task contract. BeamNG episodes terminate when the
+vehicle enters the configured goal radius, and the summary reports both final
+and minimum goal distance:
+
+```powershell
+python scripts\run_region_navigation_loop.py --task configs\tasks\beamng_region_nav_001.yaml --algorithm local_lewm_cost --collect-steps 160 --eval-steps 120 --output-dir outputs\region_navigation\beamng_region_nav_001
+```
+
 List and inspect pluggable algorithm adapters:
 
 ```powershell
