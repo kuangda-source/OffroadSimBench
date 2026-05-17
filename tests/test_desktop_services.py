@@ -15,6 +15,7 @@ def test_desktop_catalog_snapshot_exposes_runtime_choices() -> None:
     assert any(item["name"] == "world_model" for item in catalog["agents"])
     assert any(item["name"] == "world_model_cem" for item in catalog["planners"])
     assert any(item["name"] == "tiny_learned" for item in catalog["world_models"])
+    assert any(item["name"] == "local_lewm_cost" for item in catalog["algorithms"])
 
 
 def test_desktop_request_builds_dataset_and_planner_options() -> None:

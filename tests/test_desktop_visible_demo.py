@@ -76,6 +76,16 @@ def test_beamng_page_has_visible_demo_action() -> None:
     window.close()
 
 
+def test_gui_exposes_algorithm_choice() -> None:
+    _ensure_app()
+    window = MainWindow()
+
+    values = [window.algorithm_combo.itemData(index) for index in range(window.algorithm_combo.count())]
+
+    assert "local_lewm_cost" in values
+    window.close()
+
+
 def test_gui_visible_demo_uses_minimum_human_visible_steps(monkeypatch) -> None:
     _ensure_app()
     window = MainWindow()

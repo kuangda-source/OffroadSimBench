@@ -16,6 +16,7 @@ from desktop_app.services import BeamNGMapLeWMClosedLoopRequest, run_beamng_map_
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--algorithm", default="local_lewm_cost")
     parser.add_argument("--scenario", default="beamng_visible_autodrive")
     parser.add_argument("--vehicle", default="configs/vehicles/ugv_medium.yaml")
     parser.add_argument("--output-dir", default="")
@@ -32,6 +33,7 @@ def main() -> int:
 
     payload = run_beamng_map_lewm_closed_loop(
         BeamNGMapLeWMClosedLoopRequest(
+            algorithm=args.algorithm,
             scenario=args.scenario,
             vehicle=args.vehicle,
             output_dir=args.output_dir,

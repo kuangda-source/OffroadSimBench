@@ -14,6 +14,7 @@ from typing import Any
 import numpy as np
 
 from offroad_sim.agents import default_agent_registry
+from offroad_sim.algorithms import DataPrepRequest, TrainRequest, default_algorithm_registry
 from offroad_sim.backends import BeamNGConnectionConfig, default_backend_registry
 from offroad_sim.datasets import default_dataset_registry
 from offroad_sim.evaluation import run_episode
@@ -89,6 +90,7 @@ class VisibleBeamNGDemoRequest:
 
 @dataclass(slots=True)
 class BeamNGMapLeWMClosedLoopRequest:
+    algorithm: str = "local_lewm_cost"
     scenario: str = "beamng_visible_autodrive"
     vehicle: str = "configs/vehicles/ugv_medium.yaml"
     output_dir: str = ""
@@ -122,6 +124,7 @@ def catalog_snapshot() -> dict[str, list[dict[str, Any]]]:
         "backends": _registry_rows(default_backend_registry()),
         "world_models": _registry_rows(default_world_model_registry()),
         "planners": _registry_rows(default_planner_registry()),
+        "algorithms": _algorithm_rows(),
         "episodes": episode_summaries(),
     }
 
@@ -309,6 +312,10 @@ def train_lewm_cost_model(input_hdf5: str, output_dir: str) -> dict[str, Any]:
     )
 
 
+def make_algorithm_adapter(name: str) -> Any:
+    return default_algorithm_registry().create(name)
+
+
 def run_orfd_lewm_pipeline(request: PipelineRequest) -> dict[str, Any]:
     if not request.dataset_root:
         raise ValueError("Dataset root is required.")
@@ -457,11 +464,14 @@ def run_beamng_map_lewm_closed_loop(request: BeamNGMapLeWMClosedLoopRequest) -> 
     if not episode_path:
         raise RuntimeError("BeamNG collection did not produce an episode path.")
 
+    algorithm = make_algorithm_adapter(request.algorithm)
     hdf5_path = output_dir / "beamng_map_lewm.h5"
-    hdf5 = export_episodes_hdf5(str(episode_path), str(hdf5_path), actions_from_state=True)
+    prep = algorithm.prepare_data(DataPrepRequest(episode_root=str(episode_path), output_path=str(hdf5_path), actions_from_state=True))
+    hdf5 = {"output_hdf5": prep.output_path, **prep.metadata}
 
     model_dir = output_dir / "model"
-    training = train_lewm_cost_model(str(hdf5["output_hdf5"]), str(model_dir))
+    trained = algorithm.train(TrainRequest(input_path=str(hdf5["output_hdf5"]), output_dir=str(model_dir)))
+    training = {"output_dir": trained.output_dir, "checkpoint_path": trained.checkpoint_path, **trained.metadata}
     model_path = str(training.get("output_dir") or model_dir)
 
     evaluation = run_visible_beamng_demo(
@@ -484,6 +494,7 @@ def run_beamng_map_lewm_closed_loop(request: BeamNGMapLeWMClosedLoopRequest) -> 
 
     payload: dict[str, Any] = {
         "status": "completed",
+        "algorithm": algorithm.algorithm_id,
         "output_dir": str(output_dir.resolve()),
         "hdf5_path": str(hdf5.get("output_hdf5", hdf5_path)),
         "model_dir": model_path,
@@ -683,6 +694,20 @@ def _registry_rows(registry: Any) -> list[dict[str, Any]]:
         status = statuses[name]
         row = asdict(status) if is_dataclass(status) else dict(status)
         row["description"] = registry.get(name).description
+        rows.append(row)
+    return rows
+
+
+def _algorithm_rows() -> list[dict[str, Any]]:
+    registry = default_algorithm_registry()
+    rows: list[dict[str, Any]] = []
+    statuses = registry.status()
+    for name in registry.names():
+        spec = registry.get(name)
+        status = statuses[name]
+        row = asdict(status) if is_dataclass(status) else dict(status)
+        row["description"] = spec.description or spec.manifest.display_name
+        row["display_name"] = spec.manifest.display_name
         rows.append(row)
     return rows
 

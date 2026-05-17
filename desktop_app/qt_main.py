@@ -277,6 +277,7 @@ class MainWindow(QMainWindow):
         self.agent_combo = self._combo()
         self.world_model_combo = self._combo()
         self.planner_combo = self._combo()
+        self.algorithm_combo = self._combo()
 
         self.dataset_root_edit = QLineEdit()
         self.dataset_root_edit.setPlaceholderText(r"datasets\ORFD_Dataset_ICRA2022_ZIP")
@@ -373,6 +374,7 @@ class MainWindow(QMainWindow):
                     self._field("Backend", self.backend_combo),
                     self._field("Scenario", self.scenario_combo),
                     self._field("Agent", self.agent_combo),
+                    self._field("Algorithm", self.algorithm_combo),
                     self._field("World model", self.world_model_combo),
                     self._field("Planner", self.planner_combo),
                 ],
@@ -556,6 +558,7 @@ class MainWindow(QMainWindow):
         self._fill_combo(self.backend_combo, self.catalog["backends"], "name", default="gym_heightmap")
         self._fill_combo(self.scenario_combo, self.catalog["scenarios"], "id", default="beamng_visible_autodrive")
         self._fill_combo(self.agent_combo, self.catalog["agents"], "name", default="world_model")
+        self._fill_combo(self.algorithm_combo, self.catalog["algorithms"], "name", default="local_lewm_cost")
         self._fill_combo(self.world_model_combo, self.catalog["world_models"], "name", default="le_wm")
         self._fill_combo(self.planner_combo, [{"name": ""}] + self.catalog["planners"], "name", default="le_wm_cem")
         self._fill_episode_list()
@@ -703,6 +706,7 @@ class MainWindow(QMainWindow):
 
     def run_beamng_lewm_closed_loop(self) -> None:
         request = services.BeamNGMapLeWMClosedLoopRequest(
+            algorithm=self.algorithm_combo.currentData() or self.algorithm_combo.currentText() or "local_lewm_cost",
             scenario=self.scenario_combo.currentData() or self.scenario_combo.currentText() or "beamng_visible_autodrive",
             collect_steps=max(int(self.settings.max_steps), 160),
             eval_steps=max(int(self.settings.max_steps), 80),

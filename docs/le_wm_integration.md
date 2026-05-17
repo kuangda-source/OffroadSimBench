@@ -75,6 +75,19 @@ stable-worldmodel HDF5 with state-derived actions, trains an LE-WM-compatible
 cost checkpoint, and evaluates the checkpoint through `route_world_model` with
 `le_wm_cem`.
 
+The same local LE-WM path is also exposed as a pluggable algorithm adapter:
+
+```powershell
+python -m offroad_sim.cli algorithms list
+python -m offroad_sim.cli algorithms inspect local_lewm_cost --json
+python -m offroad_sim.cli algorithms prepare-data local_lewm_cost --episode-root outputs\episodes\beamng_visible_autodrive_route_world_model_YYYYMMDDTHHMMSSZ --output-hdf5 outputs\stablewm\beamng_map_lewm.h5 --actions-from-state --json
+python -m offroad_sim.cli algorithms train local_lewm_cost --input-hdf5 outputs\stablewm\beamng_map_lewm.h5 --output-dir outputs\models\beamng_map_lewm --json
+```
+
+External algorithm packages can follow the same `algorithm.yaml + adapter.py`
+contract and declare whether they provide a full agent, world model, cost model,
+or trajectory model.
+
 ## Required External Runtime
 
 `le_wm_cem` requires:

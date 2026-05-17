@@ -11,6 +11,7 @@ from rich.console import Console
 from rich.table import Table
 
 from offroad_sim.agents import default_agent_registry, make_agent
+from offroad_sim.algorithms import DataPrepRequest, TrainRequest, default_algorithm_registry
 from offroad_sim.backends import default_backend_registry
 from offroad_sim.datasets import default_dataset_registry
 from offroad_sim.evaluation import run_episode
@@ -30,7 +31,7 @@ def build_parser() -> argparse.ArgumentParser:
     list_parser = subparsers.add_parser("list", help="List scenarios, vehicles, agents, and backends.")
     list_parser.add_argument(
         "--kind",
-        choices=["all", "scenarios", "vehicles", "agents", "backends", "datasets", "world_models", "planners"],
+        choices=["all", "scenarios", "vehicles", "agents", "backends", "datasets", "world_models", "planners", "algorithms"],
         default="all",
     )
 
@@ -63,6 +64,24 @@ def build_parser() -> argparse.ArgumentParser:
     replay_parser = subparsers.add_parser("replay", help="Inspect a saved episode directory.")
     replay_parser.add_argument("episode_path")
     replay_parser.add_argument("--json", action="store_true")
+
+    algorithms_parser = subparsers.add_parser("algorithms", help="List, inspect, and run algorithm adapters.")
+    algorithm_subparsers = algorithms_parser.add_subparsers(dest="algorithm_command", required=True)
+    algorithm_subparsers.add_parser("list", help="List available algorithm adapters.")
+    inspect_algorithm = algorithm_subparsers.add_parser("inspect", help="Inspect one algorithm adapter manifest.")
+    inspect_algorithm.add_argument("algorithm")
+    inspect_algorithm.add_argument("--json", action="store_true")
+    prepare_algorithm = algorithm_subparsers.add_parser("prepare-data", help="Prepare model-specific data with an algorithm adapter.")
+    prepare_algorithm.add_argument("algorithm")
+    prepare_algorithm.add_argument("--episode-root", required=True)
+    prepare_algorithm.add_argument("--output-hdf5", required=True)
+    prepare_algorithm.add_argument("--actions-from-state", action="store_true")
+    prepare_algorithm.add_argument("--json", action="store_true")
+    train_algorithm = algorithm_subparsers.add_parser("train", help="Train with an algorithm adapter.")
+    train_algorithm.add_argument("algorithm")
+    train_algorithm.add_argument("--input-hdf5", required=True)
+    train_algorithm.add_argument("--output-dir", required=True)
+    train_algorithm.add_argument("--json", action="store_true")
 
     return parser
 
@@ -113,6 +132,8 @@ def main(argv: list[str] | None = None) -> int:
             console.print(f"Episode: {Path(args.episode_path)}")
             _print_metrics(console, payload["metrics"])
         return 0
+    if args.command == "algorithms":
+        return _handle_algorithms(console, args)
 
     parser.error(f"Unknown command: {args.command}")
     return 2
@@ -164,6 +185,64 @@ def _print_listing(console: Console, kind: str) -> None:
         for name, status in registry.status().items():
             table.add_row(name, str(status.available), status.message)
         console.print(table)
+    if kind in {"all", "algorithms"}:
+        _print_algorithm_table(console)
+
+
+def _handle_algorithms(console: Console, args: argparse.Namespace) -> int:
+    registry = default_algorithm_registry()
+    if args.algorithm_command == "list":
+        _print_algorithm_table(console)
+        return 0
+    if args.algorithm_command == "inspect":
+        spec = registry.get(args.algorithm)
+        payload = spec.manifest.to_dict()
+        payload["status"] = _status_to_dict(spec.status())
+        if args.json:
+            console.print_json(json.dumps(payload, default=str))
+        else:
+            table = Table(title=f"Algorithm {spec.name}")
+            table.add_column("Field")
+            table.add_column("Value")
+            for key in ["algorithm_id", "display_name", "version", "entrypoint"]:
+                table.add_row(key, str(payload[key]))
+            table.add_row("capabilities", json.dumps(payload["capabilities"], default=str))
+            table.add_row("status", payload["status"]["message"])
+            console.print(table)
+        return 0
+    if args.algorithm_command == "prepare-data":
+        adapter = registry.create(args.algorithm)
+        result = adapter.prepare_data(
+            DataPrepRequest(
+                episode_root=args.episode_root,
+                output_path=args.output_hdf5,
+                actions_from_state=bool(args.actions_from_state),
+            )
+        )
+        payload = {"algorithm": adapter.algorithm_id, "output_hdf5": result.output_path, **result.metadata}
+        _print_json_or_table(console, payload, json_output=args.json, title="Algorithm Data Preparation")
+        return 0
+    if args.algorithm_command == "train":
+        adapter = registry.create(args.algorithm)
+        result = adapter.train(TrainRequest(input_path=args.input_hdf5, output_dir=args.output_dir))
+        payload = {"algorithm": adapter.algorithm_id, **result.to_dict()}
+        _print_json_or_table(console, payload, json_output=args.json, title="Algorithm Training")
+        return 0
+    raise ValueError(f"Unknown algorithms command: {args.algorithm_command}")
+
+
+def _print_algorithm_table(console: Console) -> None:
+    registry = default_algorithm_registry()
+    table = Table(title="Algorithms")
+    table.add_column("Name")
+    table.add_column("Available")
+    table.add_column("Capabilities")
+    table.add_column("Description")
+    for name in registry.names():
+        spec = registry.get(name)
+        status = spec.status()
+        table.add_row(name, str(status.available), ", ".join(spec.manifest.capabilities.available_names()) or "none", spec.description or spec.manifest.display_name)
+    console.print(table)
 
 
 def _print_path_table(console: Console, title: str, root: Path, pattern: str) -> None:
@@ -280,6 +359,27 @@ def _print_dataset_inspection(console: Console, payload: dict[str, Any]) -> None
         table.add_row(key, str(payload[key]))
     table.add_row("sequences", ", ".join(payload["sequences"]))
     table.add_row("asset_counts", json.dumps(payload["asset_counts"], default=str))
+    console.print(table)
+
+
+def _status_to_dict(status: Any) -> dict[str, Any]:
+    return {
+        "name": status.name,
+        "available": status.available,
+        "message": status.message,
+        "details": status.details or {},
+    }
+
+
+def _print_json_or_table(console: Console, payload: dict[str, Any], *, json_output: bool, title: str) -> None:
+    if json_output:
+        console.print_json(json.dumps(payload, default=str))
+        return
+    table = Table(title=title)
+    table.add_column("Field")
+    table.add_column("Value")
+    for key, value in payload.items():
+        table.add_row(str(key), json.dumps(value, default=str) if isinstance(value, (dict, list)) else str(value))
     console.print(table)
 
 

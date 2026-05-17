@@ -229,6 +229,19 @@ Run the BeamNG-map LE-WM closed loop:
 python scripts\run_beamng_lewm_closed_loop.py --collect-steps 160 --eval-steps 120 --output-dir outputs\beamng_map_lewm\demo
 ```
 
+List and inspect pluggable algorithm adapters:
+
+```powershell
+python -m offroad_sim.cli algorithms list
+python -m offroad_sim.cli algorithms inspect local_lewm_cost --json
+```
+
+Third-party algorithms can be added under `algorithms/<name>/` with an
+`algorithm.yaml` manifest and an `adapter.py` class. The first built-in
+reference adapter is `local_lewm_cost`, which prepares BeamNG episode data,
+trains the local LE-WM-compatible cost checkpoint, and routes evaluation
+through `le_wm_cem`.
+
 BeamNG checks and LE-WM CEM smoke:
 
 ```powershell

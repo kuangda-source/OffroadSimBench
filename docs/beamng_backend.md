@@ -71,6 +71,10 @@ recording to stable-worldmodel HDF5 with state-derived actions, trains a local
 LE-WM-compatible cost checkpoint, then launches a second visible BeamNG run
 using `world_model_type=le_wm` and `planner=le_wm_cem`.
 
+Internally this loop now uses the `local_lewm_cost` algorithm adapter, so future
+models can replace the data-preparation/training/inference pieces through the
+same pluggable adapter contract instead of changing BeamNG backend code.
+
 The demo runs through the shared `route_world_model` agent so the selected
 world model and planner remain replaceable without BeamNG-specific application
 logic. For the visible smoke demo, BeamNG execution uses `drive_mode=ai_line`

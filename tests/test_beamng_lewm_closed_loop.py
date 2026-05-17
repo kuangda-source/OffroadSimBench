@@ -8,6 +8,7 @@ from unittest.mock import patch
 import h5py
 
 from desktop_app import services
+from offroad_sim.algorithms import DataPrepResult, TrainResult
 from offroad_sim.core import Action, Observation, VehicleState
 from offroad_sim.replay import EpisodeRecorder
 from scripts import export_episodes_hdf5
@@ -78,13 +79,30 @@ def test_beamng_map_lewm_closed_loop_pipeline_orchestrates_steps(tmp_path: Path)
             "visible_demo": {"world_model_type": request.world_model_type, "planner": request.planner},
         }
 
+    class FakeAlgorithm:
+        algorithm_id = "fake_lewm"
+
+        def __init__(self) -> None:
+            self.prepare_requests = []
+            self.train_requests = []
+
+        def prepare_data(self, request):
+            self.prepare_requests.append(request)
+            return DataPrepResult(output_path=str(tmp_path / "map.h5"), metadata={"total_frames": 20})
+
+        def train(self, request):
+            self.train_requests.append(request)
+            return TrainResult(output_dir=str(tmp_path / "model"), checkpoint_path=str(tmp_path / "model" / "lewm_cost_object.ckpt"))
+
+    fake_algorithm = FakeAlgorithm()
+
     with (
         patch("desktop_app.services.run_visible_beamng_demo", side_effect=fake_visible) as visible,
-        patch("desktop_app.services.export_episodes_hdf5", return_value={"output_hdf5": str(tmp_path / "map.h5"), "total_frames": 20}, create=True) as export,
-        patch("desktop_app.services.train_lewm_cost_model", return_value={"output_dir": str(tmp_path / "model"), "checkpoint_path": str(tmp_path / "model" / "lewm_cost_object.ckpt")}) as train,
+        patch("desktop_app.services.make_algorithm_adapter", return_value=fake_algorithm) as make_algorithm,
     ):
         payload = services.run_beamng_map_lewm_closed_loop(
             services.BeamNGMapLeWMClosedLoopRequest(
+                algorithm="fake_lewm",
                 output_dir=str(tmp_path / "closed_loop"),
                 collect_steps=20,
                 eval_steps=10,
@@ -97,6 +115,9 @@ def test_beamng_map_lewm_closed_loop_pipeline_orchestrates_steps(tmp_path: Path)
     assert payload["evaluation"]["episode_id"] == "eval"
     assert payload["hdf5"]["total_frames"] == 20
     assert payload["training"]["output_dir"] == str(tmp_path / "model")
+    assert payload["algorithm"] == "fake_lewm"
     assert visible.call_count == 2
-    assert export.call_args.kwargs["actions_from_state"] is True
+    make_algorithm.assert_called_once_with("fake_lewm")
+    assert fake_algorithm.prepare_requests[0].actions_from_state is True
+    assert fake_algorithm.train_requests[0].input_path == str(tmp_path / "map.h5")
     assert json.loads((Path(payload["output_dir"]) / "closed_loop_summary.json").read_text(encoding="utf-8"))["status"] == "completed"
