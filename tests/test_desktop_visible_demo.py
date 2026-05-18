@@ -75,6 +75,7 @@ def test_beamng_page_has_visible_demo_action() -> None:
     assert "启动 BeamNG 可视自动驾驶" in texts
     assert "区域起终点 LE-WM 闭环" in texts
     assert "编辑区域/起终点" in texts
+    assert "BeamNG 预览区域/起终点" in texts
     window.close()
 
 
@@ -151,4 +152,43 @@ def test_gui_region_navigation_loop_uses_task_path(monkeypatch) -> None:
     assert captured["request"].task_path == "configs/tasks/beamng_region_nav_001.yaml"
     assert captured["request"].collect_steps >= 160
     assert captured["request"].close_beamng is False
+    window.close()
+
+
+def test_gui_johnson_valley_demo_uses_agent_control_task(monkeypatch) -> None:
+    _ensure_app()
+    window = MainWindow()
+    window.settings.max_steps = 9
+    captured: dict[str, services.RegionNavigationClosedLoopRequest] = {}
+
+    monkeypatch.setattr(services, "run_region_navigation_closed_loop", lambda request: captured.setdefault("request", request))
+    monkeypatch.setattr(window, "_run_task", lambda task, callback, label: task())
+
+    window.run_johnson_valley_demo_loop()
+
+    assert captured["request"].task_path.endswith("beamng_johnson_valley_nav_001.yaml")
+    assert captured["request"].planner == "le_wm_cem"
+    assert captured["request"].collect_steps >= 240
+    assert captured["request"].eval_steps >= 300
+    assert captured["request"].close_beamng is False
+    window.close()
+
+
+def test_gui_navigation_preview_uses_current_task(monkeypatch) -> None:
+    _ensure_app()
+    window = MainWindow()
+    window.task_path_edit.setText("configs/tasks/beamng_johnson_valley_nav_001.yaml")
+    captured: dict[str, str] = {}
+
+    def fake_preview(task_path: str, **kwargs):
+        captured["task_path"] = task_path
+        return {"episode_id": "preview", "analysis": {"start_in_region": True}}
+
+    monkeypatch.setattr(services, "preview_navigation_task_in_beamng", fake_preview)
+    monkeypatch.setattr(window, "_run_task", lambda task, callback, label: callback(task()))
+
+    window.preview_region_task_in_beamng()
+
+    assert captured["task_path"] == "configs/tasks/beamng_johnson_valley_nav_001.yaml"
+    assert "preview" in window.beamng_summary.toPlainText()
     window.close()

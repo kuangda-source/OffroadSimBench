@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -89,7 +90,8 @@ class NavigationRegionTask:
             "vehicle_model": str(self.beamng.get("vehicle_model", "pickup")),
             "vehicle_start": {
                 "pos": list(self.start_pos),
-                "rot_quat": list(self.beamng.get("rot_quat", [0.0, 0.0, 0.0, 1.0])),
+                "yaw": self.start_yaw,
+                "rot_quat": list(self.beamng.get("rot_quat", _yaw_to_quat(self.start_yaw))),
             },
             "camera_mode": str(self.beamng.get("camera_mode", "orbit")),
             "draw_route": bool(self.beamng.get("draw_route", True)),
@@ -97,7 +99,7 @@ class NavigationRegionTask:
             "ai_line_speed": float(self.beamng.get("ai_line_speed", 10.0)),
             "steps_per_action": int(self.beamng.get("steps_per_action", 18)),
         }
-        if mode == "collection":
+        if mode == "collection" or self._uses_evaluation_route(mode):
             beamng["route"] = [list(point) for point in self.expert_route]
         return {
             "scenario_id": f"{self.task_id}_{mode}",
@@ -117,6 +119,12 @@ class NavigationRegionTask:
                 "beamng": beamng,
             },
         }
+
+    def _uses_evaluation_route(self, mode: str) -> bool:
+        if mode != "evaluation" or not self.expert_route:
+            return False
+        route_mode = str(self.beamng.get("evaluation_route_mode", "none")).strip().lower()
+        return route_mode in {"expert", "expert_route", "route", "agent", "draw"}
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -155,3 +163,8 @@ def _point3(value: Any) -> Point3:
 
 def _points2(values: Any) -> list[Point2]:
     return [_point2(value) for value in values or []]
+
+
+def _yaw_to_quat(yaw: float) -> list[float]:
+    half = float(yaw) * 0.5
+    return [0.0, 0.0, round(math.sin(half), 6), round(math.cos(half), 6)]

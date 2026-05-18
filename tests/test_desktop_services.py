@@ -142,6 +142,58 @@ def test_save_manual_navigation_task_rejects_start_outside_region(tmp_path) -> N
         raise AssertionError("Expected manual task validation failure.")
 
 
+def test_navigation_task_analysis_checks_region_and_route(tmp_path) -> None:
+    output = tmp_path / "manual_region.yaml"
+    services.save_manual_navigation_task(
+        services.ManualNavigationTaskRequest(
+            output_path=str(output),
+            task_id="manual_region_test",
+            level="gridmap_v2",
+            region_polygon=[(0.0, -160.0), (20.0, -160.0), (20.0, -220.0), (0.0, -220.0)],
+            start_pos=(2.0, -170.0, 100.6),
+            start_yaw=-1.57,
+            goal_pos=(6.0, -210.0),
+            expert_route=[(2.0, -170.0), (5.0, -190.0), (6.0, -210.0)],
+        )
+    )
+
+    payload = services.analyze_navigation_task(str(output))
+
+    assert payload["start_in_region"] is True
+    assert payload["goal_in_region"] is True
+    assert payload["route_in_region"] is True
+    assert payload["route_waypoint_count"] == 3
+    assert payload["route_length_m"] > payload["straight_line_m"]
+
+
+def test_preview_navigation_task_in_beamng_uses_manual_preview(tmp_path) -> None:
+    output = tmp_path / "manual_region.yaml"
+    services.save_manual_navigation_task(
+        services.ManualNavigationTaskRequest(
+            output_path=str(output),
+            task_id="manual_region_test",
+            level="gridmap_v2",
+            region_polygon=[(0.0, -160.0), (20.0, -160.0), (20.0, -220.0), (0.0, -220.0)],
+            start_pos=(2.0, -170.0, 100.6),
+            start_yaw=-1.57,
+            goal_pos=(6.0, -210.0),
+            expert_route=[(2.0, -170.0), (5.0, -190.0), (6.0, -210.0)],
+        )
+    )
+    with patch("desktop_app.services.run_episode") as run_episode:
+        run_episode.return_value.to_dict.return_value = {"episode_id": "preview", "metrics": {"drive_mode": "manual"}}
+
+        payload = services.preview_navigation_task_in_beamng(str(output), hold_open_sec=1.0)
+
+    scenario = run_episode.call_args.kwargs["scenario"]
+    assert payload["analysis"]["start_in_region"] is True
+    assert run_episode.call_args.kwargs["agent_name"] == "stop"
+    assert run_episode.call_args.kwargs["close_backend"] is False
+    assert scenario["metadata"]["beamng"]["drive_mode"] == "manual"
+    assert scenario["metadata"]["beamng"]["preview_mode"] is True
+    assert scenario["metadata"]["beamng"]["route"] == [[2.0, -170.0], [5.0, -190.0], [6.0, -210.0]]
+
+
 def test_orfd_lewm_pipeline_uses_selected_sequence_and_options() -> None:
     with (
         patch("desktop_app.services.inspect_dataset", return_value={"selected_sequence": "training/seq_0001"}),

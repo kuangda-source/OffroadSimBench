@@ -212,6 +212,7 @@ class BeamNGBackend(OffroadSimBackend):
             self._bng.start_scenario()
         self._configure_visible_helpers()
         self._configure_drive_mode()
+        self._configure_manual_control_mode()
 
         self._step_count = 0
         self._last_observation = self._build_placeholder_observation(scenario_config)
@@ -222,15 +223,9 @@ class BeamNGBackend(OffroadSimBackend):
         self._ensure_connected()
         command = self._normalized_action(action)
         if self._active_drive_mode != "ai_line" and self._vehicle is not None and hasattr(self._vehicle, "control"):
+            control = self._manual_control_payload(command)
             try:
-                self._vehicle.control(
-                    throttle=command.throttle,
-                    steering=command.steer,
-                    brake=command.brake,
-                    parkingbrake=0.0,
-                    clutch=0.0,
-                    gear=1,
-                )
+                self._vehicle.control(**control)
             except TypeError:
                 self._vehicle.control(throttle=command.throttle, steering=command.steer, brake=command.brake)
         if self._bng is not None and hasattr(self._bng, "step"):
@@ -379,10 +374,12 @@ class BeamNGBackend(OffroadSimBackend):
             vehicle_state = self._last_observation.vehicle_state
         if vehicle_state is None:
             spawn_pos, _ = self._beamng_vehicle_start_for_config(scenario_config)
+            spawn_yaw = self._beamng_vehicle_start_yaw_for_config(scenario_config)
             vehicle_state = VehicleState(
                 x=float(spawn_pos[0]) if spawn_pos else float(start[0]),
                 y=float(spawn_pos[1]) if spawn_pos else float(start[1]),
                 z=float(spawn_pos[2]) if spawn_pos and len(spawn_pos) >= 3 else 0.0,
+                yaw=spawn_yaw,
             )
         sensor_payload = self._sensor_cache or self._poll_sensors()
         front_rgb = self._sensor_value(sensor_payload, ("front_camera", "colour", "color", "annotation"))
@@ -481,6 +478,29 @@ class BeamNGBackend(OffroadSimBackend):
         rot_quat = self._tuple_float(start.get("rot_quat"), (0.0, 0.0, 0.0, 1.0), 4)
         return pos, rot_quat
 
+    def _beamng_vehicle_start_yaw_for_config(self, config: Any) -> float:
+        beamng_options = self._beamng_metadata(config)
+        start = beamng_options.get("vehicle_start", {}) if isinstance(beamng_options.get("vehicle_start", {}), Mapping) else {}
+        if "yaw" in start:
+            try:
+                return float(start["yaw"])
+            except (TypeError, ValueError):
+                pass
+        task_metadata = self._read_config(self._read_config(config, "metadata", {}), "task", {})
+        start_pose = self._read_config(task_metadata, "start_pose", {})
+        if "yaw" in start_pose:
+            try:
+                return float(start_pose["yaw"])
+            except (TypeError, ValueError):
+                pass
+        route = self._beamng_route_for_config(config)
+        if len(route) >= 2:
+            dx = float(route[1][0]) - float(route[0][0])
+            dy = float(route[1][1]) - float(route[0][1])
+            if abs(dx) + abs(dy) > 1e-6:
+                return math.atan2(dy, dx)
+        return 0.0
+
     def _beamng_route_for_config(self, config: Any) -> list[tuple[float, float]]:
         beamng_options = self._beamng_metadata(config)
         raw_route = beamng_options.get("route", [])
@@ -523,6 +543,8 @@ class BeamNGBackend(OffroadSimBackend):
                     add_spheres(points, radii=[0.8] * len(points), colors=[(0.0, 1.0, 0.0, 0.8)] * len(points))
                 except Exception:
                     pass
+        if bool(beamng_options.get("draw_task_markers", False)):
+            self._draw_navigation_task_markers(pos[2])
 
     def _configure_visible_camera(self, state: VehicleState | None = None) -> None:
         beamng_options = self._beamng_metadata(self._scenario_config)
@@ -579,6 +601,46 @@ class BeamNGBackend(OffroadSimBackend):
         except Exception:
             pass
 
+    def _draw_navigation_task_markers(self, z: float) -> None:
+        if not self._bng:
+            return
+        debug = getattr(self._bng, "debug", None)
+        add_spheres = getattr(debug, "add_spheres", None)
+        if not callable(add_spheres):
+            return
+        task = self._navigation_region_metadata(self._scenario_config)
+        if not task:
+            return
+        points: list[tuple[float, float, float]] = []
+        radii: list[float] = []
+        colors: list[tuple[float, float, float, float]] = []
+        start_pose = task.get("start_pose", {}) if isinstance(task.get("start_pose", {}), Mapping) else {}
+        start_pos = start_pose.get("pos", []) if isinstance(start_pose.get("pos", []), list) else []
+        if len(start_pos) >= 2:
+            points.append((float(start_pos[0]), float(start_pos[1]), z + 1.2))
+            radii.append(1.4)
+            colors.append((1.0, 0.85, 0.1, 0.95))
+        goal = task.get("goal", {}) if isinstance(task.get("goal", {}), Mapping) else {}
+        goal_pos = goal.get("pos", []) if isinstance(goal.get("pos", []), list) else []
+        if len(goal_pos) >= 2:
+            points.append((float(goal_pos[0]), float(goal_pos[1]), z + 1.2))
+            radii.append(1.8)
+            colors.append((1.0, 0.1, 0.1, 0.95))
+        region = task.get("region", {}) if isinstance(task.get("region", {}), Mapping) else {}
+        for point in region.get("polygon", []) or []:
+            try:
+                points.append((float(point[0]), float(point[1]), z + 0.8))
+                radii.append(0.9)
+                colors.append((0.2, 0.6, 1.0, 0.75))
+            except (TypeError, ValueError, IndexError):
+                continue
+        if not points:
+            return
+        try:
+            add_spheres(points, radii=radii, colors=colors)
+        except Exception:
+            pass
+
     def _configure_drive_mode(self) -> None:
         if self._active_drive_mode != "ai_line" or self._vehicle is None or not self._route:
             return
@@ -598,6 +660,34 @@ class BeamNGBackend(OffroadSimBackend):
                 set_line(line, cling=True)
             except Exception:
                 pass
+
+    def _configure_manual_control_mode(self) -> None:
+        if self._active_drive_mode == "ai_line" or self._vehicle is None:
+            return
+        beamng_options = self._beamng_metadata(self._scenario_config)
+        shift_mode = str(beamng_options.get("manual_shift_mode", "arcade")).strip()
+        set_shift_mode = getattr(self._vehicle, "set_shift_mode", None)
+        if shift_mode and callable(set_shift_mode):
+            try:
+                set_shift_mode(shift_mode)
+            except Exception:
+                pass
+
+    def _manual_control_payload(self, command: Action) -> dict[str, Any]:
+        beamng_options = self._beamng_metadata(self._scenario_config)
+        payload: dict[str, Any] = {
+            "throttle": command.throttle,
+            "steering": command.steer,
+            "brake": command.brake,
+            "parkingbrake": 0.0,
+        }
+        if bool(beamng_options.get("manual_control_is_adas", True)):
+            payload["is_adas"] = True
+        if "manual_control_gear" in beamng_options:
+            payload["gear"] = int(beamng_options["manual_control_gear"])
+        if "manual_control_clutch" in beamng_options:
+            payload["clutch"] = float(beamng_options["manual_control_clutch"])
+        return payload
 
     def _read_vehicle_state(self) -> VehicleState | None:
         vehicle = self._vehicle

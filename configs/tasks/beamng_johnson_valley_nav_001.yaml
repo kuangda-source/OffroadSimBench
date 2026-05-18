@@ -1,0 +1,41 @@
+task_id: beamng_johnson_valley_nav_001
+task_type: navigation_region_v1
+map_id: johnson_valley_dirt_route_002
+backend_targets: [beamng]
+level: johnson_valley
+region:
+  polygon:
+    - [1276.581, -230.112]
+    - [1276.581, -116.361]
+    - [1187.09, -116.361]
+    - [1187.09, -230.112]
+start_pose:
+  pos: [1211.09, -140.361, 115.5]
+  yaw: -0.498659
+goal:
+  pos: [1252.365, -206.112]
+  radius: 12.0
+expert_route:
+  - [1211.09, -140.361]
+  - [1227.378, -149.23]
+  - [1245.434, -172.248]
+  - [1252.581, -190.692]
+  - [1252.365, -206.112]
+constraints:
+  max_steps: 520
+  max_collision_count: 0
+cost:
+  out_of_region_weight: 320.0
+  boundary_weight: 10.0
+  boundary_margin_m: 5.0
+beamng:
+  vehicle_model: pickup
+  camera_mode: orbit
+  draw_route: true
+  drive_mode: ai_line
+  collection_drive_mode: ai_line
+  evaluation_drive_mode: manual
+  evaluation_route_mode: expert
+  ai_line_speed: 8.0
+  steps_per_action: 12
+  weather: sunny

@@ -73,7 +73,7 @@ class LeWMCEMPlanner(ActionPlanner):
         info = self._observation_to_info(observation, torch)
         outputs = solver(info)
         action_array = np.asarray(outputs["actions"][0], dtype=np.float32)
-        actions = [Action(steer=float(row[0]), throttle=float(row[1]), brake=float(row[2])) for row in action_array]
+        actions = [_row_to_action(row) for row in action_array]
         costs = [float(value) for value in outputs.get("costs", [])]
         states = self._kinematic_preview(observation, actions)
         return PlanningResult(
@@ -212,3 +212,8 @@ def _region_polygon_from_observation(observation: Observation) -> np.ndarray | N
     if len(points) < 3:
         return None
     return np.asarray(points, dtype=np.float32)
+
+
+def _row_to_action(row: np.ndarray) -> Action:
+    clipped = np.clip(np.asarray(row, dtype=np.float32), np.asarray([-1.0, 0.0, 0.0]), np.asarray([1.0, 1.0, 1.0]))
+    return Action(steer=float(clipped[0]), throttle=float(clipped[1]), brake=float(clipped[2]))

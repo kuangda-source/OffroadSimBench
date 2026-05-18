@@ -70,6 +70,9 @@ def fake_beamngpy(monkeypatch) -> SimpleNamespace:
         def control(self, **kwargs: Any) -> None:
             self.last_control = kwargs
 
+        def set_shift_mode(self, mode: str) -> None:
+            module.shift_mode = mode
+
         def ai_set_line(self, line: list[dict[str, Any]], cling: bool = True) -> None:
             module.ai_line = line
             module.ai_line_cling = cling
@@ -185,6 +188,50 @@ def test_beamng_backend_clamps_control_actions(fake_beamngpy: SimpleNamespace) -
     assert fake_beamngpy.vehicle.last_control["steering"] == 1.0
     assert fake_beamngpy.vehicle.last_control["throttle"] == 0.0
     assert fake_beamngpy.vehicle.last_control["brake"] == 1.0
+
+
+def test_beamng_backend_sends_manual_agent_control_as_adas(fake_beamngpy: SimpleNamespace) -> None:
+    vehicle = load_vehicle_config("configs/vehicles/ugv_medium.yaml")
+    scenario = load_scenario_config("configs/scenarios/beamng_visible_autodrive.yaml")
+    scenario.metadata["beamng"]["drive_mode"] = "manual"
+    backend = BeamNGBackend(connection=BeamNGConnectionConfig(launch=False), vehicle_config=vehicle)
+    backend.reset(scenario)
+
+    backend.step(Action(steer=0.2, throttle=0.6, brake=0.0))
+
+    assert fake_beamngpy.vehicle.last_control["is_adas"] is True
+    assert "gear" not in fake_beamngpy.vehicle.last_control
+    assert "clutch" not in fake_beamngpy.vehicle.last_control
+    assert fake_beamngpy.shift_mode == "arcade"
+
+
+def test_beamng_backend_fallback_observation_uses_spawn_yaw(fake_beamngpy: SimpleNamespace, monkeypatch) -> None:
+    scenario = {
+        "scenario_id": "beamng_spawn_yaw",
+        "backend": "beamng",
+        "task": {"start": [1.0, 2.0], "goal": [8.0, 2.0], "success_radius_m": 1.0},
+        "metadata": {
+            "beamng": {
+                "level": "gridmap_v2",
+                "vehicle_start": {
+                    "pos": [1.0, 2.0, 3.0],
+                    "yaw": -0.5,
+                    "rot_quat": [0.0, 0.0, -0.247404, 0.968912],
+                },
+                "drive_mode": "manual",
+                "steps_per_action": 1,
+            }
+        },
+    }
+    monkeypatch.setattr(BeamNGBackend, "_read_vehicle_state", lambda self: None)
+    backend = BeamNGBackend(connection=BeamNGConnectionConfig(launch=False))
+
+    observation = backend.reset(scenario)
+
+    assert observation.vehicle_state.x == 1.0
+    assert observation.vehicle_state.y == 2.0
+    assert observation.vehicle_state.z == 3.0
+    assert observation.vehicle_state.yaw == -0.5
 
 
 def test_beamng_backend_skips_manual_control_for_ai_line(fake_beamngpy: SimpleNamespace) -> None:

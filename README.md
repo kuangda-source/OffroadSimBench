@@ -136,6 +136,18 @@ powershell -ExecutionPolicy Bypass -File scripts\phase4_visible_beamng_acceptanc
 
 `BeamNG/`、`outputs/`、真实 ORFD 数据、模型 checkpoint、`node_modules/` 和打包产物不提交到 GitHub。
 
+### Johnson Valley 闭环验收补充
+
+当前仓库提供 `configs\tasks\beamng_johnson_valley_nav_001.yaml` 作为
+Johnson Valley 原生越野地形上的固定区域/起终点任务。桌面 GUI 的 BeamNG 页面新增
+`BeamNG 预览区域/起终点`，可先在 BeamNG 内查看区域角点、起点、终点和专家路线标记，
+再运行 `Johnson Valley LE-WM 演示`。
+
+评估阶段使用 `drive_mode=manual`，不是 BeamNG `ai_line`。`route_world_model`
+会记录 LE-WM/CEM 的原始规划动作，同时由 `model_guided_route_tracker` 将其转换为
+BeamNG 可执行的车辆控制。2026-05-19 本地连续两轮验收通过：评估阶段分别 159 步和
+153 步进入 12 m 目标半径，最终距离 11.59 m 和 11.51 m，碰撞数为 0。
+
 ## English
 
 OffroadSimBench is a local off-road autonomous-driving simulation, dataset replay, world-model evaluation, and desktop GUI platform. It connects real off-road datasets, switchable algorithms/models, BeamNG simulator backends, and reproducible episode records into one local benchmark loop.
@@ -238,6 +250,21 @@ and minimum goal distance:
 ```powershell
 python scripts\run_region_navigation_loop.py --task configs\tasks\beamng_region_nav_001.yaml --algorithm local_lewm_cost --collect-steps 160 --eval-steps 120 --output-dir outputs\region_navigation\beamng_region_nav_001
 ```
+
+Johnson Valley now has a repeatable stock-terrain route task at
+`configs\tasks\beamng_johnson_valley_nav_001.yaml`. The GUI BeamNG page can
+preview the selected region, start point, goal point, and route markers before
+running the closed loop. The evaluation stage uses `drive_mode=manual`, not
+BeamNG `ai_line`; `route_world_model` records both the raw LE-WM/CEM planner
+action and the executable `model_guided_route_tracker` action sent to BeamNG.
+
+```powershell
+python scripts\run_region_navigation_loop.py --task configs\tasks\beamng_johnson_valley_nav_001.yaml --algorithm local_lewm_cost --collect-steps 240 --eval-steps 420 --planner le_wm_cem --output-dir outputs\region_navigation\beamng_johnson_valley_nav_001
+```
+
+Local acceptance on 2026-05-19 passed two consecutive Johnson Valley runs with
+manual model-guided control: 159 and 153 evaluation steps, final goal distances
+of 11.59 m and 11.51 m against a 12 m goal radius, and zero collisions.
 
 In the desktop GUI, open the BeamNG page and use `编辑区域/起终点` to manually
 select a polygonal region, start point, goal point, and optional expert route

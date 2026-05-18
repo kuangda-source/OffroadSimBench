@@ -116,6 +116,9 @@ class RegionNavigationClosedLoopRequest:
     eval_steps: int = 120
     seed: int = 7
     planner: str = "le_wm_cem"
+    planner_horizon: int = 4
+    planner_samples: int = 16
+    planner_iterations: int = 2
     beamng_gfx: str = "vk"
     close_beamng: bool = True
     step_delay_sec: float = 0.0
@@ -143,6 +146,7 @@ class ManualNavigationTaskRequest:
     vehicle_model: str = "pickup"
     collection_drive_mode: str = "ai_line"
     evaluation_drive_mode: str = "manual"
+    evaluation_route_mode: str = "expert"
     ai_line_speed: float = 10.0
     steps_per_action: int = 18
     camera_mode: str = "orbit"
@@ -574,6 +578,9 @@ def run_region_navigation_closed_loop(request: RegionNavigationClosedLoopRequest
         world_model_type="simple_kinematic",
         world_model_path="",
         planner="",
+        planner_horizon=request.planner_horizon,
+        planner_samples=request.planner_samples,
+        planner_iterations=request.planner_iterations,
         record=True,
         beamng_gfx=request.beamng_gfx,
         pre_run_hold_sec=request.pre_run_hold_sec,
@@ -603,6 +610,9 @@ def run_region_navigation_closed_loop(request: RegionNavigationClosedLoopRequest
         world_model_type="le_wm",
         world_model_path=model_path,
         planner=request.planner,
+        planner_horizon=request.planner_horizon,
+        planner_samples=request.planner_samples,
+        planner_iterations=request.planner_iterations,
         record=True,
         beamng_gfx=request.beamng_gfx,
         pre_run_hold_sec=0.0,
@@ -663,6 +673,7 @@ def save_manual_navigation_task(request: ManualNavigationTaskRequest) -> dict[st
             "drive_mode": str(request.collection_drive_mode or "ai_line"),
             "collection_drive_mode": str(request.collection_drive_mode or "ai_line"),
             "evaluation_drive_mode": str(request.evaluation_drive_mode or "manual"),
+            "evaluation_route_mode": str(request.evaluation_route_mode or "expert"),
             "ai_line_speed": float(request.ai_line_speed),
             "steps_per_action": int(request.steps_per_action),
             "weather": "sunny",
@@ -685,6 +696,80 @@ def save_manual_navigation_task(request: ManualNavigationTaskRequest) -> dict[st
     return {"status": "saved", "task_path": str(output_path.resolve()), "task": task.to_dict()}
 
 
+def analyze_navigation_task(task_path: str | Path) -> dict[str, Any]:
+    task = load_navigation_region_task(task_path)
+    route = task.expert_route or [(task.start_pos[0], task.start_pos[1]), task.goal_pos]
+    start_xy = (float(task.start_pos[0]), float(task.start_pos[1]))
+    goal_xy = (float(task.goal_pos[0]), float(task.goal_pos[1]))
+    segment_lengths = [
+        math.hypot(float(b[0]) - float(a[0]), float(b[1]) - float(a[1]))
+        for a, b in zip(route, route[1:], strict=False)
+    ]
+    first_heading = math.atan2(float(route[1][1]) - float(route[0][1]), float(route[1][0]) - float(route[0][0])) if len(route) >= 2 else math.nan
+    route_in_region = all(task.contains_point((float(point[0]), float(point[1]))) for point in route)
+    return {
+        "task_id": task.task_id,
+        "level": task.level,
+        "start": [*start_xy, float(task.start_pos[2])],
+        "goal": list(goal_xy),
+        "goal_radius": float(task.goal_radius),
+        "start_in_region": task.contains_point(start_xy),
+        "goal_in_region": task.contains_point(goal_xy),
+        "route_in_region": bool(route_in_region),
+        "region_waypoint_count": len(task.region_polygon),
+        "route_waypoint_count": len(route),
+        "route_length_m": float(sum(segment_lengths)),
+        "straight_line_m": float(math.hypot(goal_xy[0] - start_xy[0], goal_xy[1] - start_xy[1])),
+        "max_route_segment_m": float(max(segment_lengths)) if segment_lengths else 0.0,
+        "start_yaw": float(task.start_yaw),
+        "first_route_heading": float(first_heading),
+        "start_yaw_error": float(_wrap_angle(first_heading - task.start_yaw)) if math.isfinite(first_heading) else math.nan,
+        "beamng_preview_recommended": True,
+    }
+
+
+def preview_navigation_task_in_beamng(
+    task_path: str | Path,
+    *,
+    vehicle: str = "configs/vehicles/ugv_medium.yaml",
+    beamng_gfx: str = "vk",
+    hold_open_sec: float = 3.0,
+) -> dict[str, Any]:
+    task = load_navigation_region_task(task_path)
+    analysis = analyze_navigation_task(task_path)
+    scenario = task.to_beamng_scenario(mode="evaluation")
+    beamng = scenario.setdefault("metadata", {}).setdefault("beamng", {})
+    beamng["drive_mode"] = "manual"
+    beamng["preview_mode"] = True
+    beamng["draw_route"] = True
+    beamng["draw_task_markers"] = True
+    beamng["steps_per_action"] = 1
+    beamng["route"] = [list(point) for point in (task.expert_route or [(task.start_pos[0], task.start_pos[1]), task.goal_pos])]
+    result = run_episode(
+        backend_name="beamng",
+        scenario=scenario,
+        agent_name="stop",
+        seed=7,
+        max_steps=1,
+        record=False,
+        backend_options={"connection": BeamNGConnectionConfig(gfx=beamng_gfx or None)},
+        vehicle=vehicle,
+        pre_run_hold_sec=2.0,
+        step_delay_sec=0.0,
+        post_run_hold_sec=max(0.0, float(hold_open_sec)),
+        close_backend=False,
+    )
+    payload = result.to_dict()
+    payload["analysis"] = analysis
+    payload["preview"] = {
+        "mode": "beamng_manual_static",
+        "route_drawn": True,
+        "region_drawn": True,
+        "start_goal_drawn": True,
+    }
+    return payload
+
+
 def _run_region_beamng_episode(
     *,
     scenario: dict[str, Any],
@@ -694,6 +779,9 @@ def _run_region_beamng_episode(
     world_model_type: str,
     world_model_path: str,
     planner: str,
+    planner_horizon: int,
+    planner_samples: int,
+    planner_iterations: int,
     record: bool,
     beamng_gfx: str,
     pre_run_hold_sec: float,
@@ -701,8 +789,15 @@ def _run_region_beamng_episode(
     post_run_hold_sec: float,
     close_beamng: bool,
 ) -> dict[str, Any]:
-    planner_config = {"horizon": 4, "num_samples": 16, "iterations": 2}
-    agent_options_payload: dict[str, Any] = {"world_model_name": world_model_type}
+    planner_config = {
+        "horizon": max(1, int(planner_horizon)),
+        "num_samples": max(4, int(planner_samples)),
+        "iterations": max(1, int(planner_iterations)),
+    }
+    agent_options_payload: dict[str, Any] = {
+        "world_model_name": world_model_type,
+        "execution_mode": "model_guided_route_tracker",
+    }
     if world_model_path:
         agent_options_payload["world_model_path"] = world_model_path
     if planner:
@@ -760,9 +855,15 @@ def _navigation_acceptance(evaluation: dict[str, Any], task: NavigationRegionTas
         min_distance = math.nan
     metrics = evaluation.get("metrics", {}) if isinstance(evaluation.get("metrics"), dict) else {}
     collision_count = int(metrics.get("collision_count", 0) or 0)
+    drive_mode = str(metrics.get("drive_mode", "manual")).lower()
+    model_controlled = drive_mode != "ai_line"
     goal_success = math.isfinite(min_distance) and min_distance <= task.goal_radius
+    throttles = [_float_or_nan(row.get("throttle")) for row in trace]
+    throttles = [value for value in throttles if math.isfinite(value)]
+    steers = [_float_or_nan(row.get("steer")) for row in trace]
+    steers = [value for value in steers if math.isfinite(value)]
     return {
-        "goal_success": bool(goal_success and reached_in_region and collision_count <= task.max_collision_count),
+        "goal_success": bool(goal_success and reached_in_region and model_controlled and collision_count <= task.max_collision_count),
         "goal_reached": bool(goal_success),
         "final_goal_distance": final_distance,
         "min_goal_distance": min_distance,
@@ -770,6 +871,11 @@ def _navigation_acceptance(evaluation: dict[str, Any], task: NavigationRegionTas
         "goal_radius": task.goal_radius,
         "final_in_region": bool(in_region),
         "reached_in_region": bool(reached_in_region),
+        "model_controlled": bool(model_controlled),
+        "drive_mode": drive_mode,
+        "route_waypoint_count": int(metrics.get("route_waypoint_count", 0) or 0),
+        "mean_throttle": float(sum(throttles) / len(throttles)) if throttles else math.nan,
+        "mean_abs_steer": float(sum(abs(value) for value in steers) / len(steers)) if steers else math.nan,
         "collision_count": collision_count,
         "max_collision_count": task.max_collision_count,
     }
@@ -995,6 +1101,14 @@ def _float_or_nan(value: Any) -> float:
         return float(value)
     except (TypeError, ValueError):
         return math.nan
+
+
+def _wrap_angle(angle: float) -> float:
+    while angle > math.pi:
+        angle -= 2.0 * math.pi
+    while angle < -math.pi:
+        angle += 2.0 * math.pi
+    return angle
 
 
 def _coerce_point2(value: Any, label: str) -> tuple[float, float]:

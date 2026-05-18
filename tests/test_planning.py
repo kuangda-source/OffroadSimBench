@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import numpy as np
 import pytest
 
 from offroad_sim.agents import WorldModelAgent
@@ -64,3 +65,29 @@ def test_lewm_planner_passes_navigation_region_to_cost_model() -> None:
 
     assert "region_polygon" in info
     assert tuple(info["region_polygon"].shape) == (1, 1, 4, 2)
+
+
+def test_lewm_planner_clips_solver_actions_to_normalized_space(monkeypatch) -> None:
+    class FakeTensor:
+        def float(self):
+            return self
+
+    class FakeTorch:
+        @staticmethod
+        def from_numpy(value):
+            return FakeTensor()
+
+    class FakeSolver:
+        def __call__(self, info):
+            return {
+                "actions": [np.asarray([[2.0, -0.5, -0.4], [-2.0, 1.5, 2.0]], dtype=np.float32)],
+                "costs": [3.0],
+            }
+
+    planner = LeWMCEMPlanner(checkpoint_path="fake.ckpt", horizon=2)
+    monkeypatch.setattr(planner, "_solver_for_checkpoint", lambda checkpoint: (FakeSolver(), FakeTorch()))
+
+    result = planner.plan(_observation(), SimpleKinematicWorldModel())
+
+    assert result.actions[0] == Action(steer=1.0, throttle=0.0, brake=0.0)
+    assert result.actions[1] == Action(steer=-1.0, throttle=1.0, brake=1.0)

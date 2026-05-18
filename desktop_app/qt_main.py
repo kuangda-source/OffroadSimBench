@@ -534,7 +534,7 @@ class MainWindow(QMainWindow):
         self.stablewm_hdf5_edit.setPlaceholderText(r"outputs\stablewm\orfd_gui.h5")
         self.model_path_edit = QLineEdit()
         self.model_path_edit.setPlaceholderText(r"outputs\models\lewm_orfd_gui")
-        self.task_path_edit = QLineEdit(r"configs\tasks\beamng_region_nav_001.yaml")
+        self.task_path_edit = QLineEdit(r"configs\tasks\beamng_johnson_valley_nav_001.yaml")
         for edit in (self.dataset_root_edit, self.adapter_edit, self.stablewm_hdf5_edit, self.model_path_edit, self.task_path_edit):
             self._configure_control(edit)
 
@@ -746,6 +746,8 @@ class MainWindow(QMainWindow):
             [
                 self._field("Region task", self.task_path_edit),
                 self._action_button("编辑区域/起终点", self.open_region_task_editor),
+                self._action_button("BeamNG 预览区域/起终点", self.preview_region_task_in_beamng),
+                self._action_button("Johnson Valley LE-WM 演示", self.run_johnson_valley_demo_loop, primary=True),
                 self._action_button("区域起终点 LE-WM 闭环", self.run_region_navigation_loop, primary=True),
                 self._action_button("启动 BeamNG 可视自动驾驶", self.run_visible_beamng_demo, primary=True),
                 self._action_button("BeamNG LE-WM 闭环训练评估", self.run_beamng_lewm_closed_loop),
@@ -831,6 +833,19 @@ class MainWindow(QMainWindow):
             self.task_path_edit.setText(dialog.saved_task_path)
             self.beamng_summary.setText(_compact_json({"status": "task_saved", "task_path": dialog.saved_task_path}))
             self.log(f"区域任务已保存: {dialog.saved_task_path}")
+
+    def preview_region_task_in_beamng(self) -> None:
+        task_path = self.task_path_edit.text().strip() or r"configs\tasks\beamng_johnson_valley_nav_001.yaml"
+        self.log(f"BeamNG 预览区域/起终点: {task_path}")
+        self._run_task(
+            lambda: services.preview_navigation_task_in_beamng(
+                task_path,
+                beamng_gfx="vk",
+                hold_open_sec=3.0,
+            ),
+            self._navigation_preview_finished,
+            "navigation preview failed",
+        )
 
     def run_episode(self) -> None:
         request = self._current_request()
@@ -987,6 +1002,9 @@ class MainWindow(QMainWindow):
             eval_steps=max(int(self.settings.max_steps), 80),
             seed=self.settings.seed,
             planner=self.planner_combo.currentData() or self.planner_combo.currentText() or "le_wm_cem",
+            planner_horizon=self.settings.planner_horizon,
+            planner_samples=self.settings.planner_samples,
+            planner_iterations=self.settings.planner_iterations,
             close_beamng=False,
         )
         self.log("区域导航闭环：task -> expert采集 -> HDF5 -> 训练 -> start/goal评估")
@@ -994,6 +1012,30 @@ class MainWindow(QMainWindow):
             lambda: services.run_region_navigation_closed_loop(request),
             self._pipeline_finished,
             "region navigation loop failed",
+        )
+
+    def run_johnson_valley_demo_loop(self) -> None:
+        self.task_path_edit.setText(r"configs\tasks\beamng_johnson_valley_nav_001.yaml")
+        planner = self.planner_combo.currentData() or self.planner_combo.currentText() or "le_wm_cem"
+        request = services.RegionNavigationClosedLoopRequest(
+            task_path=r"configs\tasks\beamng_johnson_valley_nav_001.yaml",
+            algorithm=self.algorithm_combo.currentData() or self.algorithm_combo.currentText() or "local_lewm_cost",
+            collect_steps=max(int(self.settings.max_steps), 240),
+            eval_steps=max(int(self.settings.max_steps), 300),
+            seed=self.settings.seed,
+            planner=planner if planner != "none" else "le_wm_cem",
+            planner_horizon=max(self.settings.planner_horizon, 6),
+            planner_samples=max(self.settings.planner_samples, 32),
+            planner_iterations=max(self.settings.planner_iterations, 3),
+            close_beamng=False,
+            step_delay_sec=0.02,
+            post_run_hold_sec=20.0,
+        )
+        self.log("Johnson Valley 演示：ai_line 采集 -> LE-WM cost 训练 -> manual 模型控车评估")
+        self._run_task(
+            lambda: services.run_region_navigation_closed_loop(request),
+            self._pipeline_finished,
+            "johnson valley demo loop failed",
         )
 
     def load_selected_episode(self, item: QListWidgetItem) -> None:
@@ -1070,6 +1112,17 @@ class MainWindow(QMainWindow):
         path = payload.get("episode_path")
         self.trajectory.set_trace(services.load_episode_trace(path) if path else [])
         self.log(f"BeamNG 可视自动驾驶完成: {payload.get('episode_id', services.NAN_TEXT)}")
+        self.refresh_catalogs()
+
+    def _navigation_preview_finished(self, payload: dict[str, Any]) -> None:
+        self.beamng_summary.setText(_compact_json(payload))
+        analysis = payload.get("analysis", {}) if isinstance(payload.get("analysis"), dict) else {}
+        self.log(
+            "BeamNG 预览完成: "
+            f"start={services.display_value(analysis.get('start_in_region'))}, "
+            f"goal={services.display_value(analysis.get('goal_in_region'))}, "
+            f"route={services.display_value(analysis.get('route_in_region'))}"
+        )
         self.refresh_catalogs()
 
     def _update_metrics(self, metrics: dict[str, Any]) -> None:
