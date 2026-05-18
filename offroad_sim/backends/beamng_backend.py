@@ -388,6 +388,17 @@ class BeamNGBackend(OffroadSimBackend):
         front_rgb = self._sensor_value(sensor_payload, ("front_camera", "colour", "color", "annotation"))
         depth = self._sensor_value(sensor_payload, ("front_camera", "depth"))
         lidar = self._sensor_value(sensor_payload, ("roof_lidar", "points", "pointCloud", "pointcloud"))
+        info = {
+            "backend": "beamng",
+            "status": "connected",
+            "sensor_ids": sorted(self._sensors),
+            "sensor_payload_keys": sorted(sensor_payload),
+            "route": [list(point) for point in self._route],
+            "note": "BeamNG pose and best-effort sensor payloads are read when available.",
+        }
+        navigation_region = self._navigation_region_metadata(scenario_config)
+        if navigation_region:
+            info["navigation_region"] = navigation_region
         return Observation(
             timestamp=timestamp,
             vehicle_state=vehicle_state,
@@ -395,14 +406,7 @@ class BeamNGBackend(OffroadSimBackend):
             front_rgb=front_rgb,
             depth=depth,
             lidar_points=lidar,
-            info={
-                "backend": "beamng",
-                "status": "connected",
-                "sensor_ids": sorted(self._sensors),
-                "sensor_payload_keys": sorted(sensor_payload),
-                "route": [list(point) for point in self._route],
-                "note": "BeamNG pose and best-effort sensor payloads are read when available.",
-            },
+            info=info,
         )
 
     def _read_task_value(self, task: Any, key: str, default: Any) -> Any:
@@ -411,6 +415,18 @@ class BeamNGBackend(OffroadSimBackend):
         if isinstance(task, Mapping):
             return task.get(key, default)
         return getattr(task, key, default)
+
+    def _navigation_region_metadata(self, config: Any) -> dict[str, Any]:
+        metadata = self._read_config(config, "metadata", {})
+        if not isinstance(metadata, Mapping):
+            return {}
+        task = metadata.get("task", {})
+        if not isinstance(task, Mapping):
+            return {}
+        region = task.get("region", {})
+        if not isinstance(region, Mapping) or not region.get("polygon"):
+            return {}
+        return dict(task)
 
     def _goal_reached(self, observation: Observation) -> bool:
         task = self._read_config(self._scenario_config, "task", None)

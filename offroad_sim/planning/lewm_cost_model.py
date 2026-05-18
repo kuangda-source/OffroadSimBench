@@ -20,6 +20,7 @@ class LeWMCostModelConfig:
     brake_gain: float = 0.4
     goal_weight: float = 1.0
     progress_weight: float = 0.25
+    region_weight: float = 80.0
     smoothness_weight: float = 0.08
     action_weight: float = 0.04
 
@@ -48,6 +49,8 @@ class LeWMCostModel(torch.nn.Module):
         yaw = state[..., 2]
         speed = state[..., 3].clamp_min(0.0)
         start_distance = torch.linalg.vector_norm(torch.stack([x - goal[..., 0], y - goal[..., 1]], dim=-1), dim=-1)
+        rollout_x = []
+        rollout_y = []
 
         for step in range(actions.shape[2]):
             steer = actions[:, :, step, 0]
@@ -57,14 +60,18 @@ class LeWMCostModel(torch.nn.Module):
             yaw = yaw + self.config.steer_gain * steer
             x = x + speed * torch.cos(yaw) * self.config.dt
             y = y + speed * torch.sin(yaw) * self.config.dt
+            rollout_x.append(x)
+            rollout_y.append(y)
 
         final_distance = torch.linalg.vector_norm(torch.stack([x - goal[..., 0], y - goal[..., 1]], dim=-1), dim=-1)
         progress = start_distance - final_distance
         smoothness = torch.mean(torch.abs(actions[:, :, 1:, :] - actions[:, :, :-1, :]), dim=(2, 3)) if actions.shape[2] > 1 else torch.zeros_like(final_distance)
         effort = torch.mean(torch.abs(actions), dim=(2, 3))
+        region_penalty = _region_penalty(info_dict.get("region_polygon"), rollout_x, rollout_y, actions) * self.config.region_weight
         return (
             self.config.goal_weight * final_distance
             - self.config.progress_weight * progress
+            + region_penalty
             + self.config.smoothness_weight * smoothness
             + self.config.action_weight * effort
         )
@@ -102,3 +109,61 @@ def _select_goal(value: torch.Tensor | None, state: torch.Tensor) -> torch.Tenso
     else:
         goal = torch.zeros((*state.shape[:2], 2), dtype=state.dtype, device=state.device)
     return goal[..., :2].expand(*state.shape[:2], 2)
+
+
+def _region_penalty(
+    polygon_value: torch.Tensor | None,
+    rollout_x: list[torch.Tensor],
+    rollout_y: list[torch.Tensor],
+    candidates: torch.Tensor,
+) -> torch.Tensor:
+    if polygon_value is None or not rollout_x or not rollout_y:
+        return torch.zeros(candidates.shape[:2], dtype=candidates.dtype, device=candidates.device)
+    polygon = _select_region_polygon(polygon_value, candidates)
+    if polygon is None or polygon.shape[2] < 3:
+        return torch.zeros(candidates.shape[:2], dtype=candidates.dtype, device=candidates.device)
+    points = torch.stack([torch.stack(rollout_x, dim=-1), torch.stack(rollout_y, dim=-1)], dim=-1)
+    outside = ~_points_inside_polygon(points, polygon)
+    return outside.to(dtype=candidates.dtype).mean(dim=-1)
+
+
+def _select_region_polygon(value: torch.Tensor, candidates: torch.Tensor) -> torch.Tensor | None:
+    batch, samples = candidates.shape[:2]
+    polygon = value.to(device=candidates.device, dtype=candidates.dtype)
+    if polygon.ndim == 5:
+        polygon = polygon[:, :, -1, :, :]
+    elif polygon.ndim == 4:
+        pass
+    elif polygon.ndim == 3:
+        polygon = polygon.unsqueeze(1)
+    else:
+        return None
+    if polygon.shape[-1] < 2:
+        return None
+    polygon = polygon[..., :2]
+    if polygon.shape[0] == 1 and batch > 1:
+        polygon = polygon.expand(batch, *polygon.shape[1:])
+    if polygon.shape[1] == 1 and samples > 1:
+        polygon = polygon.expand(batch, samples, *polygon.shape[2:])
+    if polygon.shape[0] != batch or polygon.shape[1] != samples:
+        return None
+    return polygon
+
+
+def _points_inside_polygon(points: torch.Tensor, polygon: torch.Tensor) -> torch.Tensor:
+    x = points[..., 0]
+    y = points[..., 1]
+    inside = torch.zeros_like(x, dtype=torch.bool)
+    vertices = polygon.shape[2]
+    for index in range(vertices):
+        current = polygon[:, :, index, :]
+        previous = polygon[:, :, (index - 1) % vertices, :]
+        xi = current[..., 0].unsqueeze(-1)
+        yi = current[..., 1].unsqueeze(-1)
+        xj = previous[..., 0].unsqueeze(-1)
+        yj = previous[..., 1].unsqueeze(-1)
+        denom = yj - yi
+        denom = torch.where(denom.abs() < 1e-6, torch.full_like(denom, 1e-6), denom)
+        crosses = ((yi > y) != (yj > y)) & (x < (xj - xi) * (y - yi) / denom + xi)
+        inside = torch.logical_xor(inside, crosses)
+    return inside

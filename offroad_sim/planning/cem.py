@@ -8,6 +8,7 @@ from typing import Any
 import numpy as np
 
 from offroad_sim.core import Action, Observation, VehicleState
+from offroad_sim.planning.region_cost import navigation_region_from_observation_info
 from offroad_sim.planning.types import ActionPlanner, PlanningResult
 from offroad_sim.world_models import BaseWorldModel
 
@@ -31,6 +32,7 @@ class WorldModelCEMPlanner(ActionPlanner):
         seed: int = 0,
         goal_weight: float = 1.0,
         risk_weight: float = 2.0,
+        region_weight: float = 1.0,
         smoothness_weight: float = 0.08,
         action_weight: float = 0.04,
     ) -> None:
@@ -41,6 +43,7 @@ class WorldModelCEMPlanner(ActionPlanner):
         self.seed = int(seed)
         self.goal_weight = float(goal_weight)
         self.risk_weight = float(risk_weight)
+        self.region_weight = float(region_weight)
         self.smoothness_weight = float(smoothness_weight)
         self.action_weight = float(action_weight)
         self.rng = np.random.default_rng(self.seed)
@@ -109,12 +112,17 @@ class WorldModelCEMPlanner(ActionPlanner):
         start_distance = math.hypot(observation.vehicle_state.x - goal_x, observation.vehicle_state.y - goal_y)
         progress_bonus = max(0.0, start_distance - goal_distance)
         risk = float(prediction.metadata.get("max_risk", prediction.metadata.get("mean_risk", 0.0)) or 0.0)
+        region_cost = 0.0
+        region = navigation_region_from_observation_info(observation.info)
+        if region is not None:
+            region_cost = region.evaluate(prediction.states)
         smoothness = float(np.mean(np.abs(np.diff(candidate, axis=0)))) if len(candidate) > 1 else 0.0
         effort = float(np.mean(np.abs(candidate)))
         return (
             self.goal_weight * goal_distance
             - 0.25 * progress_bonus
             + self.risk_weight * risk
+            + self.region_weight * region_cost
             + self.smoothness_weight * smoothness
             + self.action_weight * effort
         )

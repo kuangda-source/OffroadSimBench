@@ -50,3 +50,17 @@ def test_lewm_planner_requires_checkpoint() -> None:
 
     with pytest.raises(StableWorldModelUnavailableError, match="checkpoint"):
         planner.plan(_observation(), SimpleKinematicWorldModel())
+
+
+def test_lewm_planner_passes_navigation_region_to_cost_model() -> None:
+    torch = pytest.importorskip("torch")
+    planner = LeWMCEMPlanner()
+    observation = _observation()
+    observation.info["navigation_region"] = {
+        "region": {"polygon": [[0.0, -2.0], [10.0, -2.0], [10.0, 2.0], [0.0, 2.0]]}
+    }
+
+    info = planner._observation_to_info(observation, torch)
+
+    assert "region_polygon" in info
+    assert tuple(info["region_polygon"].shape) == (1, 1, 4, 2)

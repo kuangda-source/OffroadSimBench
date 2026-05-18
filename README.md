@@ -247,6 +247,16 @@ the `OffroadAgent`/planner commands control the vehicle during evaluation.
 visual smoke tests, because it follows a simulator line rather than proving
 model navigation.
 
+The selected region is propagated into `Observation.info` during BeamNG runs.
+Local CEM planners and the LE-WM-compatible cost checkpoint use it as a
+trajectory constraint, penalizing candidates that leave the chosen polygon or
+drive too close to the boundary.
+
+Dataset-to-BeamNG map conversion notes live in
+[`docs/dataset_to_beamng_map.md`](docs/dataset_to_beamng_map.md). The current
+recommendation is to validate planner cost maps first, then export heightmap
+drafts, and only later package full BeamNG levels.
+
 List and inspect pluggable algorithm adapters:
 
 ```powershell

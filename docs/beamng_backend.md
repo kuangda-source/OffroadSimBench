@@ -96,6 +96,11 @@ user click a 2D coordinate canvas to select the region polygon, start point,
 goal point, and optional expert route waypoints, then saves a
 `navigation_region_v1` YAML file under `configs/tasks/`.
 
+At runtime, the BeamNG backend includes the region task metadata in each
+observation. This keeps simulator control, model planning, and evaluation
+metrics connected through the shared `Observation.info` contract instead of
+hard-coding task logic inside BeamNG-only code.
+
 The demo runs through the shared `route_world_model` agent so the selected
 world model and planner remain replaceable without BeamNG-specific application
 logic. For the visible smoke demo, BeamNG execution uses `drive_mode=ai_line`

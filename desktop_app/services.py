@@ -137,6 +137,9 @@ class ManualNavigationTaskRequest:
     expert_route: list[tuple[float, float]] = field(default_factory=list)
     max_steps: int = 300
     max_collision_count: int = 0
+    out_of_region_weight: float = 250.0
+    boundary_weight: float = 8.0
+    boundary_margin_m: float = 3.0
     vehicle_model: str = "pickup"
     collection_drive_mode: str = "ai_line"
     evaluation_drive_mode: str = "manual"
@@ -648,6 +651,11 @@ def save_manual_navigation_task(request: ManualNavigationTaskRequest) -> dict[st
         expert_route=route,
         max_steps=int(request.max_steps),
         max_collision_count=int(request.max_collision_count),
+        cost={
+            "out_of_region_weight": float(request.out_of_region_weight),
+            "boundary_weight": float(request.boundary_weight),
+            "boundary_margin_m": float(request.boundary_margin_m),
+        },
         beamng={
             "vehicle_model": str(request.vehicle_model or "pickup"),
             "camera_mode": str(request.camera_mode or "orbit"),

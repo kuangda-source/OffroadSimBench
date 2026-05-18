@@ -49,6 +49,7 @@ beamng:
     assert task.contains_point((40.0, -200.0)) is False
     assert collection["metadata"]["beamng"]["route"] == [[1.0, -170.0], [2.0, -205.0], [4.0, -240.0]]
     assert "route" not in evaluation["metadata"]["beamng"]
+    assert evaluation["metadata"]["beamng"]["drive_mode"] == "manual"
     assert evaluation["task"]["start"] == [1.0, -170.0]
     assert evaluation["task"]["goal"] == [4.0, -240.0]
 

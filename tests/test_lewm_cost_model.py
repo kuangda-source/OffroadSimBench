@@ -60,6 +60,35 @@ def test_lewm_cost_model_checkpoint_roundtrip(tmp_path: Path) -> None:
     assert torch.isfinite(costs).all()
 
 
+def test_lewm_cost_model_penalizes_region_violations() -> None:
+    prepare_stable_worldmodel_runtime()
+    import torch
+
+    from offroad_sim.planning.lewm_cost_model import LeWMCostModel, LeWMCostModelConfig
+
+    model = LeWMCostModel(
+        LeWMCostModelConfig(
+            dt=0.2,
+            steer_gain=0.6,
+            throttle_gain=0.0,
+            brake_gain=0.0,
+            region_weight=100.0,
+        )
+    )
+    info = {
+        "state": torch.tensor([[[0.0, 0.0, 0.0, 5.0]]], dtype=torch.float32),
+        "goal_state": torch.tensor([[[5.0, 0.0]]], dtype=torch.float32),
+        "region_polygon": torch.tensor([[[[0.0, -2.0], [10.0, -2.0], [10.0, 2.0], [0.0, 2.0]]]], dtype=torch.float32),
+    }
+    straight = torch.tensor([[[[0.0, 0.0, 0.0]] * 5]], dtype=torch.float32)
+    hard_turn = torch.tensor([[[[1.0, 0.0, 0.0]] * 5]], dtype=torch.float32)
+    candidates = torch.cat([straight, hard_turn], dim=1)
+
+    costs = model.get_cost(info, candidates)
+
+    assert costs[0, 1] > costs[0, 0] + 50.0
+
+
 def test_train_fit_config_respects_episode_boundaries() -> None:
     from scripts.train_lewm_cost_model import _fit_config
 

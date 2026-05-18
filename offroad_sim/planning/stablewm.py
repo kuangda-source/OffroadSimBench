@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 import numpy as np
 
@@ -137,12 +137,16 @@ class LeWMCEMPlanner(ActionPlanner):
             dtype=np.float32,
         )
         goal_state = np.asarray([[[observation.goal[0], observation.goal[1]]]], dtype=np.float32)
-        return {
+        info = {
             "pixels": torch.from_numpy(pixels[None, None, ...]).float(),
             "goal": torch.from_numpy(goal[None, None, ...]).float(),
             "goal_state": torch.from_numpy(goal_state).float(),
             "state": torch.from_numpy(state).float(),
         }
+        polygon = _region_polygon_from_observation(observation)
+        if polygon is not None:
+            info["region_polygon"] = torch.from_numpy(polygon[None, None, ...]).float()
+        return info
 
     def _image_from_observation(self, observation: Observation) -> np.ndarray:
         if observation.front_rgb is not None:
@@ -190,3 +194,21 @@ def _draw_marker(canvas: np.ndarray, x_norm: float, y_norm: float, color: tuple[
     y = int(np.clip(y_norm, 0.0, 1.0) * (canvas.shape[0] - 1))
     radius = max(1, canvas.shape[0] // 24)
     canvas[max(0, y - radius) : y + radius + 1, max(0, x - radius) : x + radius + 1] = color
+
+
+def _region_polygon_from_observation(observation: Observation) -> np.ndarray | None:
+    raw = observation.info.get("navigation_region") if isinstance(observation.info, Mapping) else None
+    if not isinstance(raw, Mapping):
+        return None
+    region = raw.get("region", {})
+    if not isinstance(region, Mapping):
+        return None
+    points = []
+    for point in region.get("polygon", []) or []:
+        try:
+            points.append([float(point[0]), float(point[1])])
+        except (TypeError, ValueError, IndexError):
+            continue
+    if len(points) < 3:
+        return None
+    return np.asarray(points, dtype=np.float32)

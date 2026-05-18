@@ -23,6 +23,10 @@ expert_route:
 constraints:
   max_steps: 300
   max_collision_count: 0
+cost:
+  out_of_region_weight: 250.0
+  boundary_weight: 8.0
+  boundary_margin_m: 3.0
 beamng:
   vehicle_model: pickup
   camera_mode: orbit

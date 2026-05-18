@@ -106,7 +106,9 @@ def test_region_navigation_closed_loop_uses_expert_only_for_collection(tmp_path:
     collection_scenario = seen_scenarios[0]
     evaluation_scenario = seen_scenarios[1]
     assert collection_scenario["metadata"]["beamng"]["route"] == [[1.0, -170.0], [2.0, -205.0], [4.0, -240.0]]
+    assert collection_scenario["metadata"]["beamng"]["drive_mode"] == "ai_line"
     assert "route" not in evaluation_scenario["metadata"]["beamng"]
+    assert evaluation_scenario["metadata"]["beamng"]["drive_mode"] == "manual"
     assert payload["acceptance"]["goal_success"] is True
     assert payload["acceptance"]["min_goal_distance"] < 1.0
     assert payload["acceptance"]["final_goal_distance"] > 10.0

@@ -121,6 +121,7 @@ def test_save_manual_navigation_task_writes_valid_task(tmp_path) -> None:
     assert task.contains_point((2.0, -170.0)) is True
     assert task.contains_point((6.0, -210.0)) is True
     assert task.beamng["evaluation_drive_mode"] == "manual"
+    assert task.cost["out_of_region_weight"] == 250.0
     assert task.to_beamng_scenario(mode="evaluation")["metadata"]["beamng"]["drive_mode"] == "manual"
 
 

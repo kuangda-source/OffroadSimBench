@@ -225,6 +225,31 @@ def test_beamng_backend_terminates_when_goal_radius_is_reached(fake_beamngpy: Si
     assert backend.get_metrics()["goal_reached"] is True
 
 
+def test_beamng_observation_exposes_navigation_region_task(fake_beamngpy: SimpleNamespace) -> None:
+    scenario = {
+        "scenario_id": "beamng_region_info",
+        "backend": "beamng",
+        "task": {"start": [0.0, 0.0], "goal": [2.0, 0.0], "success_radius_m": 0.5},
+        "metadata": {
+            "task": {
+                "task_type": "navigation_region_v1",
+                "region": {"polygon": [[0.0, -2.0], [10.0, -2.0], [10.0, 2.0], [0.0, 2.0]]},
+            },
+            "beamng": {
+                "level": "gridmap_v2",
+                "vehicle_start": {"pos": [0.0, 0.0, 0.5], "rot_quat": [0.0, 0.0, 0.0, 1.0]},
+                "drive_mode": "manual",
+            },
+        },
+    }
+    backend = BeamNGBackend(connection=BeamNGConnectionConfig(launch=False))
+
+    observation = backend.reset(scenario)
+
+    assert observation.info["navigation_region"]["task_type"] == "navigation_region_v1"
+    assert observation.info["navigation_region"]["region"]["polygon"][0] == [0.0, -2.0]
+
+
 def test_run_episode_passes_vehicle_config_to_beamng(fake_beamngpy: SimpleNamespace) -> None:
     result = run_episode(
         backend_name="beamng",

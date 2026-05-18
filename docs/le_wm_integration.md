@@ -103,6 +103,12 @@ keeps BeamNG from taking over with `ai_line` so the selected agent/model/planner
 actually produces vehicle commands. The GUI task editor saves manual evaluation
 mode by default.
 
+The selected region is now passed into BeamNG observations as
+`observation.info["navigation_region"]`. `world_model_cem` adds an explicit
+trajectory penalty for leaving the polygon or hugging the boundary, and the
+local LE-WM-compatible cost checkpoint receives `region_polygon` so
+`le_wm_cem` can penalize out-of-region rollouts as well.
+
 ## Required External Runtime
 
 `le_wm_cem` requires:

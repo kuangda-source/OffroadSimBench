@@ -27,6 +27,7 @@ class NavigationRegionTask:
     backend_targets: list[str] = field(default_factory=lambda: ["beamng"])
     max_steps: int = 300
     max_collision_count: int = 0
+    cost: dict[str, Any] = field(default_factory=dict)
     beamng: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -50,6 +51,7 @@ class NavigationRegionTask:
             backend_targets=[str(item) for item in data.get("backend_targets", ["beamng"])],
             max_steps=int(constraints.get("max_steps", 300)),
             max_collision_count=int(constraints.get("max_collision_count", 0)),
+            cost=dict(data.get("cost", {})),
             beamng=dict(data.get("beamng", {})),
         )
 
@@ -78,7 +80,10 @@ class NavigationRegionTask:
             raise ValueError("mode must be collection or evaluation.")
         if mode == "collection" and not self.expert_route:
             raise ValueError("navigation_region_v1 collection requires expert_route.")
-        drive_mode = self.beamng.get(f"{mode}_drive_mode") or self.beamng.get("drive_mode", "ai_line")
+        if mode == "evaluation":
+            drive_mode = self.beamng.get("evaluation_drive_mode", "manual")
+        else:
+            drive_mode = self.beamng.get("collection_drive_mode") or self.beamng.get("drive_mode", "ai_line")
         beamng = {
             "level": self.level,
             "vehicle_model": str(self.beamng.get("vehicle_model", "pickup")),
@@ -125,6 +130,7 @@ class NavigationRegionTask:
             "goal": {"pos": list(self.goal_pos), "radius": self.goal_radius},
             "expert_route": [list(point) for point in self.expert_route],
             "constraints": {"max_steps": self.max_steps, "max_collision_count": self.max_collision_count},
+            "cost": self.cost,
             "beamng": self.beamng,
         }
 
