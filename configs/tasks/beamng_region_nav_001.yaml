@@ -28,6 +28,8 @@ beamng:
   camera_mode: orbit
   draw_route: true
   drive_mode: ai_line
+  collection_drive_mode: ai_line
+  evaluation_drive_mode: manual
   ai_line_speed: 12.0
   steps_per_action: 18
   weather: sunny

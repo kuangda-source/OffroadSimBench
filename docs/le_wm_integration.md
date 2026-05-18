@@ -98,6 +98,10 @@ The task is defined as `navigation_region_v1`: region polygon, start pose, goal,
 success radius, constraints, and an expert route used only during collection.
 The evaluation scenario keeps only start and goal, then reports final/minimum
 goal distance, first reached step, region membership, and success status.
+For model-control experiments, set `beamng.evaluation_drive_mode: manual`; this
+keeps BeamNG from taking over with `ai_line` so the selected agent/model/planner
+actually produces vehicle commands. The GUI task editor saves manual evaluation
+mode by default.
 
 ## Required External Runtime
 

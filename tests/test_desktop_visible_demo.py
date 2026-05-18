@@ -74,6 +74,7 @@ def test_beamng_page_has_visible_demo_action() -> None:
     assert "BeamNG LE-WM 闭环训练评估" in texts
     assert "启动 BeamNG 可视自动驾驶" in texts
     assert "区域起终点 LE-WM 闭环" in texts
+    assert "编辑区域/起终点" in texts
     window.close()
 
 

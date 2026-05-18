@@ -239,6 +239,14 @@ and minimum goal distance:
 python scripts\run_region_navigation_loop.py --task configs\tasks\beamng_region_nav_001.yaml --algorithm local_lewm_cost --collect-steps 160 --eval-steps 120 --output-dir outputs\region_navigation\beamng_region_nav_001
 ```
 
+In the desktop GUI, open the BeamNG page and use `编辑区域/起终点` to manually
+select a polygonal region, start point, goal point, and optional expert route
+waypoints. Saved tasks default to `evaluation_drive_mode: manual`, which means
+the `OffroadAgent`/planner commands control the vehicle during evaluation.
+`evaluation_drive_mode: ai_line` remains available only for BeamNG-native
+visual smoke tests, because it follows a simulator line rather than proving
+model navigation.
+
 List and inspect pluggable algorithm adapters:
 
 ```powershell

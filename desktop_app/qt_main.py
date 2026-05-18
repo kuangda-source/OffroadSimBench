@@ -9,7 +9,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QObject, QRectF, QThread, Qt, Signal, Slot
+from PySide6.QtCore import QPointF, QObject, QRectF, QThread, Qt, Signal, Slot
 from PySide6.QtGui import QColor, QFont, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
+    QDoubleSpinBox,
     QFileDialog,
     QFrame,
     QFormLayout,
@@ -28,6 +29,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QMessageBox,
     QPushButton,
     QSizePolicy,
     QSpinBox,
@@ -235,6 +237,251 @@ class TrajectoryCanvas(QWidget):
             painter.setPen(QPen(QColor("#8bd3ff"), 2))
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawEllipse(QRectF(gx - 7, gy - 7, 14, 14))
+
+
+class NavigationTaskCanvas(QWidget):
+    def __init__(self) -> None:
+        super().__init__()
+        self.mode = "region"
+        self.region: list[tuple[float, float]] = [(0.0, -160.0), (30.0, -160.0), (30.0, -230.0), (0.0, -230.0)]
+        self.start: tuple[float, float, float] = (1.0, -170.0, 100.6)
+        self.goal: tuple[float, float] = (6.0, -215.0)
+        self.route: list[tuple[float, float]] = [(1.0, -170.0), (6.0, -215.0)]
+        self.bounds = (-8.0, 36.0, -240.0, -150.0)
+        self.setMinimumHeight(360)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+
+    def set_mode(self, mode: str) -> None:
+        self.mode = mode
+        self.update()
+
+    def clear_region(self) -> None:
+        self.region = []
+        self.update()
+
+    def clear_route(self) -> None:
+        self.route = []
+        self.update()
+
+    def load_task(self, task: Any) -> None:
+        self.region = [tuple(point) for point in task.region_polygon]
+        self.start = tuple(task.start_pos)
+        self.goal = tuple(task.goal_pos)
+        self.route = [tuple(point) for point in task.expert_route]
+        self._fit_bounds()
+        self.update()
+
+    def paintEvent(self, event: Any) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.fillRect(self.rect(), QColor("#0d151d"))
+        plot = self._plot_rect()
+        painter.setPen(QPen(QColor("#263847"), 1))
+        painter.drawRect(plot)
+        for index in range(1, 6):
+            x = plot.left() + plot.width() * index / 6
+            y = plot.top() + plot.height() * index / 6
+            painter.drawLine(int(x), int(plot.top()), int(x), int(plot.bottom()))
+            painter.drawLine(int(plot.left()), int(y), int(plot.right()), int(y))
+
+        if len(self.region) >= 2:
+            projected = [self._to_canvas(point) for point in self.region]
+            painter.setPen(QPen(QColor("#7fb7ff"), 2))
+            for start, end in zip(projected, projected[1:], strict=False):
+                painter.drawLine(start, end)
+            if len(projected) >= 3:
+                painter.drawLine(projected[-1], projected[0])
+        for point in self.region:
+            self._draw_point(painter, point, QColor("#7fb7ff"), 5)
+
+        if len(self.route) >= 2:
+            painter.setPen(QPen(QColor("#43d9ad"), 3))
+            projected_route = [self._to_canvas(point) for point in self.route]
+            for start, end in zip(projected_route, projected_route[1:], strict=False):
+                painter.drawLine(start, end)
+        for point in self.route:
+            self._draw_point(painter, point, QColor("#43d9ad"), 4)
+
+        self._draw_point(painter, (self.start[0], self.start[1]), QColor("#f6c85f"), 7)
+        self._draw_point(painter, self.goal, QColor("#ff6b6b"), 8)
+        painter.setPen(QPen(QColor("#8da1af"), 1))
+        painter.setFont(QFont("Segoe UI", 10))
+        painter.drawText(18, 22, f"mode: {self.mode} | click to set points")
+
+    def mousePressEvent(self, event: Any) -> None:
+        point = self._from_canvas(event.position() if hasattr(event, "position") else QPointF(event.x(), event.y()))
+        if self.mode == "region":
+            self.region.append(point)
+        elif self.mode == "start":
+            self.start = (point[0], point[1], self.start[2])
+            if not self.route:
+                self.route = [(point[0], point[1])]
+            else:
+                self.route[0] = (point[0], point[1])
+        elif self.mode == "goal":
+            self.goal = point
+            if len(self.route) < 2:
+                self.route.append(point)
+            else:
+                self.route[-1] = point
+        elif self.mode == "route":
+            self.route.append(point)
+        self._fit_bounds()
+        self.update()
+
+    def _plot_rect(self) -> QRectF:
+        return QRectF(self.rect()).adjusted(32.0, 28.0, -20.0, -28.0)
+
+    def _to_canvas(self, point: tuple[float, float]) -> QPointF:
+        min_x, max_x, min_y, max_y = self.bounds
+        plot = self._plot_rect()
+        x = plot.left() + (point[0] - min_x) / max(max_x - min_x, 1e-6) * plot.width()
+        y = plot.bottom() - (point[1] - min_y) / max(max_y - min_y, 1e-6) * plot.height()
+        return QPointF(x, y)
+
+    def _from_canvas(self, point: QPointF) -> tuple[float, float]:
+        min_x, max_x, min_y, max_y = self.bounds
+        plot = self._plot_rect()
+        x = min_x + (point.x() - plot.left()) / max(plot.width(), 1e-6) * (max_x - min_x)
+        y = min_y + (plot.bottom() - point.y()) / max(plot.height(), 1e-6) * (max_y - min_y)
+        return (round(x, 3), round(y, 3))
+
+    def _draw_point(self, painter: QPainter, point: tuple[float, float], color: QColor, radius: int) -> None:
+        projected = self._to_canvas(point)
+        painter.setBrush(color)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawEllipse(QRectF(projected.x() - radius, projected.y() - radius, radius * 2, radius * 2))
+
+    def _fit_bounds(self) -> None:
+        points = [*self.region, (self.start[0], self.start[1]), self.goal, *self.route]
+        xs = [point[0] for point in points]
+        ys = [point[1] for point in points]
+        margin = 8.0
+        self.bounds = (min(xs) - margin, max(xs) + margin, min(ys) - margin, max(ys) + margin)
+
+
+class NavigationTaskDialog(QDialog):
+    def __init__(self, task_path: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("编辑区域/起终点")
+        self.resize(760, 680)
+        self.saved_task_path = ""
+        self.canvas = NavigationTaskCanvas()
+
+        self.output_path_edit = QLineEdit(task_path or r"configs\tasks\manual_region_nav.yaml")
+        self.task_id_edit = QLineEdit("manual_region_nav")
+        self.level_edit = QLineEdit("gridmap_v2")
+        self.start_z_spin = self._double_spin(100.6, 0.0, 1000.0)
+        self.start_yaw_spin = self._double_spin(-1.57, -6.29, 6.29)
+        self.goal_radius_spin = self._double_spin(8.0, 0.5, 100.0)
+        self.max_steps_spin = QSpinBox()
+        self.max_steps_spin.setRange(1, 100000)
+        self.max_steps_spin.setValue(300)
+        self.evaluation_drive_combo = QComboBox()
+        self.evaluation_drive_combo.addItem("agent/model control", "manual")
+        self.evaluation_drive_combo.addItem("BeamNG ai_line", "ai_line")
+
+        self._load_existing_task(task_path)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(12)
+        form = QFormLayout()
+        form.setHorizontalSpacing(12)
+        form.setVerticalSpacing(8)
+        form.addRow("Task file", self.output_path_edit)
+        form.addRow("Task id", self.task_id_edit)
+        form.addRow("BeamNG level", self.level_edit)
+        form.addRow("Start Z", self.start_z_spin)
+        form.addRow("Start yaw", self.start_yaw_spin)
+        form.addRow("Goal radius", self.goal_radius_spin)
+        form.addRow("Max steps", self.max_steps_spin)
+        form.addRow("Evaluation drive", self.evaluation_drive_combo)
+        layout.addLayout(form)
+
+        mode_row = QHBoxLayout()
+        for label, mode in [
+            ("选区域点", "region"),
+            ("选起点", "start"),
+            ("选终点", "goal"),
+            ("加专家路径点", "route"),
+        ]:
+            button = QPushButton(label)
+            button.clicked.connect(lambda checked=False, value=mode: self.canvas.set_mode(value))
+            mode_row.addWidget(button)
+        clear_region = QPushButton("清空区域")
+        clear_region.clicked.connect(self.canvas.clear_region)
+        clear_route = QPushButton("清空路径")
+        clear_route.clicked.connect(self.canvas.clear_route)
+        mode_row.addWidget(clear_region)
+        mode_row.addWidget(clear_route)
+        layout.addLayout(mode_row)
+        layout.addWidget(self.canvas, 1)
+
+        hint = QLabel("评估模式默认使用 agent/model control；这会让 OffroadAgent 的动作真正控制车辆。BeamNG ai_line 只适合可视化路线烟测。")
+        hint.setObjectName("mutedText")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.save_task)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def save_task(self) -> None:
+        start = (self.canvas.start[0], self.canvas.start[1], float(self.start_z_spin.value()))
+        try:
+            payload = services.save_manual_navigation_task(
+                services.ManualNavigationTaskRequest(
+                    output_path=self.output_path_edit.text().strip(),
+                    task_id=self.task_id_edit.text().strip(),
+                    level=self.level_edit.text().strip() or "gridmap_v2",
+                    map_id=f"{self.level_edit.text().strip() or 'gridmap_v2'}_manual",
+                    region_polygon=self.canvas.region,
+                    start_pos=start,
+                    start_yaw=float(self.start_yaw_spin.value()),
+                    goal_pos=self.canvas.goal,
+                    goal_radius=float(self.goal_radius_spin.value()),
+                    expert_route=self.canvas.route,
+                    max_steps=int(self.max_steps_spin.value()),
+                    evaluation_drive_mode=self.evaluation_drive_combo.currentData() or "manual",
+                )
+            )
+        except Exception as exc:
+            QMessageBox.warning(self, "任务保存失败", str(exc))
+            return
+        self.saved_task_path = str(payload["task_path"])
+        self.accept()
+
+    def _load_existing_task(self, task_path: str) -> None:
+        path = Path(task_path) if task_path else Path()
+        if task_path and not path.is_absolute():
+            path = services.ROOT / path
+        if not path.exists():
+            return
+        try:
+            task = services.load_navigation_region_task(path)
+        except Exception:
+            return
+        self.output_path_edit.setText(str(path))
+        self.task_id_edit.setText(task.task_id)
+        self.level_edit.setText(task.level)
+        self.start_z_spin.setValue(float(task.start_pos[2]))
+        self.start_yaw_spin.setValue(float(task.start_yaw))
+        self.goal_radius_spin.setValue(float(task.goal_radius))
+        self.max_steps_spin.setValue(int(task.max_steps))
+        mode = str(task.beamng.get("evaluation_drive_mode", "manual"))
+        index = self.evaluation_drive_combo.findData(mode)
+        if index >= 0:
+            self.evaluation_drive_combo.setCurrentIndex(index)
+        self.canvas.load_task(task)
+
+    def _double_spin(self, value: float, minimum: float, maximum: float) -> QDoubleSpinBox:
+        spin = QDoubleSpinBox()
+        spin.setRange(minimum, maximum)
+        spin.setDecimals(3)
+        spin.setSingleStep(0.1)
+        spin.setValue(value)
+        return spin
 
 
 class MainWindow(QMainWindow):
@@ -498,6 +745,7 @@ class MainWindow(QMainWindow):
             "BeamNG 与地形草案",
             [
                 self._field("Region task", self.task_path_edit),
+                self._action_button("编辑区域/起终点", self.open_region_task_editor),
                 self._action_button("区域起终点 LE-WM 闭环", self.run_region_navigation_loop, primary=True),
                 self._action_button("启动 BeamNG 可视自动驾驶", self.run_visible_beamng_demo, primary=True),
                 self._action_button("BeamNG LE-WM 闭环训练评估", self.run_beamng_lewm_closed_loop),
@@ -576,6 +824,13 @@ class MainWindow(QMainWindow):
             self.settings = dialog.values()
             self._refresh_planner_summary()
             self.log(f"高级参数已更新: {_compact_json(asdict(self.settings))}")
+
+    def open_region_task_editor(self) -> None:
+        dialog = NavigationTaskDialog(self.task_path_edit.text().strip(), self)
+        if dialog.exec() == QDialog.DialogCode.Accepted and dialog.saved_task_path:
+            self.task_path_edit.setText(dialog.saved_task_path)
+            self.beamng_summary.setText(_compact_json({"status": "task_saved", "task_path": dialog.saved_task_path}))
+            self.log(f"区域任务已保存: {dialog.saved_task_path}")
 
     def run_episode(self) -> None:
         request = self._current_request()
@@ -969,7 +1224,7 @@ class MainWindow(QMainWindow):
         caption = QLabel(label)
         caption.setObjectName("fieldLabel")
         caption.setFixedHeight(18)
-        if isinstance(widget, (QLineEdit, QComboBox, QSpinBox)):
+        if isinstance(widget, (QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox)):
             self._configure_control(widget)
         layout.addWidget(caption)
         layout.addWidget(widget)
@@ -980,7 +1235,7 @@ class MainWindow(QMainWindow):
         layout = QHBoxLayout(frame)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
-        if isinstance(widget, (QLineEdit, QComboBox, QSpinBox)):
+        if isinstance(widget, (QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox)):
             self._configure_control(widget)
         self._configure_button(button)
         layout.addWidget(widget, 1)

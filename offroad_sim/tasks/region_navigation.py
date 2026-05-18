@@ -78,6 +78,7 @@ class NavigationRegionTask:
             raise ValueError("mode must be collection or evaluation.")
         if mode == "collection" and not self.expert_route:
             raise ValueError("navigation_region_v1 collection requires expert_route.")
+        drive_mode = self.beamng.get(f"{mode}_drive_mode") or self.beamng.get("drive_mode", "ai_line")
         beamng = {
             "level": self.level,
             "vehicle_model": str(self.beamng.get("vehicle_model", "pickup")),
@@ -87,7 +88,7 @@ class NavigationRegionTask:
             },
             "camera_mode": str(self.beamng.get("camera_mode", "orbit")),
             "draw_route": bool(self.beamng.get("draw_route", True)),
-            "drive_mode": str(self.beamng.get("drive_mode", "ai_line")),
+            "drive_mode": str(drive_mode),
             "ai_line_speed": float(self.beamng.get("ai_line_speed", 10.0)),
             "steps_per_action": int(self.beamng.get("steps_per_action", 18)),
         }

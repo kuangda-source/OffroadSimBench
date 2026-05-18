@@ -53,6 +53,28 @@ beamng:
     assert evaluation["task"]["goal"] == [4.0, -240.0]
 
 
+def test_navigation_region_task_can_use_agent_control_for_evaluation() -> None:
+    task = NavigationRegionTask(
+        task_id="manual_eval",
+        map_id="gridmap_v2_region_001",
+        level="gridmap_v2",
+        region_polygon=[(0.0, -160.0), (30.0, -160.0), (30.0, -230.0), (0.0, -230.0)],
+        start_pos=(1.0, -170.0, 100.6),
+        start_yaw=-1.57,
+        goal_pos=(6.0, -215.0),
+        goal_radius=6.0,
+        expert_route=[(1.0, -170.0), (4.0, -195.0), (6.0, -215.0)],
+        beamng={"drive_mode": "ai_line", "evaluation_drive_mode": "manual"},
+    )
+
+    collection = task.to_beamng_scenario(mode="collection")
+    evaluation = task.to_beamng_scenario(mode="evaluation")
+
+    assert collection["metadata"]["beamng"]["drive_mode"] == "ai_line"
+    assert evaluation["metadata"]["beamng"]["drive_mode"] == "manual"
+    assert "route" not in evaluation["metadata"]["beamng"]
+
+
 def test_navigation_region_task_rejects_missing_expert_route_for_collection() -> None:
     task = NavigationRegionTask(
         task_id="no_expert",

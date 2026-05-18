@@ -7,7 +7,7 @@ import math
 import subprocess
 import sys
 import time
-from dataclasses import asdict, dataclass, is_dataclass
+from dataclasses import asdict, dataclass, field, is_dataclass
 from pathlib import Path
 from typing import Any
 
@@ -121,6 +121,28 @@ class RegionNavigationClosedLoopRequest:
     step_delay_sec: float = 0.0
     pre_run_hold_sec: float = 0.0
     post_run_hold_sec: float = 0.0
+
+
+@dataclass(slots=True)
+class ManualNavigationTaskRequest:
+    output_path: str
+    task_id: str = "manual_region_nav"
+    map_id: str = "manual_region"
+    level: str = "gridmap_v2"
+    region_polygon: list[tuple[float, float]] = field(default_factory=list)
+    start_pos: tuple[float, float, float] = (0.0, 0.0, 100.6)
+    start_yaw: float = 0.0
+    goal_pos: tuple[float, float] = (10.0, 0.0)
+    goal_radius: float = 8.0
+    expert_route: list[tuple[float, float]] = field(default_factory=list)
+    max_steps: int = 300
+    max_collision_count: int = 0
+    vehicle_model: str = "pickup"
+    collection_drive_mode: str = "ai_line"
+    evaluation_drive_mode: str = "manual"
+    ai_line_speed: float = 10.0
+    steps_per_action: int = 18
+    camera_mode: str = "orbit"
 
 
 def config_entries(kind: str, id_field: str) -> list[dict[str, Any]]:
@@ -605,6 +627,56 @@ def run_region_navigation_closed_loop(request: RegionNavigationClosedLoopRequest
     return payload
 
 
+def save_manual_navigation_task(request: ManualNavigationTaskRequest) -> dict[str, Any]:
+    region = [_coerce_point2(point, "region polygon") for point in request.region_polygon]
+    if len(region) < 3:
+        raise ValueError("Manual navigation task requires at least three region points.")
+    start_pos = _coerce_point3(request.start_pos, "start position")
+    goal_pos = _coerce_point2(request.goal_pos, "goal position")
+    route = [_coerce_point2(point, "expert route") for point in request.expert_route]
+    if not route:
+        route = [(start_pos[0], start_pos[1]), goal_pos]
+    task = NavigationRegionTask(
+        task_id=_safe_name(request.task_id or "manual_region_nav"),
+        map_id=str(request.map_id or request.level),
+        level=str(request.level or "gridmap_v2"),
+        region_polygon=region,
+        start_pos=start_pos,
+        start_yaw=float(request.start_yaw),
+        goal_pos=goal_pos,
+        goal_radius=float(request.goal_radius),
+        expert_route=route,
+        max_steps=int(request.max_steps),
+        max_collision_count=int(request.max_collision_count),
+        beamng={
+            "vehicle_model": str(request.vehicle_model or "pickup"),
+            "camera_mode": str(request.camera_mode or "orbit"),
+            "draw_route": True,
+            "drive_mode": str(request.collection_drive_mode or "ai_line"),
+            "collection_drive_mode": str(request.collection_drive_mode or "ai_line"),
+            "evaluation_drive_mode": str(request.evaluation_drive_mode or "manual"),
+            "ai_line_speed": float(request.ai_line_speed),
+            "steps_per_action": int(request.steps_per_action),
+            "weather": "sunny",
+        },
+    )
+    if not task.contains_point((task.start_pos[0], task.start_pos[1])):
+        raise ValueError("Start position must be inside the selected region.")
+    if not task.contains_point(task.goal_pos):
+        raise ValueError("Goal position must be inside the selected region.")
+
+    output_path = Path(request.output_path or ROOT / "configs" / "tasks" / f"{task.task_id}.yaml")
+    if not output_path.is_absolute():
+        output_path = ROOT / output_path
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        import yaml
+    except ModuleNotFoundError as exc:
+        raise RuntimeError("PyYAML is required to save task YAML files.") from exc
+    output_path.write_text(yaml.safe_dump(task.to_dict(), sort_keys=False, allow_unicode=True), encoding="utf-8")
+    return {"status": "saved", "task_path": str(output_path.resolve()), "task": task.to_dict()}
+
+
 def _run_region_beamng_episode(
     *,
     scenario: dict[str, Any],
@@ -915,6 +987,22 @@ def _float_or_nan(value: Any) -> float:
         return float(value)
     except (TypeError, ValueError):
         return math.nan
+
+
+def _coerce_point2(value: Any, label: str) -> tuple[float, float]:
+    try:
+        items = list(value)
+        return (float(items[0]), float(items[1]))
+    except (TypeError, ValueError, IndexError) as exc:
+        raise ValueError(f"Invalid {label}: expected [x, y].") from exc
+
+
+def _coerce_point3(value: Any, label: str) -> tuple[float, float, float]:
+    try:
+        items = list(value)
+        return (float(items[0]), float(items[1]), float(items[2]))
+    except (TypeError, ValueError, IndexError) as exc:
+        raise ValueError(f"Invalid {label}: expected [x, y, z].") from exc
 
 
 def _write_preview_image(asset_path: str, output_path: Path) -> Path | None:

@@ -84,9 +84,17 @@ python scripts\run_region_navigation_loop.py --task configs\tasks\beamng_region_
 The task YAML contains a polygonal region, start pose, goal radius, and expert
 route. Collection uses the expert route for demonstration data; evaluation
 omits the route from BeamNG metadata, leaving the backend to derive a direct
-start-to-goal line from the task. The BeamNG backend terminates the episode
+start-to-goal target from the task. Set `beamng.evaluation_drive_mode: manual`
+to let the OffroadAgent/model commands control the vehicle during evaluation.
+Set it to `ai_line` only for BeamNG-native visual smoke tests, because `ai_line`
+uses BeamNG's own route follower. The BeamNG backend terminates the episode
 when the vehicle enters the configured goal radius and records distance-to-goal
 metrics.
+
+The desktop GUI exposes a `编辑区域/起终点` dialog on the BeamNG page. It lets a
+user click a 2D coordinate canvas to select the region polygon, start point,
+goal point, and optional expert route waypoints, then saves a
+`navigation_region_v1` YAML file under `configs/tasks/`.
 
 The demo runs through the shared `route_world_model` agent so the selected
 world model and planner remain replaceable without BeamNG-specific application
