@@ -8,7 +8,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QApplication, QPushButton
 
 from desktop_app import services
-from desktop_app.qt_main import MainWindow
+from desktop_app.qt_main import MainWindow, NavigationTaskDialog
 
 
 def _ensure_app() -> QApplication:
@@ -74,8 +74,9 @@ def test_beamng_page_has_visible_demo_action() -> None:
     assert "BeamNG LE-WM 闭环训练评估" in texts
     assert "启动 BeamNG 可视自动驾驶" in texts
     assert "区域起终点 LE-WM 闭环" in texts
-    assert "编辑区域/起终点" in texts
-    assert "BeamNG 预览区域/起终点" in texts
+    assert "编辑/预览区域与起终点" in texts
+    assert "编辑区域/起终点" not in texts
+    assert "BeamNG 预览区域/起终点" not in texts
     window.close()
 
 
@@ -174,21 +175,50 @@ def test_gui_johnson_valley_demo_uses_agent_control_task(monkeypatch) -> None:
     window.close()
 
 
-def test_gui_navigation_preview_uses_current_task(monkeypatch) -> None:
+def test_gui_navigation_preview_uses_editor_callback(monkeypatch) -> None:
     _ensure_app()
     window = MainWindow()
-    window.task_path_edit.setText("configs/tasks/beamng_johnson_valley_nav_001.yaml")
-    captured: dict[str, str] = {}
+    captured: dict[str, object] = {}
 
     def fake_preview(task_path: str, **kwargs):
         captured["task_path"] = task_path
+        captured.update(kwargs)
         return {"episode_id": "preview", "analysis": {"start_in_region": True}}
 
     monkeypatch.setattr(services, "preview_navigation_task_in_beamng", fake_preview)
     monkeypatch.setattr(window, "_run_task", lambda task, callback, label: callback(task()))
 
-    window.preview_region_task_in_beamng()
+    window._preview_task_from_editor("configs/tasks/beamng_johnson_valley_nav_001.yaml", "topdown", 120.0)
 
     assert captured["task_path"] == "configs/tasks/beamng_johnson_valley_nav_001.yaml"
+    assert captured["camera_mode"] == "topdown"
+    assert captured["camera_height_m"] == 120.0
     assert "preview" in window.beamng_summary.toPlainText()
     window.close()
+
+
+def test_navigation_task_dialog_previews_draft_from_same_editor(tmp_path) -> None:
+    _ensure_app()
+    preview_calls: list[dict[str, object]] = []
+    task_path = tmp_path / "draft.yaml"
+    dialog = NavigationTaskDialog(
+        str(task_path),
+        preview_callback=lambda task_path, camera_mode, camera_height_m: preview_calls.append(
+            {"task_path": task_path, "camera_mode": camera_mode, "camera_height_m": camera_height_m}
+        ),
+    )
+
+    dialog.task_id_edit.setText("draft")
+    dialog.level_edit.setText("gridmap_v2")
+    dialog.canvas.region = [(0.0, -160.0), (20.0, -160.0), (20.0, -220.0), (0.0, -220.0)]
+    dialog.canvas.start = (2.0, -170.0, 100.6)
+    dialog.canvas.goal = (6.0, -210.0)
+    dialog.canvas.route = [(2.0, -170.0), (5.0, -190.0), (6.0, -210.0)]
+
+    dialog.preview_task()
+
+    assert dialog.result() == 0
+    assert preview_calls == [
+        {"task_path": str(task_path.resolve()), "camera_mode": "topdown", "camera_height_m": 90.0}
+    ]
+    assert task_path.exists()

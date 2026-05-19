@@ -361,11 +361,17 @@ class NavigationTaskCanvas(QWidget):
 
 
 class NavigationTaskDialog(QDialog):
-    def __init__(self, task_path: str, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        task_path: str,
+        parent: QWidget | None = None,
+        preview_callback: Callable[[str, str, float], None] | None = None,
+    ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("编辑区域/起终点")
+        self.setWindowTitle("编辑/预览区域与起终点")
         self.resize(760, 680)
         self.saved_task_path = ""
+        self.preview_callback = preview_callback
         self.canvas = NavigationTaskCanvas()
 
         self.output_path_edit = QLineEdit(task_path or r"configs\tasks\manual_region_nav.yaml")
@@ -380,6 +386,11 @@ class NavigationTaskDialog(QDialog):
         self.evaluation_drive_combo = QComboBox()
         self.evaluation_drive_combo.addItem("agent/model control", "manual")
         self.evaluation_drive_combo.addItem("BeamNG ai_line", "ai_line")
+        self.preview_camera_combo = QComboBox()
+        self.preview_camera_combo.addItem("俯视高视角", "topdown")
+        self.preview_camera_combo.addItem("环绕车辆", "orbit")
+        self.preview_camera_combo.addItem("自由跟随", "free")
+        self.preview_height_spin = self._double_spin(90.0, 10.0, 500.0)
 
         self._load_existing_task(task_path)
 
@@ -397,6 +408,8 @@ class NavigationTaskDialog(QDialog):
         form.addRow("Goal radius", self.goal_radius_spin)
         form.addRow("Max steps", self.max_steps_spin)
         form.addRow("Evaluation drive", self.evaluation_drive_combo)
+        form.addRow("Preview camera", self.preview_camera_combo)
+        form.addRow("Preview height", self.preview_height_spin)
         layout.addLayout(form)
 
         mode_row = QHBoxLayout()
@@ -413,12 +426,15 @@ class NavigationTaskDialog(QDialog):
         clear_region.clicked.connect(self.canvas.clear_region)
         clear_route = QPushButton("清空路径")
         clear_route.clicked.connect(self.canvas.clear_route)
+        preview_button = QPushButton("保存并刷新 BeamNG 预览")
+        preview_button.clicked.connect(self.preview_task)
         mode_row.addWidget(clear_region)
         mode_row.addWidget(clear_route)
+        mode_row.addWidget(preview_button)
         layout.addLayout(mode_row)
         layout.addWidget(self.canvas, 1)
 
-        hint = QLabel("评估模式默认使用 agent/model control；这会让 OffroadAgent 的动作真正控制车辆。BeamNG ai_line 只适合可视化路线烟测。")
+        hint = QLabel("在这个窗口里编辑区域、起点、终点和专家路径；点击预览会保存当前草稿并刷新 BeamNG 画面，默认使用俯视高视角观察是否可通行。")
         hint.setObjectName("mutedText")
         hint.setWordWrap(True)
         layout.addWidget(hint)
@@ -428,6 +444,19 @@ class NavigationTaskDialog(QDialog):
         layout.addWidget(buttons)
 
     def save_task(self) -> None:
+        self._save_task(close_after_save=True)
+
+    def preview_task(self) -> None:
+        if not self._save_task(close_after_save=False):
+            return
+        if self.preview_callback is not None and self.saved_task_path:
+            self.preview_callback(
+                self.saved_task_path,
+                str(self.preview_camera_combo.currentData() or "topdown"),
+                float(self.preview_height_spin.value()),
+            )
+
+    def _save_task(self, *, close_after_save: bool) -> bool:
         start = (self.canvas.start[0], self.canvas.start[1], float(self.start_z_spin.value()))
         try:
             payload = services.save_manual_navigation_task(
@@ -448,9 +477,11 @@ class NavigationTaskDialog(QDialog):
             )
         except Exception as exc:
             QMessageBox.warning(self, "任务保存失败", str(exc))
-            return
+            return False
         self.saved_task_path = str(payload["task_path"])
-        self.accept()
+        if close_after_save:
+            self.accept()
+        return True
 
     def _load_existing_task(self, task_path: str) -> None:
         path = Path(task_path) if task_path else Path()
@@ -745,8 +776,7 @@ class MainWindow(QMainWindow):
             "BeamNG 与地形草案",
             [
                 self._field("Region task", self.task_path_edit),
-                self._action_button("编辑区域/起终点", self.open_region_task_editor),
-                self._action_button("BeamNG 预览区域/起终点", self.preview_region_task_in_beamng),
+                self._action_button("编辑/预览区域与起终点", self.open_region_task_editor),
                 self._action_button("Johnson Valley LE-WM 演示", self.run_johnson_valley_demo_loop, primary=True),
                 self._action_button("区域起终点 LE-WM 闭环", self.run_region_navigation_loop, primary=True),
                 self._action_button("启动 BeamNG 可视自动驾驶", self.run_visible_beamng_demo, primary=True),
@@ -828,19 +858,25 @@ class MainWindow(QMainWindow):
             self.log(f"高级参数已更新: {_compact_json(asdict(self.settings))}")
 
     def open_region_task_editor(self) -> None:
-        dialog = NavigationTaskDialog(self.task_path_edit.text().strip(), self)
+        dialog = NavigationTaskDialog(
+            self.task_path_edit.text().strip(),
+            self,
+            preview_callback=self._preview_task_from_editor,
+        )
         if dialog.exec() == QDialog.DialogCode.Accepted and dialog.saved_task_path:
             self.task_path_edit.setText(dialog.saved_task_path)
             self.beamng_summary.setText(_compact_json({"status": "task_saved", "task_path": dialog.saved_task_path}))
             self.log(f"区域任务已保存: {dialog.saved_task_path}")
 
-    def preview_region_task_in_beamng(self) -> None:
-        task_path = self.task_path_edit.text().strip() or r"configs\tasks\beamng_johnson_valley_nav_001.yaml"
-        self.log(f"BeamNG 预览区域/起终点: {task_path}")
+    def _preview_task_from_editor(self, task_path: str, camera_mode: str, camera_height_m: float) -> None:
+        self.task_path_edit.setText(task_path)
+        self.log(f"BeamNG 预览区域/起终点: {task_path}, camera={camera_mode}, height={camera_height_m:.1f}m")
         self._run_task(
             lambda: services.preview_navigation_task_in_beamng(
                 task_path,
                 beamng_gfx="vk",
+                camera_mode=camera_mode,
+                camera_height_m=camera_height_m,
                 hold_open_sec=3.0,
             ),
             self._navigation_preview_finished,

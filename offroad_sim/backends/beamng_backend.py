@@ -548,25 +548,13 @@ class BeamNGBackend(OffroadSimBackend):
 
     def _configure_visible_camera(self, state: VehicleState | None = None) -> None:
         beamng_options = self._beamng_metadata(self._scenario_config)
-        if str(beamng_options.get("camera_mode", "")).lower() not in {"orbit", "free", "follow"}:
+        camera_mode = str(beamng_options.get("camera_mode", "")).lower()
+        if camera_mode not in {"orbit", "free", "follow", "topdown"}:
             return
         if not self._bng:
             return
         camera = getattr(self._bng, "camera", None)
-        set_player_mode = getattr(camera, "set_player_mode", None)
-        if callable(set_player_mode):
-            try:
-                set_player_mode(
-                    self.connection.vehicle_id,
-                    "orbit",
-                    {"distance": 12.0, "fov": 65.0, "rotation": (0.0, 0.0, 0.0)},
-                )
-                return
-            except Exception:
-                pass
         set_free = getattr(camera, "set_free", None)
-        if not callable(set_free):
-            return
 
         if state is None:
             pos, _ = self._beamng_vehicle_start_for_config(self._scenario_config)
@@ -585,6 +573,30 @@ class BeamNGBackend(OffroadSimBackend):
             x = float(state.x)
             y = float(state.y)
             z = float(state.z)
+
+        if camera_mode == "topdown":
+            if not callable(set_free):
+                return
+            height = max(10.0, float(beamng_options.get("camera_height_m", 90.0)))
+            try:
+                set_free(pos=(x, y, z + height), direction=(0.0, 0.0, -1.0))
+            except Exception:
+                pass
+            return
+
+        set_player_mode = getattr(camera, "set_player_mode", None)
+        if callable(set_player_mode):
+            try:
+                set_player_mode(
+                    self.connection.vehicle_id,
+                    "orbit",
+                    {"distance": 12.0, "fov": 65.0, "rotation": (0.0, 0.0, 0.0)},
+                )
+                return
+            except Exception:
+                pass
+        if not callable(set_free):
+            return
 
         cam_pos = (
             x - math.cos(yaw) * 9.0,

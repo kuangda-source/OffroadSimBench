@@ -139,9 +139,9 @@ powershell -ExecutionPolicy Bypass -File scripts\phase4_visible_beamng_acceptanc
 ### Johnson Valley 闭环验收补充
 
 当前仓库提供 `configs\tasks\beamng_johnson_valley_nav_001.yaml` 作为
-Johnson Valley 原生越野地形上的固定区域/起终点任务。桌面 GUI 的 BeamNG 页面新增
-`BeamNG 预览区域/起终点`，可先在 BeamNG 内查看区域角点、起点、终点和专家路线标记，
-再运行 `Johnson Valley LE-WM 演示`。
+Johnson Valley 原生越野地形上的固定区域/起终点任务。桌面 GUI 的 BeamNG 页面提供
+`编辑/预览区域与起终点` 联合入口，可在同一个窗口里编辑区域、起点、终点和专家路线，
+并随时保存草稿刷新 BeamNG 预览。预览默认使用俯视高视角，也可以在编辑窗口里切换相机模式和高度。
 
 评估阶段使用 `drive_mode=manual`，不是 BeamNG `ai_line`。`route_world_model`
 会记录 LE-WM/CEM 的原始规划动作，同时由 `model_guided_route_tracker` 将其转换为
@@ -266,9 +266,11 @@ Local acceptance on 2026-05-19 passed two consecutive Johnson Valley runs with
 manual model-guided control: 159 and 153 evaluation steps, final goal distances
 of 11.59 m and 11.51 m against a 12 m goal radius, and zero collisions.
 
-In the desktop GUI, open the BeamNG page and use `编辑区域/起终点` to manually
-select a polygonal region, start point, goal point, and optional expert route
-waypoints. Saved tasks default to `evaluation_drive_mode: manual`, which means
+In the desktop GUI, open the BeamNG page and use `编辑/预览区域与起终点` to
+edit a polygonal region, start point, goal point, and optional expert route
+while refreshing a BeamNG preview from the same dialog. Preview defaults to a
+high top-down camera, and the camera mode/height are adjustable in the editor.
+Saved tasks default to `evaluation_drive_mode: manual`, which means
 the `OffroadAgent`/planner commands control the vehicle during evaluation.
 `evaluation_drive_mode: ai_line` remains available only for BeamNG-native
 visual smoke tests, because it follows a simulator line rather than proving

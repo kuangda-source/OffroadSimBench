@@ -733,6 +733,8 @@ def preview_navigation_task_in_beamng(
     *,
     vehicle: str = "configs/vehicles/ugv_medium.yaml",
     beamng_gfx: str = "vk",
+    camera_mode: str = "topdown",
+    camera_height_m: float = 90.0,
     hold_open_sec: float = 3.0,
 ) -> dict[str, Any]:
     task = load_navigation_region_task(task_path)
@@ -741,6 +743,8 @@ def preview_navigation_task_in_beamng(
     beamng = scenario.setdefault("metadata", {}).setdefault("beamng", {})
     beamng["drive_mode"] = "manual"
     beamng["preview_mode"] = True
+    beamng["camera_mode"] = str(camera_mode or "topdown")
+    beamng["camera_height_m"] = float(camera_height_m)
     beamng["draw_route"] = True
     beamng["draw_task_markers"] = True
     beamng["steps_per_action"] = 1

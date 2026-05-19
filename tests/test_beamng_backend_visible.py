@@ -205,6 +205,31 @@ def test_beamng_backend_sends_manual_agent_control_as_adas(fake_beamngpy: Simple
     assert fake_beamngpy.shift_mode == "arcade"
 
 
+def test_beamng_backend_uses_topdown_preview_camera(fake_beamngpy: SimpleNamespace) -> None:
+    scenario = {
+        "scenario_id": "beamng_topdown_preview",
+        "backend": "beamng",
+        "task": {"start": [10.0, 20.0], "goal": [30.0, 40.0], "success_radius_m": 1.0},
+        "metadata": {
+            "beamng": {
+                "level": "gridmap_v2",
+                "vehicle_start": {"pos": [10.0, 20.0, 3.0], "rot_quat": [0.0, 0.0, 0.0, 1.0]},
+                "camera_mode": "topdown",
+                "camera_height_m": 75.0,
+                "route": [[10.0, 20.0], [30.0, 40.0]],
+                "drive_mode": "manual",
+            }
+        },
+    }
+    backend = BeamNGBackend(connection=BeamNGConnectionConfig(launch=False))
+
+    backend.reset(scenario)
+
+    assert fake_beamngpy.camera_request["pos"] == (10.0, 20.0, 78.0)
+    assert fake_beamngpy.camera_request["direction"] == (0.0, 0.0, -1.0)
+    assert not hasattr(fake_beamngpy, "player_camera_request")
+
+
 def test_beamng_backend_fallback_observation_uses_spawn_yaw(fake_beamngpy: SimpleNamespace, monkeypatch) -> None:
     scenario = {
         "scenario_id": "beamng_spawn_yaw",
