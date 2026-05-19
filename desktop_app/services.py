@@ -6,6 +6,7 @@ import json
 import math
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import asdict, dataclass, field, is_dataclass
 from pathlib import Path
@@ -15,13 +16,14 @@ import numpy as np
 
 from offroad_sim.agents import default_agent_registry
 from offroad_sim.algorithms import DataPrepRequest, TrainRequest, default_algorithm_registry
-from offroad_sim.backends import BeamNGConnectionConfig, default_backend_registry
+from offroad_sim.backends import BeamNGBackend, BeamNGConnectionConfig, default_backend_registry
 from offroad_sim.datasets import default_dataset_registry
 from offroad_sim.evaluation import run_episode
 from offroad_sim.evaluation.runner import DEFAULT_OUTPUT_ROOT
 from offroad_sim.planning import default_planner_registry
 from offroad_sim.tasks import NavigationRegionTask, load_navigation_region_task
 from offroad_sim.utils.yaml_io import load_yaml_file
+from offroad_sim.vehicles import load_vehicle_config
 from offroad_sim.world_models import TinyLearnedWorldModel, default_world_model_registry
 
 
@@ -728,6 +730,25 @@ def analyze_navigation_task(task_path: str | Path) -> dict[str, Any]:
     }
 
 
+def _navigation_preview_scenario(
+    task: NavigationRegionTask,
+    *,
+    camera_mode: str = "topdown",
+    camera_height_m: float = 90.0,
+) -> dict[str, Any]:
+    scenario = task.to_beamng_scenario(mode="evaluation")
+    beamng = scenario.setdefault("metadata", {}).setdefault("beamng", {})
+    beamng["drive_mode"] = "manual"
+    beamng["preview_mode"] = True
+    beamng["camera_mode"] = str(camera_mode or "topdown")
+    beamng["camera_height_m"] = float(camera_height_m)
+    beamng["draw_route"] = True
+    beamng["draw_task_markers"] = True
+    beamng["steps_per_action"] = 1
+    beamng["route"] = [list(point) for point in (task.expert_route or [(task.start_pos[0], task.start_pos[1]), task.goal_pos])]
+    return scenario
+
+
 def preview_navigation_task_in_beamng(
     task_path: str | Path,
     *,
@@ -739,16 +760,7 @@ def preview_navigation_task_in_beamng(
 ) -> dict[str, Any]:
     task = load_navigation_region_task(task_path)
     analysis = analyze_navigation_task(task_path)
-    scenario = task.to_beamng_scenario(mode="evaluation")
-    beamng = scenario.setdefault("metadata", {}).setdefault("beamng", {})
-    beamng["drive_mode"] = "manual"
-    beamng["preview_mode"] = True
-    beamng["camera_mode"] = str(camera_mode or "topdown")
-    beamng["camera_height_m"] = float(camera_height_m)
-    beamng["draw_route"] = True
-    beamng["draw_task_markers"] = True
-    beamng["steps_per_action"] = 1
-    beamng["route"] = [list(point) for point in (task.expert_route or [(task.start_pos[0], task.start_pos[1]), task.goal_pos])]
+    scenario = _navigation_preview_scenario(task, camera_mode=camera_mode, camera_height_m=camera_height_m)
     result = run_episode(
         backend_name="beamng",
         scenario=scenario,
@@ -767,11 +779,79 @@ def preview_navigation_task_in_beamng(
     payload["analysis"] = analysis
     payload["preview"] = {
         "mode": "beamng_manual_static",
+        "realtime": False,
+        "camera_mode": str(camera_mode or "topdown"),
+        "camera_height_m": float(camera_height_m),
         "route_drawn": True,
         "region_drawn": True,
         "start_goal_drawn": True,
     }
     return payload
+
+
+class BeamNGNavigationPreviewSession:
+    """Long-lived BeamNG preview session for live region/task editing."""
+
+    def __init__(
+        self,
+        *,
+        vehicle: str = "configs/vehicles/ugv_medium.yaml",
+        beamng_gfx: str = "vk",
+    ) -> None:
+        self.vehicle = vehicle
+        self.beamng_gfx = beamng_gfx
+        self._backend: BeamNGBackend | None = None
+        self._level: str | None = None
+        self._lock = threading.RLock()
+
+    def update(
+        self,
+        task_path: str | Path,
+        *,
+        camera_mode: str = "topdown",
+        camera_height_m: float = 90.0,
+    ) -> dict[str, Any]:
+        with self._lock:
+            task = load_navigation_region_task(task_path)
+            analysis = analyze_navigation_task(task_path)
+            scenario = _navigation_preview_scenario(task, camera_mode=camera_mode, camera_height_m=camera_height_m)
+            beamng = scenario.get("metadata", {}).get("beamng", {})
+            level = str(beamng.get("level", task.level))
+            lifecycle = "updated"
+            if self._backend is None or self._level != level:
+                self.close()
+                vehicle_config = load_vehicle_config(self.vehicle) if self.vehicle else None
+                self._backend = BeamNGBackend(
+                    connection=BeamNGConnectionConfig(gfx=self.beamng_gfx or None),
+                    vehicle_config=vehicle_config,
+                )
+                self._backend.reset(scenario)
+                self._level = level
+                lifecycle = "started"
+            else:
+                self._backend.update_navigation_preview(scenario)
+            metrics = self._backend.get_metrics()
+            return {
+                "status": lifecycle,
+                "analysis": analysis,
+                "metrics": metrics,
+                "preview": {
+                    "mode": "beamng_manual_live",
+                    "realtime": True,
+                    "camera_mode": str(camera_mode or "topdown"),
+                    "camera_height_m": float(camera_height_m),
+                    "route_drawn": True,
+                    "region_drawn": True,
+                    "start_goal_drawn": True,
+                },
+            }
+
+    def close(self) -> None:
+        with self._lock:
+            if self._backend is not None:
+                self._backend.close()
+            self._backend = None
+            self._level = None
 
 
 def _run_region_beamng_episode(

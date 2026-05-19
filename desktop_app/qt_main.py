@@ -9,7 +9,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QPointF, QObject, QRectF, QThread, Qt, Signal, Slot
+from PySide6.QtCore import QPointF, QObject, QRectF, QThread, QTimer, Qt, Signal, Slot
 from PySide6.QtGui import QColor, QFont, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -240,6 +240,8 @@ class TrajectoryCanvas(QWidget):
 
 
 class NavigationTaskCanvas(QWidget):
+    changed = Signal()
+
     def __init__(self) -> None:
         super().__init__()
         self.mode = "region"
@@ -258,10 +260,12 @@ class NavigationTaskCanvas(QWidget):
     def clear_region(self) -> None:
         self.region = []
         self.update()
+        self.changed.emit()
 
     def clear_route(self) -> None:
         self.route = []
         self.update()
+        self.changed.emit()
 
     def load_task(self, task: Any) -> None:
         self.region = [tuple(point) for point in task.region_polygon]
@@ -270,6 +274,7 @@ class NavigationTaskCanvas(QWidget):
         self.route = [tuple(point) for point in task.expert_route]
         self._fit_bounds()
         self.update()
+        self.changed.emit()
 
     def paintEvent(self, event: Any) -> None:
         painter = QPainter(self)
@@ -328,6 +333,7 @@ class NavigationTaskCanvas(QWidget):
             self.route.append(point)
         self._fit_bounds()
         self.update()
+        self.changed.emit()
 
     def _plot_rect(self) -> QRectF:
         return QRectF(self.rect()).adjusted(32.0, 28.0, -20.0, -28.0)
@@ -373,6 +379,10 @@ class NavigationTaskDialog(QDialog):
         self.saved_task_path = ""
         self.preview_callback = preview_callback
         self.canvas = NavigationTaskCanvas()
+        self.preview_timer = QTimer(self)
+        self.preview_timer.setSingleShot(True)
+        self.preview_timer.setInterval(650)
+        self.preview_timer.timeout.connect(self._run_realtime_preview)
 
         self.output_path_edit = QLineEdit(task_path or r"configs\tasks\manual_region_nav.yaml")
         self.task_id_edit = QLineEdit("manual_region_nav")
@@ -391,6 +401,8 @@ class NavigationTaskDialog(QDialog):
         self.preview_camera_combo.addItem("环绕车辆", "orbit")
         self.preview_camera_combo.addItem("自由跟随", "free")
         self.preview_height_spin = self._double_spin(90.0, 10.0, 500.0)
+        self.realtime_preview_check = QCheckBox("实时预览")
+        self.realtime_preview_check.setChecked(True)
 
         self._load_existing_task(task_path)
 
@@ -410,6 +422,7 @@ class NavigationTaskDialog(QDialog):
         form.addRow("Evaluation drive", self.evaluation_drive_combo)
         form.addRow("Preview camera", self.preview_camera_combo)
         form.addRow("Preview height", self.preview_height_spin)
+        form.addRow("Realtime preview", self.realtime_preview_check)
         layout.addLayout(form)
 
         mode_row = QHBoxLayout()
@@ -442,6 +455,8 @@ class NavigationTaskDialog(QDialog):
         buttons.accepted.connect(self.save_task)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+        self._connect_realtime_preview_signals()
+        self.schedule_realtime_preview()
 
     def save_task(self) -> None:
         self._save_task(close_after_save=True)
@@ -455,6 +470,30 @@ class NavigationTaskDialog(QDialog):
                 str(self.preview_camera_combo.currentData() or "topdown"),
                 float(self.preview_height_spin.value()),
             )
+
+    def schedule_realtime_preview(self, *_args: Any) -> None:
+        if self.realtime_preview_check.isChecked():
+            self.preview_timer.start()
+
+    def _run_realtime_preview(self) -> None:
+        if self.realtime_preview_check.isChecked():
+            self.preview_task()
+
+    def _connect_realtime_preview_signals(self) -> None:
+        self.realtime_preview_check.toggled.connect(self.schedule_realtime_preview)
+        self.canvas.changed.connect(self.schedule_realtime_preview)
+        for edit in (self.output_path_edit, self.task_id_edit, self.level_edit):
+            edit.textChanged.connect(self.schedule_realtime_preview)
+        for spin in (
+            self.start_z_spin,
+            self.start_yaw_spin,
+            self.goal_radius_spin,
+            self.max_steps_spin,
+            self.preview_height_spin,
+        ):
+            spin.valueChanged.connect(self.schedule_realtime_preview)
+        self.evaluation_drive_combo.currentIndexChanged.connect(self.schedule_realtime_preview)
+        self.preview_camera_combo.currentIndexChanged.connect(self.schedule_realtime_preview)
 
     def _save_task(self, *, close_after_save: bool) -> bool:
         start = (self.canvas.start[0], self.canvas.start[1], float(self.start_z_spin.value()))
@@ -536,6 +575,7 @@ class MainWindow(QMainWindow):
         self.metric_cards: dict[str, MetricCard] = {}
         self.nav_buttons: list[QPushButton] = []
         self.dataset_info: dict[str, Any] | None = None
+        self.navigation_preview_session = services.BeamNGNavigationPreviewSession()
 
         self._init_shared_controls()
 
@@ -872,16 +912,18 @@ class MainWindow(QMainWindow):
         self.task_path_edit.setText(task_path)
         self.log(f"BeamNG 预览区域/起终点: {task_path}, camera={camera_mode}, height={camera_height_m:.1f}m")
         self._run_task(
-            lambda: services.preview_navigation_task_in_beamng(
+            lambda: self.navigation_preview_session.update(
                 task_path,
-                beamng_gfx="vk",
                 camera_mode=camera_mode,
                 camera_height_m=camera_height_m,
-                hold_open_sec=3.0,
             ),
             self._navigation_preview_finished,
-            "navigation preview failed",
+            "navigation realtime preview failed",
         )
+
+    def closeEvent(self, event: Any) -> None:
+        self.navigation_preview_session.close()
+        super().closeEvent(event)
 
     def run_episode(self) -> None:
         request = self._current_request()

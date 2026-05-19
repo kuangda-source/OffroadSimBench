@@ -27,7 +27,17 @@ def fake_beamngpy(monkeypatch) -> SimpleNamespace:
                 set_free=lambda **kwargs: setattr(module, "camera_request", kwargs),
                 set_player_mode=lambda vehicle, mode, config: setattr(module, "player_camera_request", (vehicle, mode, config)),
             )
-            self.debug = SimpleNamespace(add_spheres=lambda *args, **kwargs: setattr(module, "debug_spheres", (args, kwargs)))
+            def add_spheres(*args, **kwargs):
+                module.debug_spheres = (args, kwargs)
+                count = len(args[0]) if args else 0
+                ids = list(range(module.next_debug_id, module.next_debug_id + count))
+                module.next_debug_id += count
+                return ids
+
+            def remove_spheres(ids):
+                module.removed_spheres.extend(ids)
+
+            self.debug = SimpleNamespace(add_spheres=add_spheres, remove_spheres=remove_spheres)
             module.bng = self
 
         def open(self, launch: bool = True) -> None:
@@ -119,6 +129,8 @@ def fake_beamngpy(monkeypatch) -> SimpleNamespace:
     module.Vehicle = FakeVehicle
     module.sensors = SimpleNamespace(Camera=FakeCamera, Lidar=FakeLidar)
     module.step_calls = []
+    module.next_debug_id = 1
+    module.removed_spheres = []
 
     def fake_import(name: str) -> Any:
         if name == "beamngpy":
@@ -228,6 +240,43 @@ def test_beamng_backend_uses_topdown_preview_camera(fake_beamngpy: SimpleNamespa
     assert fake_beamngpy.camera_request["pos"] == (10.0, 20.0, 78.0)
     assert fake_beamngpy.camera_request["direction"] == (0.0, 0.0, -1.0)
     assert not hasattr(fake_beamngpy, "player_camera_request")
+
+
+def test_beamng_backend_updates_navigation_preview_without_reloading(fake_beamngpy: SimpleNamespace) -> None:
+    scenario = {
+        "scenario_id": "beamng_preview_update",
+        "backend": "beamng",
+        "task": {"start": [0.0, 0.0], "goal": [10.0, 0.0], "success_radius_m": 1.0},
+        "metadata": {
+            "task": {
+                "task_type": "navigation_region_v1",
+                "start_pose": {"pos": [0.0, 0.0, 0.5]},
+                "goal": {"pos": [10.0, 0.0]},
+                "region": {"polygon": [[0.0, -5.0], [12.0, -5.0], [12.0, 5.0], [0.0, 5.0]]},
+            },
+            "beamng": {
+                "level": "gridmap_v2",
+                "vehicle_start": {"pos": [0.0, 0.0, 0.5], "rot_quat": [0.0, 0.0, 0.0, 1.0]},
+                "camera_mode": "topdown",
+                "camera_height_m": 50.0,
+                "route": [[0.0, 0.0], [10.0, 0.0]],
+                "drive_mode": "manual",
+                "draw_route": True,
+                "draw_task_markers": True,
+            },
+        },
+    }
+    backend = BeamNGBackend(connection=BeamNGConnectionConfig(launch=False))
+    backend.reset(scenario)
+    made_before = getattr(fake_beamngpy, "made", False)
+    scenario["metadata"]["beamng"]["route"] = [[0.0, 0.0], [5.0, 2.0], [10.0, 0.0]]
+
+    backend.update_navigation_preview(scenario)
+
+    assert made_before is True
+    assert fake_beamngpy.removed_spheres
+    assert backend.get_metrics()["route_waypoint_count"] == 3
+    assert fake_beamngpy.scenario_name.startswith("beamng_preview_update_")
 
 
 def test_beamng_backend_fallback_observation_uses_spawn_yaw(fake_beamngpy: SimpleNamespace, monkeypatch) -> None:

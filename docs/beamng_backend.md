@@ -94,7 +94,10 @@ metrics.
 The desktop GUI exposes a `编辑区域/起终点` dialog on the BeamNG page. It lets a
 user click a 2D coordinate canvas to select the region polygon, start point,
 goal point, and optional expert route waypoints, then saves a
-`navigation_region_v1` YAML file under `configs/tasks/`.
+`navigation_region_v1` YAML file under `configs/tasks/`. When realtime preview
+is enabled, the GUI keeps a BeamNG preview session alive and calls
+`BeamNGBackend.update_navigation_preview()` so route markers, region markers,
+start/goal markers, and the preview camera update without reloading the level.
 
 At runtime, the BeamNG backend includes the region task metadata in each
 observation. This keeps simulator control, model planning, and evaluation

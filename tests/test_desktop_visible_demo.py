@@ -183,9 +183,9 @@ def test_gui_navigation_preview_uses_editor_callback(monkeypatch) -> None:
     def fake_preview(task_path: str, **kwargs):
         captured["task_path"] = task_path
         captured.update(kwargs)
-        return {"episode_id": "preview", "analysis": {"start_in_region": True}}
+        return {"preview": {"realtime": True}, "analysis": {"start_in_region": True}}
 
-    monkeypatch.setattr(services, "preview_navigation_task_in_beamng", fake_preview)
+    monkeypatch.setattr(window.navigation_preview_session, "update", fake_preview)
     monkeypatch.setattr(window, "_run_task", lambda task, callback, label: callback(task()))
 
     window._preview_task_from_editor("configs/tasks/beamng_johnson_valley_nav_001.yaml", "topdown", 120.0)
@@ -220,5 +220,33 @@ def test_navigation_task_dialog_previews_draft_from_same_editor(tmp_path) -> Non
     assert dialog.result() == 0
     assert preview_calls == [
         {"task_path": str(task_path.resolve()), "camera_mode": "topdown", "camera_height_m": 90.0}
+    ]
+    assert task_path.exists()
+
+
+def test_navigation_task_dialog_realtime_preview_uses_same_draft(tmp_path) -> None:
+    _ensure_app()
+    preview_calls: list[dict[str, object]] = []
+    task_path = tmp_path / "draft.yaml"
+    dialog = NavigationTaskDialog(
+        str(task_path),
+        preview_callback=lambda task_path, camera_mode, camera_height_m: preview_calls.append(
+            {"task_path": task_path, "camera_mode": camera_mode, "camera_height_m": camera_height_m}
+        ),
+    )
+
+    dialog.task_id_edit.setText("draft")
+    dialog.level_edit.setText("gridmap_v2")
+    dialog.canvas.region = [(0.0, -160.0), (20.0, -160.0), (20.0, -220.0), (0.0, -220.0)]
+    dialog.canvas.start = (2.0, -170.0, 100.6)
+    dialog.canvas.goal = (6.0, -210.0)
+    dialog.canvas.route = [(2.0, -170.0), (5.0, -190.0), (6.0, -210.0)]
+    assert dialog.realtime_preview_check.isChecked() is True
+    dialog.preview_height_spin.setValue(120.0)
+
+    dialog._run_realtime_preview()
+
+    assert preview_calls == [
+        {"task_path": str(task_path.resolve()), "camera_mode": "topdown", "camera_height_m": 120.0}
     ]
     assert task_path.exists()

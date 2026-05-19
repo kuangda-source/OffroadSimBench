@@ -72,6 +72,7 @@ class BeamNGBackend(OffroadSimBackend):
         self._active_steps_per_action = self.connection.steps_per_action
         self._active_drive_mode = "manual"
         self._route: list[tuple[float, float]] = []
+        self._debug_marker_ids: dict[str, list[int]] = {}
         self._distance_traveled = 0.0
         self._horizontal_distance_traveled = 0.0
         self._last_position: tuple[float, float, float] | None = None
@@ -210,12 +211,33 @@ class BeamNGBackend(OffroadSimBackend):
             scenario_api.start()
         elif hasattr(self._bng, "start_scenario"):
             self._bng.start_scenario()
+        self._debug_marker_ids = {}
         self._configure_visible_helpers()
         self._configure_drive_mode()
         self._configure_manual_control_mode()
 
         self._step_count = 0
         self._last_observation = self._build_placeholder_observation(scenario_config)
+        self._update_motion_metrics(self._last_observation.vehicle_state)
+        return self._last_observation
+
+    def update_navigation_preview(self, scenario_config: Any) -> Observation:
+        """Update preview route, task markers, and camera without reloading the level."""
+
+        self._ensure_connected()
+        self._scenario_config = scenario_config
+        beamng_options = self._beamng_metadata(scenario_config)
+        self._active_level = self._beamng_level_for_config(scenario_config)
+        self._active_steps_per_action = int(beamng_options.get("steps_per_action", self.connection.steps_per_action))
+        self._active_drive_mode = str(beamng_options.get("drive_mode", "manual")).lower()
+        self._route = self._beamng_route_for_config(scenario_config)
+        self._teleport_vehicle_to_preview_start()
+        self._configure_visible_helpers()
+        self._configure_manual_control_mode()
+        self._last_observation = self._build_placeholder_observation(
+            scenario_config,
+            timestamp=float(self._step_count),
+        )
         self._update_motion_metrics(self._last_observation.vehicle_state)
         return self._last_observation
 
@@ -297,6 +319,7 @@ class BeamNGBackend(OffroadSimBackend):
         self._active_steps_per_action = self.connection.steps_per_action
         self._active_drive_mode = "manual"
         self._route = []
+        self._debug_marker_ids = {}
         self._distance_traveled = 0.0
         self._horizontal_distance_traveled = 0.0
         self._last_position = None
@@ -535,16 +558,19 @@ class BeamNGBackend(OffroadSimBackend):
         pos, _ = self._beamng_vehicle_start_for_config(self._scenario_config)
         self._configure_visible_camera()
         if bool(beamng_options.get("draw_route", False)) and self._route:
-            debug = getattr(self._bng, "debug", None)
-            add_spheres = getattr(debug, "add_spheres", None)
-            if callable(add_spheres):
-                points = [(x, y, pos[2] + 0.5) for x, y in self._route]
-                try:
-                    add_spheres(points, radii=[0.8] * len(points), colors=[(0.0, 1.0, 0.0, 0.8)] * len(points))
-                except Exception:
-                    pass
+            points = [(x, y, pos[2] + 0.5) for x, y in self._route]
+            self._replace_debug_spheres(
+                "route",
+                points,
+                [0.8] * len(points),
+                [(0.0, 1.0, 0.0, 0.8)] * len(points),
+            )
+        else:
+            self._remove_debug_spheres("route")
         if bool(beamng_options.get("draw_task_markers", False)):
             self._draw_navigation_task_markers(pos[2])
+        else:
+            self._remove_debug_spheres("task_markers")
 
     def _configure_visible_camera(self, state: VehicleState | None = None) -> None:
         beamng_options = self._beamng_metadata(self._scenario_config)
@@ -613,15 +639,78 @@ class BeamNGBackend(OffroadSimBackend):
         except Exception:
             pass
 
-    def _draw_navigation_task_markers(self, z: float) -> None:
-        if not self._bng:
+    def _replace_debug_spheres(
+        self,
+        key: str,
+        points: list[tuple[float, float, float]],
+        radii: list[float],
+        colors: list[tuple[float, float, float, float]],
+    ) -> None:
+        self._remove_debug_spheres(key)
+        if not self._bng or not points:
             return
         debug = getattr(self._bng, "debug", None)
         add_spheres = getattr(debug, "add_spheres", None)
         if not callable(add_spheres):
             return
+        try:
+            ids = add_spheres(points, radii, colors)
+        except TypeError:
+            try:
+                ids = add_spheres(points, radii=radii, colors=colors)
+            except Exception:
+                return
+        except Exception:
+            return
+        if isinstance(ids, (list, tuple)):
+            self._debug_marker_ids[key] = [int(value) for value in ids if isinstance(value, int)]
+
+    def _remove_debug_spheres(self, key: str) -> None:
+        ids = self._debug_marker_ids.pop(key, [])
+        if not ids or not self._bng:
+            return
+        debug = getattr(self._bng, "debug", None)
+        remove_spheres = getattr(debug, "remove_spheres", None)
+        if not callable(remove_spheres):
+            return
+        try:
+            remove_spheres(ids)
+        except Exception:
+            pass
+
+    def _teleport_vehicle_to_preview_start(self) -> None:
+        beamng_options = self._beamng_metadata(self._scenario_config)
+        if not bool(beamng_options.get("preview_mode", False)) or self._vehicle is None:
+            return
+        pos, rot_quat = self._beamng_vehicle_start_for_config(self._scenario_config)
+        teleport = getattr(self._vehicle, "teleport", None)
+        if callable(teleport):
+            try:
+                teleport(pos=pos, rot_quat=rot_quat, reset=True)
+                return
+            except TypeError:
+                try:
+                    teleport(pos, rot_quat)
+                    return
+                except Exception:
+                    pass
+            except Exception:
+                pass
+        if self._bng is None:
+            return
+        teleport_vehicle = getattr(self._bng, "teleport_vehicle", None)
+        if callable(teleport_vehicle):
+            try:
+                teleport_vehicle(self.connection.vehicle_id, pos=pos, rot_quat=rot_quat)
+            except Exception:
+                pass
+
+    def _draw_navigation_task_markers(self, z: float) -> None:
+        if not self._bng:
+            return
         task = self._navigation_region_metadata(self._scenario_config)
         if not task:
+            self._remove_debug_spheres("task_markers")
             return
         points: list[tuple[float, float, float]] = []
         radii: list[float] = []
@@ -647,11 +736,9 @@ class BeamNGBackend(OffroadSimBackend):
             except (TypeError, ValueError, IndexError):
                 continue
         if not points:
+            self._remove_debug_spheres("task_markers")
             return
-        try:
-            add_spheres(points, radii=radii, colors=colors)
-        except Exception:
-            pass
+        self._replace_debug_spheres("task_markers", points, radii, colors)
 
     def _configure_drive_mode(self) -> None:
         if self._active_drive_mode != "ai_line" or self._vehicle is None or not self._route:

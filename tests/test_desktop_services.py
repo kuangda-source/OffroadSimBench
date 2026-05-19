@@ -196,6 +196,53 @@ def test_preview_navigation_task_in_beamng_uses_manual_preview(tmp_path) -> None
     assert scenario["metadata"]["beamng"]["route"] == [[2.0, -170.0], [5.0, -190.0], [6.0, -210.0]]
 
 
+def test_realtime_navigation_preview_session_reuses_backend(tmp_path, monkeypatch) -> None:
+    output = tmp_path / "manual_region.yaml"
+    services.save_manual_navigation_task(
+        services.ManualNavigationTaskRequest(
+            output_path=str(output),
+            task_id="manual_region_test",
+            level="gridmap_v2",
+            region_polygon=[(0.0, -160.0), (20.0, -160.0), (20.0, -220.0), (0.0, -220.0)],
+            start_pos=(2.0, -170.0, 100.6),
+            start_yaw=-1.57,
+            goal_pos=(6.0, -210.0),
+            expert_route=[(2.0, -170.0), (5.0, -190.0), (6.0, -210.0)],
+        )
+    )
+    calls: list[str] = []
+
+    class FakeBackend:
+        def __init__(self, *, connection, vehicle_config=None):
+            calls.append("init")
+            self.metrics = {"level": "gridmap_v2", "route_waypoint_count": 0}
+
+        def reset(self, scenario):
+            calls.append("reset")
+            self.metrics = {"level": scenario["metadata"]["beamng"]["level"], "route_waypoint_count": len(scenario["metadata"]["beamng"]["route"])}
+
+        def update_navigation_preview(self, scenario):
+            calls.append("update")
+            self.metrics = {"level": scenario["metadata"]["beamng"]["level"], "route_waypoint_count": len(scenario["metadata"]["beamng"]["route"])}
+
+        def get_metrics(self):
+            return dict(self.metrics)
+
+        def close(self):
+            calls.append("close")
+
+    monkeypatch.setattr(services, "BeamNGBackend", FakeBackend)
+    session = services.BeamNGNavigationPreviewSession()
+
+    first = session.update(str(output), camera_mode="topdown", camera_height_m=100.0)
+    second = session.update(str(output), camera_mode="topdown", camera_height_m=120.0)
+    session.close()
+
+    assert calls == ["init", "reset", "update", "close"]
+    assert first["preview"]["realtime"] is True
+    assert second["metrics"]["route_waypoint_count"] == 3
+
+
 def test_orfd_lewm_pipeline_uses_selected_sequence_and_options() -> None:
     with (
         patch("desktop_app.services.inspect_dataset", return_value={"selected_sequence": "training/seq_0001"}),

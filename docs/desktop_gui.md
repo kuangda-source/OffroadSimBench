@@ -25,6 +25,7 @@ offroad-sim-gui
 - One-click ORFD -> HDF5 -> LE-WM cost checkpoint -> dataset replay -> optional BeamNG run.
 - ORFD frame preview for RGB, depth, and label assets, including official ORFD ZIP releases.
 - ORFD-derived local heightmap/OBJ terrain draft export for BeamNG map prototyping.
+- BeamNG navigation task editing with realtime preview of region, start/goal, route markers, and camera height.
 - Episode list loading from `outputs/episodes`.
 - BEV-style trajectory preview from recorded episode state traces.
 - Metric cards populated from real episode metrics and agent diagnostics.
