@@ -144,8 +144,10 @@ Johnson Valley 原生越野地形上的固定区域/起终点任务。桌面 GUI
 并可勾选实时预览，让同一个 BeamNG 场景增量刷新区域、起终点、路线标记和俯视相机。
 预览默认使用俯视高视角，也可以在编辑窗口里切换相机模式和高度。编辑窗口还可以读取
 当前 BeamNG 车辆世界坐标，并一键把当前位置写入区域点、起点、终点或路线点，用真实地图
-画面辅助选点。BeamNG 预览会用半透明区域 mask 标出当前可通行区域；区域点在编辑画布里
-可以拖动调整，未闭合/不合法的区域只在正式保存任务时弹出错误提示。
+画面辅助选点。区域编辑窗口是非模态独立窗口，主 GUI 可以最小化或移到一边，不会挡住
+BeamNG。BeamNG 预览会用更高对比度的半透明区域 mask、闭合边界线和区域点标出当前
+可通行区域；区域点在编辑画布里可以拖动调整，未闭合/不合法的区域只在正式保存任务时
+弹出错误提示。
 
 评估阶段使用 `drive_mode=manual`，不是 BeamNG `ai_line`。`route_world_model`
 会记录 LE-WM/CEM 的原始规划动作，同时由 `model_guided_route_tracker` 将其转换为
@@ -278,8 +280,11 @@ marker, and top-down camera changes. Preview defaults to a high top-down camera,
 and the camera mode/height are adjustable in the editor. The editor can also read
 the current BeamNG vehicle world pose and apply it as a region point, start,
 goal, or route waypoint, so operators can pick points from the real map view.
-BeamNG preview draws a translucent region mask; region points are draggable in
-the editor, and invalid regions only show blocking warnings when saving.
+The region editor is a non-modal independent window, so the main GUI can be
+minimized or moved away while BeamNG stays visible. BeamNG preview draws a
+higher-contrast translucent region mask, closed outline, and region point
+markers; region points are draggable in the editor, and invalid regions only
+show blocking warnings when saving.
 Saved tasks default to `evaluation_drive_mode: manual`, which means
 the `OffroadAgent`/planner commands control the vehicle during evaluation.
 `evaluation_drive_mode: ai_line` remains available only for BeamNG-native

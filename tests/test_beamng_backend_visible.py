@@ -46,11 +46,22 @@ def fake_beamngpy(monkeypatch) -> SimpleNamespace:
             def remove_triangle(triangle_id):
                 module.removed_triangles.append(triangle_id)
 
+            def add_polyline(*args, **kwargs):
+                module.debug_polylines.append((args, kwargs))
+                line_id = module.next_polyline_id
+                module.next_polyline_id += 1
+                return line_id
+
+            def remove_polyline(line_id):
+                module.removed_polylines.append(line_id)
+
             self.debug = SimpleNamespace(
                 add_spheres=add_spheres,
                 remove_spheres=remove_spheres,
                 add_triangle=add_triangle,
                 remove_triangle=remove_triangle,
+                add_polyline=add_polyline,
+                remove_polyline=remove_polyline,
             )
             module.bng = self
 
@@ -148,6 +159,9 @@ def fake_beamngpy(monkeypatch) -> SimpleNamespace:
     module.next_triangle_id = 100
     module.debug_triangles = []
     module.removed_triangles = []
+    module.next_polyline_id = 200
+    module.debug_polylines = []
+    module.removed_polylines = []
 
     def fake_import(name: str) -> Any:
         if name == "beamngpy":
@@ -326,7 +340,13 @@ def test_beamng_backend_draws_region_mask_triangles(fake_beamngpy: SimpleNamespa
     backend.update_navigation_preview(scenario)
 
     assert len(fake_beamngpy.debug_triangles) >= 4
+    assert fake_beamngpy.debug_triangles[-1][0][1][3] >= 0.4
+    assert fake_beamngpy.debug_polylines
+    line_args, _line_kwargs = fake_beamngpy.debug_polylines[-1]
+    assert line_args[0][0] == line_args[0][-1]
+    assert line_args[1][3] == 1.0
     assert fake_beamngpy.removed_triangles
+    assert fake_beamngpy.removed_polylines
 
 
 def test_beamng_backend_reports_current_vehicle_pose(fake_beamngpy: SimpleNamespace) -> None:

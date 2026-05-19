@@ -5,8 +5,8 @@ from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QPointF
-from PySide6.QtWidgets import QApplication, QPushButton
+from PySide6.QtCore import QPointF, Qt
+from PySide6.QtWidgets import QApplication, QDialog, QPushButton
 
 from desktop_app import services
 from desktop_app.qt_main import MainWindow, NavigationTaskCanvas, NavigationTaskDialog
@@ -278,6 +278,26 @@ def test_navigation_task_dialog_uses_beamng_pose_for_task_points(tmp_path) -> No
     assert dialog.start_yaw_spin.value() == 0.75
     assert dialog.canvas.goal == (12.5, -34.25)
     assert dialog.canvas.route == [(12.5, -34.25), (12.5, -34.25), (12.5, -34.25)]
+
+
+def test_region_task_editor_opens_non_modal(monkeypatch) -> None:
+    _ensure_app()
+    window = MainWindow()
+    calls = {"exec": 0}
+
+    def fake_exec(self: NavigationTaskDialog) -> QDialog.DialogCode:
+        calls["exec"] += 1
+        return QDialog.DialogCode.Rejected
+
+    monkeypatch.setattr(NavigationTaskDialog, "exec", fake_exec)
+
+    window.open_region_task_editor()
+
+    assert calls["exec"] == 0
+    assert window.region_task_dialog is not None
+    assert window.region_task_dialog.windowModality() == Qt.WindowModality.NonModal
+    window.region_task_dialog.close()
+    window.close()
 
 
 def test_navigation_task_canvas_drag_moves_region_point_without_adding() -> None:

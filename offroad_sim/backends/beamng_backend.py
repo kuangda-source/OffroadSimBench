@@ -74,6 +74,7 @@ class BeamNGBackend(OffroadSimBackend):
         self._route: list[tuple[float, float]] = []
         self._debug_marker_ids: dict[str, list[int]] = {}
         self._debug_triangle_ids: dict[str, list[int]] = {}
+        self._debug_polyline_ids: dict[str, list[int]] = {}
         self._distance_traveled = 0.0
         self._horizontal_distance_traveled = 0.0
         self._last_position: tuple[float, float, float] | None = None
@@ -214,6 +215,7 @@ class BeamNGBackend(OffroadSimBackend):
             self._bng.start_scenario()
         self._debug_marker_ids = {}
         self._debug_triangle_ids = {}
+        self._debug_polyline_ids = {}
         self._configure_visible_helpers()
         self._configure_drive_mode()
         self._configure_manual_control_mode()
@@ -341,6 +343,7 @@ class BeamNGBackend(OffroadSimBackend):
         self._route = []
         self._debug_marker_ids = {}
         self._debug_triangle_ids = {}
+        self._debug_polyline_ids = {}
         self._distance_traveled = 0.0
         self._horizontal_distance_traveled = 0.0
         self._last_position = None
@@ -593,6 +596,7 @@ class BeamNGBackend(OffroadSimBackend):
         else:
             self._remove_debug_spheres("task_markers")
             self._remove_debug_triangles("region_mask")
+            self._remove_debug_polylines("region_outline")
 
     def _configure_visible_camera(self, state: VehicleState | None = None) -> None:
         beamng_options = self._beamng_metadata(self._scenario_config)
@@ -716,7 +720,12 @@ class BeamNGBackend(OffroadSimBackend):
         ids: list[int] = []
         for triangle in triangles:
             try:
-                triangle_id = add_triangle(triangle, color)
+                triangle_id = add_triangle(triangle, color, True, 0.35)
+            except TypeError:
+                try:
+                    triangle_id = add_triangle(triangle, color)
+                except Exception:
+                    continue
             except Exception:
                 continue
             if isinstance(triangle_id, int):
@@ -735,6 +744,45 @@ class BeamNGBackend(OffroadSimBackend):
         for triangle_id in ids:
             try:
                 remove_triangle(triangle_id)
+            except Exception:
+                pass
+
+    def _replace_debug_polyline(
+        self,
+        key: str,
+        points: list[tuple[float, float, float]],
+        color: tuple[float, float, float, float],
+    ) -> None:
+        self._remove_debug_polylines(key)
+        if not self._bng or len(points) < 2:
+            return
+        debug = getattr(self._bng, "debug", None)
+        add_polyline = getattr(debug, "add_polyline", None)
+        if not callable(add_polyline):
+            return
+        try:
+            line_id = add_polyline(points, color, True, 0.6)
+        except TypeError:
+            try:
+                line_id = add_polyline(points, color)
+            except Exception:
+                return
+        except Exception:
+            return
+        if isinstance(line_id, int):
+            self._debug_polyline_ids[key] = [line_id]
+
+    def _remove_debug_polylines(self, key: str) -> None:
+        ids = self._debug_polyline_ids.pop(key, [])
+        if not ids or not self._bng:
+            return
+        debug = getattr(self._bng, "debug", None)
+        remove_polyline = getattr(debug, "remove_polyline", None)
+        if not callable(remove_polyline):
+            return
+        for line_id in ids:
+            try:
+                remove_polyline(line_id)
             except Exception:
                 pass
 
@@ -772,6 +820,7 @@ class BeamNGBackend(OffroadSimBackend):
         if not task:
             self._remove_debug_spheres("task_markers")
             self._remove_debug_triangles("region_mask")
+            self._remove_debug_polylines("region_outline")
             return
         points: list[tuple[float, float, float]] = []
         radii: list[float] = []
@@ -795,8 +844,8 @@ class BeamNGBackend(OffroadSimBackend):
                 region_point = (float(point[0]), float(point[1]), z + 0.8)
                 region_points.append(region_point)
                 points.append(region_point)
-                radii.append(0.9)
-                colors.append((0.2, 0.6, 1.0, 0.75))
+                radii.append(1.25)
+                colors.append((0.0, 0.95, 1.0, 0.95))
             except (TypeError, ValueError, IndexError):
                 continue
         if len(region_points) >= 3:
@@ -804,9 +853,11 @@ class BeamNGBackend(OffroadSimBackend):
                 [region_points[0], region_points[index], region_points[index + 1]]
                 for index in range(1, len(region_points) - 1)
             ]
-            self._replace_debug_triangles("region_mask", triangles, (0.2, 0.6, 1.0, 0.2))
+            self._replace_debug_triangles("region_mask", triangles, (0.0, 0.65, 1.0, 0.45))
+            self._replace_debug_polyline("region_outline", [*region_points, region_points[0]], (1.0, 0.95, 0.05, 1.0))
         else:
             self._remove_debug_triangles("region_mask")
+            self._remove_debug_polylines("region_outline")
         if not points:
             self._remove_debug_spheres("task_markers")
             return

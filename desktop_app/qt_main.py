@@ -786,6 +786,7 @@ class MainWindow(QMainWindow):
         self.nav_buttons: list[QPushButton] = []
         self.dataset_info: dict[str, Any] | None = None
         self.navigation_preview_session = services.BeamNGNavigationPreviewSession()
+        self.region_task_dialog: NavigationTaskDialog | None = None
 
         self._init_shared_controls()
 
@@ -1108,16 +1109,34 @@ class MainWindow(QMainWindow):
             self.log(f"高级参数已更新: {_compact_json(asdict(self.settings))}")
 
     def open_region_task_editor(self) -> None:
+        if self.region_task_dialog is not None:
+            self.region_task_dialog.show()
+            self.region_task_dialog.raise_()
+            self.region_task_dialog.activateWindow()
+            return
         dialog = NavigationTaskDialog(
             self.task_path_edit.text().strip(),
-            self,
+            None,
             preview_callback=self._preview_task_from_editor,
             pose_callback=self._read_navigation_preview_pose,
         )
-        if dialog.exec() == QDialog.DialogCode.Accepted and dialog.saved_task_path:
-            self.task_path_edit.setText(dialog.saved_task_path)
-            self.beamng_summary.setText(_compact_json({"status": "task_saved", "task_path": dialog.saved_task_path}))
-            self.log(f"区域任务已保存: {dialog.saved_task_path}")
+        dialog.setWindowModality(Qt.WindowModality.NonModal)
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        dialog.accepted.connect(lambda dialog=dialog: self._region_task_editor_saved(dialog))
+        dialog.destroyed.connect(lambda *_args: self._clear_region_task_editor(dialog))
+        self.region_task_dialog = dialog
+        dialog.show()
+
+    def _region_task_editor_saved(self, dialog: NavigationTaskDialog) -> None:
+        if not dialog.saved_task_path:
+            return
+        self.task_path_edit.setText(dialog.saved_task_path)
+        self.beamng_summary.setText(_compact_json({"status": "task_saved", "task_path": dialog.saved_task_path}))
+        self.log(f"区域任务已保存: {dialog.saved_task_path}")
+
+    def _clear_region_task_editor(self, dialog: NavigationTaskDialog) -> None:
+        if self.region_task_dialog is dialog:
+            self.region_task_dialog = None
 
     def _preview_task_from_editor(self, task_path: str, camera_mode: str, camera_height_m: float) -> None:
         self.task_path_edit.setText(task_path)
@@ -1136,6 +1155,9 @@ class MainWindow(QMainWindow):
         return self.navigation_preview_session.current_pose()
 
     def closeEvent(self, event: Any) -> None:
+        if self.region_task_dialog is not None:
+            self.region_task_dialog.close()
+            self.region_task_dialog = None
         self.navigation_preview_session.close()
         super().closeEvent(event)
 

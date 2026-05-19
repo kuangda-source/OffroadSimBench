@@ -101,10 +101,18 @@ start/goal markers, and the preview camera update without reloading the level.
 The same preview session exposes `get_current_vehicle_pose()` for map picking:
 move or place the vehicle in BeamNG, read its world pose from the editor, then
 apply that pose as a region point, start, goal, or route waypoint.
-BeamNG itself draws the selected region as a translucent debug mask. Direct
-mouse picking inside the BeamNG render window is not exposed by beamngpy, so the
-current implementation keeps point editing and dragging inside the desktop GUI
-while using BeamNG for live visual confirmation.
+BeamNG itself draws the selected region as a translucent debug mask with a
+high-contrast closed outline.
+
+Direct mouse picking inside the BeamNG render window needs a BeamNG-side Lua
+extension rather than a pure desktop GUI call. BeamNG exposes the required
+building blocks (`cameraMouseRayCast()` and ImGui mouse click state); a small
+extension can capture the current click hit position and publish it to
+OffroadSimBench, either through `queue_lua_command`/Tech communication or a
+polled JSON file in the BeamNG user directory. The current implementation keeps
+production-safe picking through the live vehicle pose bridge, while the Lua
+picker should be added as the next optional BeamNG tool so it stays isolated
+from non-BeamNG runs.
 
 At runtime, the BeamNG backend includes the region task metadata in each
 observation. This keeps simulator control, model planning, and evaluation
