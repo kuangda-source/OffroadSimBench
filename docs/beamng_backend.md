@@ -98,6 +98,9 @@ goal point, and optional expert route waypoints, then saves a
 is enabled, the GUI keeps a BeamNG preview session alive and calls
 `BeamNGBackend.update_navigation_preview()` so route markers, region markers,
 start/goal markers, and the preview camera update without reloading the level.
+The same preview session exposes `get_current_vehicle_pose()` for map picking:
+move or place the vehicle in BeamNG, read its world pose from the editor, then
+apply that pose as a region point, start, goal, or route waypoint.
 
 At runtime, the BeamNG backend includes the region task metadata in each
 observation. This keeps simulator control, model planning, and evaluation

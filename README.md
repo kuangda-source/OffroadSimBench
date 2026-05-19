@@ -142,7 +142,9 @@ powershell -ExecutionPolicy Bypass -File scripts\phase4_visible_beamng_acceptanc
 Johnson Valley 原生越野地形上的固定区域/起终点任务。桌面 GUI 的 BeamNG 页面提供
 `编辑/预览区域与起终点` 联合入口，可在同一个窗口里编辑区域、起点、终点和专家路线，
 并可勾选实时预览，让同一个 BeamNG 场景增量刷新区域、起终点、路线标记和俯视相机。
-预览默认使用俯视高视角，也可以在编辑窗口里切换相机模式和高度。
+预览默认使用俯视高视角，也可以在编辑窗口里切换相机模式和高度。编辑窗口还可以读取
+当前 BeamNG 车辆世界坐标，并一键把当前位置写入区域点、起点、终点或路线点，用真实地图
+画面辅助选点。
 
 评估阶段使用 `drive_mode=manual`，不是 BeamNG `ai_line`。`route_world_model`
 会记录 LE-WM/CEM 的原始规划动作，同时由 `model_guided_route_tracker` 将其转换为
@@ -272,7 +274,9 @@ edit a polygonal region, start point, goal point, and optional expert route
 while refreshing a BeamNG preview from the same dialog. Enable realtime preview
 to incrementally update the same BeamNG scene with region, start/goal, route
 marker, and top-down camera changes. Preview defaults to a high top-down camera,
-and the camera mode/height are adjustable in the editor.
+and the camera mode/height are adjustable in the editor. The editor can also read
+the current BeamNG vehicle world pose and apply it as a region point, start,
+goal, or route waypoint, so operators can pick points from the real map view.
 Saved tasks default to `evaluation_drive_mode: manual`, which means
 the `OffroadAgent`/planner commands control the vehicle during evaluation.
 `evaluation_drive_mode: ai_line` remains available only for BeamNG-native

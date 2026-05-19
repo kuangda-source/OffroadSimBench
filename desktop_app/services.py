@@ -846,6 +846,26 @@ class BeamNGNavigationPreviewSession:
                 },
             }
 
+    def current_pose(self) -> dict[str, Any]:
+        with self._lock:
+            if self._backend is None:
+                return {
+                    "available": False,
+                    "message": "BeamNG preview session has not started.",
+                    "level": self._level,
+                }
+            try:
+                pose = dict(self._backend.get_current_vehicle_pose())
+            except Exception as exc:
+                return {
+                    "available": False,
+                    "message": str(exc),
+                    "level": self._level,
+                }
+            pose.setdefault("available", True)
+            pose.setdefault("level", self._level)
+            return pose
+
     def close(self) -> None:
         with self._lock:
             if self._backend is not None:

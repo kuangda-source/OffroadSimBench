@@ -250,3 +250,30 @@ def test_navigation_task_dialog_realtime_preview_uses_same_draft(tmp_path) -> No
         {"task_path": str(task_path.resolve()), "camera_mode": "topdown", "camera_height_m": 120.0}
     ]
     assert task_path.exists()
+
+
+def test_navigation_task_dialog_uses_beamng_pose_for_task_points(tmp_path) -> None:
+    _ensure_app()
+    task_path = tmp_path / "draft.yaml"
+    dialog = NavigationTaskDialog(
+        str(task_path),
+        pose_callback=lambda: {"available": True, "x": 12.5, "y": -34.25, "z": 101.2, "yaw": 0.75},
+    )
+    dialog.canvas.clear_region()
+    dialog.canvas.clear_route()
+
+    dialog.refresh_beamng_pose()
+    dialog._use_beamng_pose_as_region_point()
+    dialog._use_beamng_pose_as_start()
+    dialog._use_beamng_pose_as_goal()
+    dialog._use_beamng_pose_as_route_point()
+
+    assert dialog.current_beamng_pose["available"] is True
+    assert "12.500" in dialog.beamng_pose_label.text()
+    assert dialog.canvas.beamng_pose == (12.5, -34.25)
+    assert dialog.canvas.region == [(12.5, -34.25)]
+    assert dialog.canvas.start == (12.5, -34.25, 101.2)
+    assert dialog.start_z_spin.value() == 101.2
+    assert dialog.start_yaw_spin.value() == 0.75
+    assert dialog.canvas.goal == (12.5, -34.25)
+    assert dialog.canvas.route == [(12.5, -34.25), (12.5, -34.25), (12.5, -34.25)]

@@ -280,6 +280,24 @@ class BeamNGBackend(OffroadSimBackend):
             raise RuntimeError("BeamNGBackend has not been reset.")
         return self._last_observation
 
+    def get_current_vehicle_pose(self) -> dict[str, Any]:
+        self._ensure_connected()
+        observation = self._build_placeholder_observation(
+            self._scenario_config,
+            timestamp=float(self._step_count),
+        )
+        self._last_observation = observation
+        state = observation.vehicle_state
+        return {
+            "available": True,
+            "x": float(state.x),
+            "y": float(state.y),
+            "z": float(state.z),
+            "yaw": float(state.yaw),
+            "speed": float(state.speed),
+            "level": self._active_level,
+        }
+
     def get_metrics(self) -> dict[str, Any]:
         return {
             "backend": "beamng",

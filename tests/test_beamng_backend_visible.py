@@ -279,6 +279,35 @@ def test_beamng_backend_updates_navigation_preview_without_reloading(fake_beamng
     assert fake_beamngpy.scenario_name.startswith("beamng_preview_update_")
 
 
+def test_beamng_backend_reports_current_vehicle_pose(fake_beamngpy: SimpleNamespace) -> None:
+    scenario = {
+        "scenario_id": "beamng_pose_pick",
+        "backend": "beamng",
+        "task": {"start": [1.0, 2.0], "goal": [8.0, 2.0], "success_radius_m": 1.0},
+        "metadata": {
+            "beamng": {
+                "level": "johnson_valley",
+                "vehicle_start": {"pos": [1.0, 2.0, 3.0], "rot_quat": [0.0, 0.0, 0.0, 1.0]},
+                "drive_mode": "manual",
+                "steps_per_action": 1,
+            }
+        },
+    }
+    backend = BeamNGBackend(connection=BeamNGConnectionConfig(launch=False))
+    backend.reset(scenario)
+    fake_beamngpy.vehicle.state["pos"] = [4.0, 5.0, 6.0]
+    fake_beamngpy.vehicle.state["dir"] = [0.0, 1.0, 0.0]
+
+    pose = backend.get_current_vehicle_pose()
+
+    assert pose["available"] is True
+    assert pose["x"] == 4.0
+    assert pose["y"] == 5.0
+    assert pose["z"] == 6.0
+    assert pose["yaw"] == pytest.approx(1.570796, abs=1e-5)
+    assert pose["level"] == "johnson_valley"
+
+
 def test_beamng_backend_fallback_observation_uses_spawn_yaw(fake_beamngpy: SimpleNamespace, monkeypatch) -> None:
     scenario = {
         "scenario_id": "beamng_spawn_yaw",

@@ -249,6 +249,7 @@ class NavigationTaskCanvas(QWidget):
         self.start: tuple[float, float, float] = (1.0, -170.0, 100.6)
         self.goal: tuple[float, float] = (6.0, -215.0)
         self.route: list[tuple[float, float]] = [(1.0, -170.0), (6.0, -215.0)]
+        self.beamng_pose: tuple[float, float] | None = None
         self.bounds = (-8.0, 36.0, -240.0, -150.0)
         self.setMinimumHeight(360)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -266,6 +267,43 @@ class NavigationTaskCanvas(QWidget):
         self.route = []
         self.update()
         self.changed.emit()
+
+    def add_region_point(self, point: tuple[float, float]) -> None:
+        self.region.append((float(point[0]), float(point[1])))
+        self._fit_bounds()
+        self.update()
+        self.changed.emit()
+
+    def set_start_pose(self, point: tuple[float, float], z: float | None = None) -> None:
+        self.start = (float(point[0]), float(point[1]), self.start[2] if z is None else float(z))
+        if not self.route:
+            self.route = [(self.start[0], self.start[1])]
+        else:
+            self.route[0] = (self.start[0], self.start[1])
+        self._fit_bounds()
+        self.update()
+        self.changed.emit()
+
+    def set_goal_point(self, point: tuple[float, float]) -> None:
+        self.goal = (float(point[0]), float(point[1]))
+        if len(self.route) < 2:
+            self.route.append(self.goal)
+        else:
+            self.route[-1] = self.goal
+        self._fit_bounds()
+        self.update()
+        self.changed.emit()
+
+    def add_route_point(self, point: tuple[float, float]) -> None:
+        self.route.append((float(point[0]), float(point[1])))
+        self._fit_bounds()
+        self.update()
+        self.changed.emit()
+
+    def set_beamng_pose_marker(self, point: tuple[float, float] | None) -> None:
+        self.beamng_pose = None if point is None else (float(point[0]), float(point[1]))
+        self._fit_bounds()
+        self.update()
 
     def load_task(self, task: Any) -> None:
         self.region = [tuple(point) for point in task.region_polygon]
@@ -309,6 +347,11 @@ class NavigationTaskCanvas(QWidget):
 
         self._draw_point(painter, (self.start[0], self.start[1]), QColor("#f6c85f"), 7)
         self._draw_point(painter, self.goal, QColor("#ff6b6b"), 8)
+        if self.beamng_pose is not None:
+            projected_pose = self._to_canvas(self.beamng_pose)
+            painter.setPen(QPen(QColor("#d77bff"), 2))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawEllipse(QRectF(projected_pose.x() - 9, projected_pose.y() - 9, 18, 18))
         painter.setPen(QPen(QColor("#8da1af"), 1))
         painter.setFont(QFont("Segoe UI", 10))
         painter.drawText(18, 22, f"mode: {self.mode} | click to set points")
@@ -360,6 +403,8 @@ class NavigationTaskCanvas(QWidget):
 
     def _fit_bounds(self) -> None:
         points = [*self.region, (self.start[0], self.start[1]), self.goal, *self.route]
+        if self.beamng_pose is not None:
+            points.append(self.beamng_pose)
         xs = [point[0] for point in points]
         ys = [point[1] for point in points]
         margin = 8.0
@@ -372,12 +417,15 @@ class NavigationTaskDialog(QDialog):
         task_path: str,
         parent: QWidget | None = None,
         preview_callback: Callable[[str, str, float], None] | None = None,
+        pose_callback: Callable[[], dict[str, Any]] | None = None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("编辑/预览区域与起终点")
         self.resize(760, 680)
         self.saved_task_path = ""
         self.preview_callback = preview_callback
+        self.pose_callback = pose_callback
+        self.current_beamng_pose: dict[str, Any] = {"available": False}
         self.canvas = NavigationTaskCanvas()
         self.preview_timer = QTimer(self)
         self.preview_timer.setSingleShot(True)
@@ -403,6 +451,8 @@ class NavigationTaskDialog(QDialog):
         self.preview_height_spin = self._double_spin(90.0, 10.0, 500.0)
         self.realtime_preview_check = QCheckBox("实时预览")
         self.realtime_preview_check.setChecked(True)
+        self.beamng_pose_label = QLabel("BeamNG 当前位置：未读取")
+        self.beamng_pose_label.setObjectName("mutedText")
 
         self._load_existing_task(task_path)
 
@@ -424,6 +474,22 @@ class NavigationTaskDialog(QDialog):
         form.addRow("Preview height", self.preview_height_spin)
         form.addRow("Realtime preview", self.realtime_preview_check)
         layout.addLayout(form)
+
+        pose_row = QHBoxLayout()
+        pose_row.addWidget(self.beamng_pose_label, 1)
+        refresh_pose = QPushButton("读取 BeamNG 位置")
+        refresh_pose.clicked.connect(self.refresh_beamng_pose)
+        use_region = QPushButton("作为区域点")
+        use_region.clicked.connect(self._use_beamng_pose_as_region_point)
+        use_start = QPushButton("作为起点")
+        use_start.clicked.connect(self._use_beamng_pose_as_start)
+        use_goal = QPushButton("作为终点")
+        use_goal.clicked.connect(self._use_beamng_pose_as_goal)
+        use_route = QPushButton("加入路线")
+        use_route.clicked.connect(self._use_beamng_pose_as_route_point)
+        for button in (refresh_pose, use_region, use_start, use_goal, use_route):
+            pose_row.addWidget(button)
+        layout.addLayout(pose_row)
 
         mode_row = QHBoxLayout()
         for label, mode in [
@@ -494,6 +560,91 @@ class NavigationTaskDialog(QDialog):
             spin.valueChanged.connect(self.schedule_realtime_preview)
         self.evaluation_drive_combo.currentIndexChanged.connect(self.schedule_realtime_preview)
         self.preview_camera_combo.currentIndexChanged.connect(self.schedule_realtime_preview)
+
+    def refresh_beamng_pose(self) -> dict[str, Any]:
+        if self.pose_callback is None:
+            pose = {"available": False, "message": "BeamNG preview session is not connected."}
+        else:
+            try:
+                pose = self.pose_callback()
+            except Exception as exc:
+                pose = {"available": False, "message": str(exc)}
+        self.current_beamng_pose = dict(pose)
+        self._update_beamng_pose_label()
+        if self.current_beamng_pose.get("available"):
+            try:
+                self.canvas.set_beamng_pose_marker((float(self.current_beamng_pose["x"]), float(self.current_beamng_pose["y"])))
+            except (KeyError, TypeError, ValueError):
+                self.canvas.set_beamng_pose_marker(None)
+        else:
+            self.canvas.set_beamng_pose_marker(None)
+        return self.current_beamng_pose
+
+    def _use_beamng_pose_as_region_point(self) -> None:
+        pose = self._active_beamng_pose()
+        if pose is None:
+            return
+        self.canvas.add_region_point((pose["x"], pose["y"]))
+
+    def _use_beamng_pose_as_start(self) -> None:
+        pose = self._active_beamng_pose()
+        if pose is None:
+            return
+        self.canvas.set_start_pose((pose["x"], pose["y"]), pose.get("z"))
+        if self._finite_pose_value(pose.get("z")):
+            self.start_z_spin.setValue(float(pose["z"]))
+        if self._finite_pose_value(pose.get("yaw")):
+            self.start_yaw_spin.setValue(float(pose["yaw"]))
+
+    def _use_beamng_pose_as_goal(self) -> None:
+        pose = self._active_beamng_pose()
+        if pose is None:
+            return
+        self.canvas.set_goal_point((pose["x"], pose["y"]))
+
+    def _use_beamng_pose_as_route_point(self) -> None:
+        pose = self._active_beamng_pose()
+        if pose is None:
+            return
+        self.canvas.add_route_point((pose["x"], pose["y"]))
+
+    def _active_beamng_pose(self) -> dict[str, float] | None:
+        pose = self.current_beamng_pose
+        if not pose.get("available"):
+            pose = self.refresh_beamng_pose()
+        if not pose.get("available"):
+            return None
+        try:
+            x = float(pose["x"])
+            y = float(pose["y"])
+        except (KeyError, TypeError, ValueError):
+            return None
+        result: dict[str, float] = {"x": x, "y": y}
+        for key in ("z", "yaw"):
+            if self._finite_pose_value(pose.get(key)):
+                result[key] = float(pose[key])
+        return result
+
+    def _update_beamng_pose_label(self) -> None:
+        pose = self.current_beamng_pose
+        if not pose.get("available"):
+            message = str(pose.get("message") or "unavailable")
+            self.beamng_pose_label.setText(f"BeamNG 当前位置：不可用 ({message})")
+            return
+        x = float(pose.get("x", math.nan))
+        y = float(pose.get("y", math.nan))
+        z = float(pose.get("z", math.nan))
+        yaw = float(pose.get("yaw", math.nan))
+        level = pose.get("level", self.level_edit.text().strip() or "unknown")
+        self.beamng_pose_label.setText(
+            f"BeamNG 当前位置：level={level}  x={x:.3f}  y={y:.3f}  z={z:.3f}  yaw={yaw:.3f}"
+        )
+
+    def _finite_pose_value(self, value: Any) -> bool:
+        try:
+            return math.isfinite(float(value))
+        except (TypeError, ValueError):
+            return False
 
     def _save_task(self, *, close_after_save: bool) -> bool:
         start = (self.canvas.start[0], self.canvas.start[1], float(self.start_z_spin.value()))
@@ -902,6 +1053,7 @@ class MainWindow(QMainWindow):
             self.task_path_edit.text().strip(),
             self,
             preview_callback=self._preview_task_from_editor,
+            pose_callback=self._read_navigation_preview_pose,
         )
         if dialog.exec() == QDialog.DialogCode.Accepted and dialog.saved_task_path:
             self.task_path_edit.setText(dialog.saved_task_path)
@@ -920,6 +1072,9 @@ class MainWindow(QMainWindow):
             self._navigation_preview_finished,
             "navigation realtime preview failed",
         )
+
+    def _read_navigation_preview_pose(self) -> dict[str, Any]:
+        return self.navigation_preview_session.current_pose()
 
     def closeEvent(self, event: Any) -> None:
         self.navigation_preview_session.close()

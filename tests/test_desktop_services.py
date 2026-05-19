@@ -243,6 +243,30 @@ def test_realtime_navigation_preview_session_reuses_backend(tmp_path, monkeypatc
     assert second["metrics"]["route_waypoint_count"] == 3
 
 
+def test_realtime_navigation_preview_session_reports_current_pose(monkeypatch) -> None:
+    class FakeBackend:
+        def __init__(self, *, connection, vehicle_config=None):
+            pass
+
+        def get_current_vehicle_pose(self):
+            return {"available": True, "x": 12.5, "y": -34.25, "z": 101.2, "yaw": 0.75}
+
+        def close(self):
+            pass
+
+    session = services.BeamNGNavigationPreviewSession()
+    assert session.current_pose()["available"] is False
+    session._backend = FakeBackend(connection=None)
+    session._level = "johnson_valley"
+
+    pose = session.current_pose()
+
+    assert pose["available"] is True
+    assert pose["x"] == 12.5
+    assert pose["y"] == -34.25
+    assert pose["level"] == "johnson_valley"
+
+
 def test_orfd_lewm_pipeline_uses_selected_sequence_and_options() -> None:
     with (
         patch("desktop_app.services.inspect_dataset", return_value={"selected_sequence": "training/seq_0001"}),
