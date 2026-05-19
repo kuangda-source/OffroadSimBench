@@ -250,6 +250,8 @@ class NavigationTaskCanvas(QWidget):
         self.goal: tuple[float, float] = (6.0, -215.0)
         self.route: list[tuple[float, float]] = [(1.0, -170.0), (6.0, -215.0)]
         self.beamng_pose: tuple[float, float] | None = None
+        self._drag_target: tuple[str, int] | None = None
+        self._drag_pick_radius_px = 12.0
         self.bounds = (-8.0, 36.0, -240.0, -150.0)
         self.setMinimumHeight(360)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -357,7 +359,11 @@ class NavigationTaskCanvas(QWidget):
         painter.drawText(18, 22, f"mode: {self.mode} | click to set points")
 
     def mousePressEvent(self, event: Any) -> None:
-        point = self._from_canvas(event.position() if hasattr(event, "position") else QPointF(event.x(), event.y()))
+        canvas_point = event.position() if hasattr(event, "position") else QPointF(event.x(), event.y())
+        point = self._from_canvas(canvas_point)
+        self._drag_target = self._nearest_drag_target(canvas_point)
+        if self._drag_target is not None:
+            return
         if self.mode == "region":
             self.region.append(point)
         elif self.mode == "start":
@@ -377,6 +383,18 @@ class NavigationTaskCanvas(QWidget):
         self._fit_bounds()
         self.update()
         self.changed.emit()
+
+    def mouseMoveEvent(self, event: Any) -> None:
+        if self._drag_target is None:
+            return
+        point = self._from_canvas(event.position() if hasattr(event, "position") else QPointF(event.x(), event.y()))
+        self._move_drag_target(point)
+
+    def mouseReleaseEvent(self, event: Any) -> None:
+        if self._drag_target is not None:
+            point = self._from_canvas(event.position() if hasattr(event, "position") else QPointF(event.x(), event.y()))
+            self._move_drag_target(point)
+        self._drag_target = None
 
     def _plot_rect(self) -> QRectF:
         return QRectF(self.rect()).adjusted(32.0, 28.0, -20.0, -28.0)
@@ -400,6 +418,46 @@ class NavigationTaskCanvas(QWidget):
         painter.setBrush(color)
         painter.setPen(Qt.PenStyle.NoPen)
         painter.drawEllipse(QRectF(projected.x() - radius, projected.y() - radius, radius * 2, radius * 2))
+
+    def _nearest_drag_target(self, canvas_point: QPointF) -> tuple[str, int] | None:
+        handles: list[tuple[str, int, tuple[float, float]]] = []
+        if self.mode == "region":
+            handles.extend(("region", index, point) for index, point in enumerate(self.region))
+        elif self.mode == "route":
+            handles.extend(("route", index, point) for index, point in enumerate(self.route))
+        elif self.mode == "start":
+            handles.append(("start", 0, (self.start[0], self.start[1])))
+        elif self.mode == "goal":
+            handles.append(("goal", 0, self.goal))
+        best: tuple[str, int] | None = None
+        best_distance = self._drag_pick_radius_px
+        for kind, index, point in handles:
+            projected = self._to_canvas(point)
+            distance = math.hypot(projected.x() - canvas_point.x(), projected.y() - canvas_point.y())
+            if distance <= best_distance:
+                best = (kind, index)
+                best_distance = distance
+        return best
+
+    def _move_drag_target(self, point: tuple[float, float]) -> None:
+        if self._drag_target is None:
+            return
+        kind, index = self._drag_target
+        if kind == "region" and 0 <= index < len(self.region):
+            self.region[index] = point
+        elif kind == "route" and 0 <= index < len(self.route):
+            self.route[index] = point
+        elif kind == "start":
+            self.start = (point[0], point[1], self.start[2])
+            if self.route:
+                self.route[0] = point
+        elif kind == "goal":
+            self.goal = point
+            if self.route:
+                self.route[-1] = point
+        self._fit_bounds()
+        self.update()
+        self.changed.emit()
 
     def _fit_bounds(self) -> None:
         points = [*self.region, (self.start[0], self.start[1]), self.goal, *self.route]
@@ -525,10 +583,10 @@ class NavigationTaskDialog(QDialog):
         self.schedule_realtime_preview()
 
     def save_task(self) -> None:
-        self._save_task(close_after_save=True)
+        self._save_task(close_after_save=True, show_errors=True)
 
     def preview_task(self) -> None:
-        if not self._save_task(close_after_save=False):
+        if not self._save_task(close_after_save=False, show_errors=False):
             return
         if self.preview_callback is not None and self.saved_task_path:
             self.preview_callback(
@@ -646,7 +704,7 @@ class NavigationTaskDialog(QDialog):
         except (TypeError, ValueError):
             return False
 
-    def _save_task(self, *, close_after_save: bool) -> bool:
+    def _save_task(self, *, close_after_save: bool, show_errors: bool = True) -> bool:
         start = (self.canvas.start[0], self.canvas.start[1], float(self.start_z_spin.value()))
         try:
             payload = services.save_manual_navigation_task(
@@ -666,7 +724,8 @@ class NavigationTaskDialog(QDialog):
                 )
             )
         except Exception as exc:
-            QMessageBox.warning(self, "任务保存失败", str(exc))
+            if show_errors:
+                QMessageBox.warning(self, "任务保存失败", str(exc))
             return False
         self.saved_task_path = str(payload["task_path"])
         if close_after_save:

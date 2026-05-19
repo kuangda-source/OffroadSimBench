@@ -37,7 +37,21 @@ def fake_beamngpy(monkeypatch) -> SimpleNamespace:
             def remove_spheres(ids):
                 module.removed_spheres.extend(ids)
 
-            self.debug = SimpleNamespace(add_spheres=add_spheres, remove_spheres=remove_spheres)
+            def add_triangle(*args, **kwargs):
+                module.debug_triangles.append((args, kwargs))
+                triangle_id = module.next_triangle_id
+                module.next_triangle_id += 1
+                return triangle_id
+
+            def remove_triangle(triangle_id):
+                module.removed_triangles.append(triangle_id)
+
+            self.debug = SimpleNamespace(
+                add_spheres=add_spheres,
+                remove_spheres=remove_spheres,
+                add_triangle=add_triangle,
+                remove_triangle=remove_triangle,
+            )
             module.bng = self
 
         def open(self, launch: bool = True) -> None:
@@ -131,6 +145,9 @@ def fake_beamngpy(monkeypatch) -> SimpleNamespace:
     module.step_calls = []
     module.next_debug_id = 1
     module.removed_spheres = []
+    module.next_triangle_id = 100
+    module.debug_triangles = []
+    module.removed_triangles = []
 
     def fake_import(name: str) -> Any:
         if name == "beamngpy":
@@ -277,6 +294,39 @@ def test_beamng_backend_updates_navigation_preview_without_reloading(fake_beamng
     assert fake_beamngpy.removed_spheres
     assert backend.get_metrics()["route_waypoint_count"] == 3
     assert fake_beamngpy.scenario_name.startswith("beamng_preview_update_")
+
+
+def test_beamng_backend_draws_region_mask_triangles(fake_beamngpy: SimpleNamespace) -> None:
+    scenario = {
+        "scenario_id": "beamng_region_mask",
+        "backend": "beamng",
+        "task": {"start": [0.0, 0.0], "goal": [10.0, 0.0], "success_radius_m": 1.0},
+        "metadata": {
+            "task": {
+                "task_type": "navigation_region_v1",
+                "start_pose": {"pos": [0.0, 0.0, 0.5]},
+                "goal": {"pos": [10.0, 0.0]},
+                "region": {"polygon": [[0.0, -5.0], [12.0, -5.0], [12.0, 5.0], [0.0, 5.0]]},
+            },
+            "beamng": {
+                "level": "gridmap_v2",
+                "vehicle_start": {"pos": [0.0, 0.0, 0.5], "rot_quat": [0.0, 0.0, 0.0, 1.0]},
+                "camera_mode": "topdown",
+                "route": [[0.0, 0.0], [10.0, 0.0]],
+                "drive_mode": "manual",
+                "draw_route": True,
+                "draw_task_markers": True,
+            },
+        },
+    }
+    backend = BeamNGBackend(connection=BeamNGConnectionConfig(launch=False))
+
+    backend.reset(scenario)
+    scenario["metadata"]["task"]["region"]["polygon"] = [[0.0, -6.0], [12.0, -6.0], [12.0, 6.0], [0.0, 6.0]]
+    backend.update_navigation_preview(scenario)
+
+    assert len(fake_beamngpy.debug_triangles) >= 4
+    assert fake_beamngpy.removed_triangles
 
 
 def test_beamng_backend_reports_current_vehicle_pose(fake_beamngpy: SimpleNamespace) -> None:

@@ -5,10 +5,11 @@ from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtCore import QPointF
 from PySide6.QtWidgets import QApplication, QPushButton
 
 from desktop_app import services
-from desktop_app.qt_main import MainWindow, NavigationTaskDialog
+from desktop_app.qt_main import MainWindow, NavigationTaskCanvas, NavigationTaskDialog
 
 
 def _ensure_app() -> QApplication:
@@ -277,3 +278,45 @@ def test_navigation_task_dialog_uses_beamng_pose_for_task_points(tmp_path) -> No
     assert dialog.start_yaw_spin.value() == 0.75
     assert dialog.canvas.goal == (12.5, -34.25)
     assert dialog.canvas.route == [(12.5, -34.25), (12.5, -34.25), (12.5, -34.25)]
+
+
+def test_navigation_task_canvas_drag_moves_region_point_without_adding() -> None:
+    _ensure_app()
+
+    class FakeMouseEvent:
+        def __init__(self, point: QPointF) -> None:
+            self._point = point
+
+        def position(self) -> QPointF:
+            return self._point
+
+    canvas = NavigationTaskCanvas()
+    canvas.resize(480, 360)
+    canvas.region = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]
+    canvas.start = (1.0, 1.0, 0.0)
+    canvas.goal = (9.0, 9.0)
+    canvas.route = [(1.0, 1.0), (9.0, 9.0)]
+    canvas._fit_bounds()
+    canvas.set_mode("region")
+
+    canvas.mousePressEvent(FakeMouseEvent(canvas._to_canvas((0.0, 0.0))))
+    canvas.mouseMoveEvent(FakeMouseEvent(canvas._to_canvas((2.0, 3.0))))
+    canvas.mouseReleaseEvent(FakeMouseEvent(canvas._to_canvas((2.0, 3.0))))
+
+    assert len(canvas.region) == 4
+    assert canvas.region[0] == (2.0, 3.0)
+
+
+def test_navigation_task_dialog_delays_invalid_region_warning_until_save(tmp_path, monkeypatch) -> None:
+    _ensure_app()
+    task_path = tmp_path / "invalid.yaml"
+    dialog = NavigationTaskDialog(str(task_path), preview_callback=lambda *_args: None)
+    dialog.canvas.region = [(0.0, 0.0), (1.0, 0.0)]
+    warnings: list[str] = []
+    monkeypatch.setattr("desktop_app.qt_main.QMessageBox.warning", lambda *_args: warnings.append(str(_args[-1])))
+
+    dialog.preview_task()
+    assert warnings == []
+
+    dialog.save_task()
+    assert warnings

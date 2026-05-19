@@ -101,6 +101,10 @@ start/goal markers, and the preview camera update without reloading the level.
 The same preview session exposes `get_current_vehicle_pose()` for map picking:
 move or place the vehicle in BeamNG, read its world pose from the editor, then
 apply that pose as a region point, start, goal, or route waypoint.
+BeamNG itself draws the selected region as a translucent debug mask. Direct
+mouse picking inside the BeamNG render window is not exposed by beamngpy, so the
+current implementation keeps point editing and dragging inside the desktop GUI
+while using BeamNG for live visual confirmation.
 
 At runtime, the BeamNG backend includes the region task metadata in each
 observation. This keeps simulator control, model planning, and evaluation

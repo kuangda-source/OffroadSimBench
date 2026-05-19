@@ -73,6 +73,7 @@ class BeamNGBackend(OffroadSimBackend):
         self._active_drive_mode = "manual"
         self._route: list[tuple[float, float]] = []
         self._debug_marker_ids: dict[str, list[int]] = {}
+        self._debug_triangle_ids: dict[str, list[int]] = {}
         self._distance_traveled = 0.0
         self._horizontal_distance_traveled = 0.0
         self._last_position: tuple[float, float, float] | None = None
@@ -212,6 +213,7 @@ class BeamNGBackend(OffroadSimBackend):
         elif hasattr(self._bng, "start_scenario"):
             self._bng.start_scenario()
         self._debug_marker_ids = {}
+        self._debug_triangle_ids = {}
         self._configure_visible_helpers()
         self._configure_drive_mode()
         self._configure_manual_control_mode()
@@ -338,6 +340,7 @@ class BeamNGBackend(OffroadSimBackend):
         self._active_drive_mode = "manual"
         self._route = []
         self._debug_marker_ids = {}
+        self._debug_triangle_ids = {}
         self._distance_traveled = 0.0
         self._horizontal_distance_traveled = 0.0
         self._last_position = None
@@ -589,6 +592,7 @@ class BeamNGBackend(OffroadSimBackend):
             self._draw_navigation_task_markers(pos[2])
         else:
             self._remove_debug_spheres("task_markers")
+            self._remove_debug_triangles("region_mask")
 
     def _configure_visible_camera(self, state: VehicleState | None = None) -> None:
         beamng_options = self._beamng_metadata(self._scenario_config)
@@ -696,6 +700,44 @@ class BeamNGBackend(OffroadSimBackend):
         except Exception:
             pass
 
+    def _replace_debug_triangles(
+        self,
+        key: str,
+        triangles: list[list[tuple[float, float, float]]],
+        color: tuple[float, float, float, float],
+    ) -> None:
+        self._remove_debug_triangles(key)
+        if not self._bng or not triangles:
+            return
+        debug = getattr(self._bng, "debug", None)
+        add_triangle = getattr(debug, "add_triangle", None)
+        if not callable(add_triangle):
+            return
+        ids: list[int] = []
+        for triangle in triangles:
+            try:
+                triangle_id = add_triangle(triangle, color)
+            except Exception:
+                continue
+            if isinstance(triangle_id, int):
+                ids.append(triangle_id)
+        if ids:
+            self._debug_triangle_ids[key] = ids
+
+    def _remove_debug_triangles(self, key: str) -> None:
+        ids = self._debug_triangle_ids.pop(key, [])
+        if not ids or not self._bng:
+            return
+        debug = getattr(self._bng, "debug", None)
+        remove_triangle = getattr(debug, "remove_triangle", None)
+        if not callable(remove_triangle):
+            return
+        for triangle_id in ids:
+            try:
+                remove_triangle(triangle_id)
+            except Exception:
+                pass
+
     def _teleport_vehicle_to_preview_start(self) -> None:
         beamng_options = self._beamng_metadata(self._scenario_config)
         if not bool(beamng_options.get("preview_mode", False)) or self._vehicle is None:
@@ -729,6 +771,7 @@ class BeamNGBackend(OffroadSimBackend):
         task = self._navigation_region_metadata(self._scenario_config)
         if not task:
             self._remove_debug_spheres("task_markers")
+            self._remove_debug_triangles("region_mask")
             return
         points: list[tuple[float, float, float]] = []
         radii: list[float] = []
@@ -746,13 +789,24 @@ class BeamNGBackend(OffroadSimBackend):
             radii.append(1.8)
             colors.append((1.0, 0.1, 0.1, 0.95))
         region = task.get("region", {}) if isinstance(task.get("region", {}), Mapping) else {}
+        region_points: list[tuple[float, float, float]] = []
         for point in region.get("polygon", []) or []:
             try:
-                points.append((float(point[0]), float(point[1]), z + 0.8))
+                region_point = (float(point[0]), float(point[1]), z + 0.8)
+                region_points.append(region_point)
+                points.append(region_point)
                 radii.append(0.9)
                 colors.append((0.2, 0.6, 1.0, 0.75))
             except (TypeError, ValueError, IndexError):
                 continue
+        if len(region_points) >= 3:
+            triangles = [
+                [region_points[0], region_points[index], region_points[index + 1]]
+                for index in range(1, len(region_points) - 1)
+            ]
+            self._replace_debug_triangles("region_mask", triangles, (0.2, 0.6, 1.0, 0.2))
+        else:
+            self._remove_debug_triangles("region_mask")
         if not points:
             self._remove_debug_spheres("task_markers")
             return
