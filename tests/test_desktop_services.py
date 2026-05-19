@@ -215,6 +215,7 @@ def test_realtime_navigation_preview_session_reuses_backend(tmp_path, monkeypatc
     class FakeBackend:
         def __init__(self, *, connection, vehicle_config=None):
             calls.append("init")
+            calls.append(f"picker={connection.enable_point_picker}")
             self.metrics = {"level": "gridmap_v2", "route_waypoint_count": 0}
 
         def reset(self, scenario):
@@ -228,6 +229,9 @@ def test_realtime_navigation_preview_session_reuses_backend(tmp_path, monkeypatc
         def get_metrics(self):
             return dict(self.metrics)
 
+        def consume_point_picker(self):
+            return {"available": True, "sequence": 3, "x": 12.5, "y": -34.25, "z": 101.2}
+
         def close(self):
             calls.append("close")
 
@@ -236,11 +240,13 @@ def test_realtime_navigation_preview_session_reuses_backend(tmp_path, monkeypatc
 
     first = session.update(str(output), camera_mode="topdown", camera_height_m=100.0)
     second = session.update(str(output), camera_mode="topdown", camera_height_m=120.0)
+    pick = session.consume_picker_pick()
     session.close()
 
-    assert calls == ["init", "reset", "update", "close"]
+    assert calls == ["init", "picker=True", "reset", "update", "close"]
     assert first["preview"]["realtime"] is True
     assert second["metrics"]["route_waypoint_count"] == 3
+    assert pick["available"] is True
 
 
 def test_realtime_navigation_preview_session_reports_current_pose(monkeypatch) -> None:

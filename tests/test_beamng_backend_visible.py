@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -65,8 +66,18 @@ def fake_beamngpy(monkeypatch) -> SimpleNamespace:
             )
             module.bng = self
 
-        def open(self, launch: bool = True) -> None:
+        def open(self, extensions=None, launch: bool = True, **kwargs: Any) -> None:
             module.open_launch = launch
+            module.open_extensions = list(extensions or [])
+            module.open_kwargs = dict(kwargs)
+
+        def queue_lua_command(self, chunk: str, response: bool = False) -> Any:
+            module.lua_commands.append((chunk, response))
+            if "consumePickJson" in chunk:
+                return '{"available":true,"sequence":7,"x":12.5,"y":-34.25,"z":101.2,"distance":8.0}'
+            if "setEnabled" in chunk:
+                return '{"available":false}'
+            return None
 
         def step(self, steps: int) -> None:
             module.step_calls.append(steps)
@@ -162,6 +173,7 @@ def fake_beamngpy(monkeypatch) -> SimpleNamespace:
     module.next_polyline_id = 200
     module.debug_polylines = []
     module.removed_polylines = []
+    module.lua_commands = []
 
     def fake_import(name: str) -> Any:
         if name == "beamngpy":
@@ -347,6 +359,39 @@ def test_beamng_backend_draws_region_mask_triangles(fake_beamngpy: SimpleNamespa
     assert line_args[1][3] == 1.0
     assert fake_beamngpy.removed_triangles
     assert fake_beamngpy.removed_polylines
+
+
+def test_beamng_backend_loads_lua_point_picker_and_consumes_pick(fake_beamngpy: SimpleNamespace, tmp_path: Path) -> None:
+    bng_home = tmp_path / "BeamNG.tech"
+    (bng_home / "Bin64").mkdir(parents=True)
+    (bng_home / "Bin64" / "BeamNG.tech.x64.exe").write_text("", encoding="utf-8")
+    vehicle = load_vehicle_config("configs/vehicles/ugv_medium.yaml")
+    backend = BeamNGBackend(
+        connection=BeamNGConnectionConfig(
+            bng_home=str(bng_home),
+            launch=False,
+            enable_point_picker=True,
+        ),
+        vehicle_config=vehicle,
+    )
+
+    backend.reset(load_scenario_config("configs/scenarios/beamng_visible_autodrive.yaml"))
+    pick = backend.consume_point_picker()
+
+    installed = bng_home / "lua" / "ge" / "extensions" / "offroadSimBench" / "pointPicker.lua"
+    assert installed.exists()
+    installed_text = installed.read_text(encoding="utf-8")
+    assert "cameraMouseRayCast" in installed_text
+    assert "M.onGuiUpdate = onGuiUpdate" in installed_text
+    assert "last_mouse_down" in installed_text
+    assert "last_mouse_down_edge" in installed_text
+    assert "consumeOrCaptureMouseJson" in installed_text
+    assert fake_beamngpy.open_extensions == ["offroadSimBench/pointPicker"]
+    assert pick["available"] is True
+    assert pick["sequence"] == 7
+    assert pick["x"] == 12.5
+    assert any("consumeOrCaptureMouseJson" in command for command, _response in fake_beamngpy.lua_commands)
+    assert any("consumePickJson" in command for command, _response in fake_beamngpy.lua_commands)
 
 
 def test_beamng_backend_reports_current_vehicle_pose(fake_beamngpy: SimpleNamespace) -> None:

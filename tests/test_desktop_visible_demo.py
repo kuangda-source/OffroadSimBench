@@ -280,6 +280,39 @@ def test_navigation_task_dialog_uses_beamng_pose_for_task_points(tmp_path) -> No
     assert dialog.canvas.route == [(12.5, -34.25), (12.5, -34.25), (12.5, -34.25)]
 
 
+def test_navigation_task_dialog_applies_beamng_window_picks_by_current_mode(tmp_path) -> None:
+    _ensure_app()
+    task_path = tmp_path / "draft.yaml"
+    picks = iter(
+        [
+            {"available": True, "sequence": 1, "x": 10.0, "y": 20.0, "z": 30.0},
+            {"available": True, "sequence": 2, "x": 11.0, "y": 21.0, "z": 31.0, "yaw": 0.5},
+            {"available": True, "sequence": 3, "x": 12.0, "y": 22.0, "z": 32.0},
+            {"available": True, "sequence": 4, "x": 13.0, "y": 23.0, "z": 33.0},
+        ]
+    )
+    dialog = NavigationTaskDialog(str(task_path), pick_callback=lambda: next(picks))
+    dialog.canvas.clear_region()
+    dialog.canvas.clear_route()
+
+    dialog.canvas.set_mode("region")
+    dialog._poll_beamng_pick()
+    dialog.canvas.set_mode("start")
+    dialog._poll_beamng_pick()
+    dialog.canvas.set_mode("goal")
+    dialog._poll_beamng_pick()
+    dialog.canvas.set_mode("route")
+    dialog._poll_beamng_pick()
+
+    assert dialog.canvas.region == [(10.0, 20.0)]
+    assert dialog.canvas.start == (11.0, 21.0, 31.0)
+    assert dialog.start_z_spin.value() == 31.0
+    assert dialog.start_yaw_spin.value() == 0.5
+    assert dialog.canvas.goal == (12.0, 22.0)
+    assert dialog.canvas.route == [(11.0, 21.0), (12.0, 22.0), (13.0, 23.0)]
+    assert "sequence=4" in dialog.beamng_pick_label.text()
+
+
 def test_region_task_editor_opens_non_modal(monkeypatch) -> None:
     _ensure_app()
     window = MainWindow()

@@ -476,6 +476,7 @@ class NavigationTaskDialog(QDialog):
         parent: QWidget | None = None,
         preview_callback: Callable[[str, str, float], None] | None = None,
         pose_callback: Callable[[], dict[str, Any]] | None = None,
+        pick_callback: Callable[[], dict[str, Any]] | None = None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("编辑/预览区域与起终点")
@@ -483,12 +484,17 @@ class NavigationTaskDialog(QDialog):
         self.saved_task_path = ""
         self.preview_callback = preview_callback
         self.pose_callback = pose_callback
+        self.pick_callback = pick_callback
         self.current_beamng_pose: dict[str, Any] = {"available": False}
+        self.last_beamng_pick_sequence: Any = None
         self.canvas = NavigationTaskCanvas()
         self.preview_timer = QTimer(self)
         self.preview_timer.setSingleShot(True)
         self.preview_timer.setInterval(650)
         self.preview_timer.timeout.connect(self._run_realtime_preview)
+        self.picker_timer = QTimer(self)
+        self.picker_timer.setInterval(50)
+        self.picker_timer.timeout.connect(self._poll_beamng_pick)
 
         self.output_path_edit = QLineEdit(task_path or r"configs\tasks\manual_region_nav.yaml")
         self.task_id_edit = QLineEdit("manual_region_nav")
@@ -509,8 +515,13 @@ class NavigationTaskDialog(QDialog):
         self.preview_height_spin = self._double_spin(90.0, 10.0, 500.0)
         self.realtime_preview_check = QCheckBox("实时预览")
         self.realtime_preview_check.setChecked(True)
+        self.beamng_pick_check = QCheckBox("BeamNG 窗口点击拾点")
+        self.beamng_pick_check.setEnabled(self.pick_callback is not None)
+        self.beamng_pick_check.setChecked(self.pick_callback is not None)
         self.beamng_pose_label = QLabel("BeamNG 当前位置：未读取")
         self.beamng_pose_label.setObjectName("mutedText")
+        self.beamng_pick_label = QLabel("BeamNG 点击拾点：未启用")
+        self.beamng_pick_label.setObjectName("mutedText")
 
         self._load_existing_task(task_path)
 
@@ -531,6 +542,7 @@ class NavigationTaskDialog(QDialog):
         form.addRow("Preview camera", self.preview_camera_combo)
         form.addRow("Preview height", self.preview_height_spin)
         form.addRow("Realtime preview", self.realtime_preview_check)
+        form.addRow("BeamNG click pick", self.beamng_pick_check)
         layout.addLayout(form)
 
         pose_row = QHBoxLayout()
@@ -548,6 +560,7 @@ class NavigationTaskDialog(QDialog):
         for button in (refresh_pose, use_region, use_start, use_goal, use_route):
             pose_row.addWidget(button)
         layout.addLayout(pose_row)
+        layout.addWidget(self.beamng_pick_label)
 
         mode_row = QHBoxLayout()
         for label, mode in [
@@ -581,6 +594,7 @@ class NavigationTaskDialog(QDialog):
         layout.addWidget(buttons)
         self._connect_realtime_preview_signals()
         self.schedule_realtime_preview()
+        self._sync_beamng_pick_timer()
 
     def save_task(self) -> None:
         self._save_task(close_after_save=True, show_errors=True)
@@ -605,6 +619,7 @@ class NavigationTaskDialog(QDialog):
 
     def _connect_realtime_preview_signals(self) -> None:
         self.realtime_preview_check.toggled.connect(self.schedule_realtime_preview)
+        self.beamng_pick_check.toggled.connect(self._sync_beamng_pick_timer)
         self.canvas.changed.connect(self.schedule_realtime_preview)
         for edit in (self.output_path_edit, self.task_id_edit, self.level_edit):
             edit.textChanged.connect(self.schedule_realtime_preview)
@@ -618,6 +633,62 @@ class NavigationTaskDialog(QDialog):
             spin.valueChanged.connect(self.schedule_realtime_preview)
         self.evaluation_drive_combo.currentIndexChanged.connect(self.schedule_realtime_preview)
         self.preview_camera_combo.currentIndexChanged.connect(self.schedule_realtime_preview)
+
+    def _sync_beamng_pick_timer(self) -> None:
+        if self.pick_callback is not None and self.beamng_pick_check.isChecked():
+            self.beamng_pick_label.setText("BeamNG 点击拾点：等待窗口点击")
+            self.picker_timer.start()
+            return
+        self.picker_timer.stop()
+        self.beamng_pick_label.setText("BeamNG 点击拾点：未启用")
+
+    def _poll_beamng_pick(self) -> None:
+        if self.pick_callback is None or not self.beamng_pick_check.isChecked():
+            return
+        try:
+            pick = self.pick_callback()
+        except Exception as exc:
+            self.beamng_pick_label.setText(f"BeamNG 点击拾点：不可用 ({exc})")
+            return
+        if not pick.get("available"):
+            message = str(pick.get("message") or "等待窗口点击")
+            self.beamng_pick_label.setText(f"BeamNG 点击拾点：{message}")
+            return
+        sequence = pick.get("sequence")
+        if sequence is not None and sequence == self.last_beamng_pick_sequence:
+            return
+        self.last_beamng_pick_sequence = sequence
+        try:
+            x = float(pick["x"])
+            y = float(pick["y"])
+        except (KeyError, TypeError, ValueError):
+            self.beamng_pick_label.setText("BeamNG 点击拾点：坐标无效")
+            return
+        payload = {"x": x, "y": y}
+        for key in ("z", "yaw"):
+            if self._finite_pose_value(pick.get(key)):
+                payload[key] = float(pick[key])
+        self.canvas.set_beamng_pose_marker((x, y))
+        self._apply_beamng_pick(payload)
+        z = payload.get("z", math.nan)
+        self.beamng_pick_label.setText(
+            f"BeamNG 点击拾点：sequence={sequence} mode={self.canvas.mode} x={x:.3f} y={y:.3f} z={z:.3f}"
+        )
+
+    def _apply_beamng_pick(self, pick: dict[str, float]) -> None:
+        point = (float(pick["x"]), float(pick["y"]))
+        if self.canvas.mode == "region":
+            self.canvas.add_region_point(point)
+        elif self.canvas.mode == "start":
+            self.canvas.set_start_pose(point, pick.get("z"))
+            if self._finite_pose_value(pick.get("z")):
+                self.start_z_spin.setValue(float(pick["z"]))
+            if self._finite_pose_value(pick.get("yaw")):
+                self.start_yaw_spin.setValue(float(pick["yaw"]))
+        elif self.canvas.mode == "goal":
+            self.canvas.set_goal_point(point)
+        elif self.canvas.mode == "route":
+            self.canvas.add_route_point(point)
 
     def refresh_beamng_pose(self) -> dict[str, Any]:
         if self.pose_callback is None:
@@ -1119,6 +1190,7 @@ class MainWindow(QMainWindow):
             None,
             preview_callback=self._preview_task_from_editor,
             pose_callback=self._read_navigation_preview_pose,
+            pick_callback=self._consume_navigation_preview_pick,
         )
         dialog.setWindowModality(Qt.WindowModality.NonModal)
         dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
@@ -1153,6 +1225,9 @@ class MainWindow(QMainWindow):
 
     def _read_navigation_preview_pose(self) -> dict[str, Any]:
         return self.navigation_preview_session.current_pose()
+
+    def _consume_navigation_preview_pick(self) -> dict[str, Any]:
+        return self.navigation_preview_session.consume_picker_pick()
 
     def closeEvent(self, event: Any) -> None:
         if self.region_task_dialog is not None:

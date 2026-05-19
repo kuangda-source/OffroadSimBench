@@ -797,9 +797,11 @@ class BeamNGNavigationPreviewSession:
         *,
         vehicle: str = "configs/vehicles/ugv_medium.yaml",
         beamng_gfx: str = "vk",
+        enable_point_picker: bool = True,
     ) -> None:
         self.vehicle = vehicle
         self.beamng_gfx = beamng_gfx
+        self.enable_point_picker = enable_point_picker
         self._backend: BeamNGBackend | None = None
         self._level: str | None = None
         self._lock = threading.RLock()
@@ -822,7 +824,10 @@ class BeamNGNavigationPreviewSession:
                 self.close()
                 vehicle_config = load_vehicle_config(self.vehicle) if self.vehicle else None
                 self._backend = BeamNGBackend(
-                    connection=BeamNGConnectionConfig(gfx=self.beamng_gfx or None),
+                    connection=BeamNGConnectionConfig(
+                        gfx=self.beamng_gfx or None,
+                        enable_point_picker=self.enable_point_picker,
+                    ),
                     vehicle_config=vehicle_config,
                 )
                 self._backend.reset(scenario)
@@ -865,6 +870,26 @@ class BeamNGNavigationPreviewSession:
             pose.setdefault("available", True)
             pose.setdefault("level", self._level)
             return pose
+
+    def consume_picker_pick(self) -> dict[str, Any]:
+        with self._lock:
+            if self._backend is None:
+                return {
+                    "available": False,
+                    "message": "BeamNG preview session has not started.",
+                    "level": self._level,
+                }
+            try:
+                pick = dict(self._backend.consume_point_picker())
+            except Exception as exc:
+                return {
+                    "available": False,
+                    "message": str(exc),
+                    "level": self._level,
+                }
+            pick.setdefault("available", False)
+            pick.setdefault("level", self._level)
+            return pick
 
     def close(self) -> None:
         with self._lock:

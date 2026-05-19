@@ -104,15 +104,23 @@ apply that pose as a region point, start, goal, or route waypoint.
 BeamNG itself draws the selected region as a translucent debug mask with a
 high-contrast closed outline.
 
-Direct mouse picking inside the BeamNG render window needs a BeamNG-side Lua
-extension rather than a pure desktop GUI call. BeamNG exposes the required
-building blocks (`cameraMouseRayCast()` and ImGui mouse click state); a small
-extension can capture the current click hit position and publish it to
-OffroadSimBench, either through `queue_lua_command`/Tech communication or a
-polled JSON file in the BeamNG user directory. The current implementation keeps
-production-safe picking through the live vehicle pose bridge, while the Lua
-picker should be added as the next optional BeamNG tool so it stays isolated
-from non-BeamNG runs.
+Direct mouse picking inside the BeamNG render window is implemented by the
+optional `offroadSimBench/pointPicker` GE Lua extension. `BeamNGBackend`
+installs this extension into the resolved local BeamNG runtime when
+`BeamNGConnectionConfig(enable_point_picker=True)` is used. The extension uses
+`cameraMouseRayCast()` plus ImGui left-click state to capture a world hit point,
+keeps the latest pick in memory for Tech communication, and also writes
+`settings/offroadSimBench/point_picker.json` inside the BeamNG user directory as
+a diagnostic fallback.
+
+The desktop region editor enables this picker for the realtime preview session.
+Select the editor mode (`region`, `start`, `goal`, or `route`), click or briefly
+hold in the BeamNG render window, and the GUI consumes the pick through
+`queue_lua_command` on a 50 ms polling loop. The Lua consumer checks the current
+ImGui mouse-down edge before returning, which keeps picking responsive even when
+BeamNGpy is not continuously stepping the scenario. Non-BeamNG runs are
+unaffected because the extension is only installed and loaded for BeamNG
+connections that opt in.
 
 At runtime, the BeamNG backend includes the region task metadata in each
 observation. This keeps simulator control, model planning, and evaluation

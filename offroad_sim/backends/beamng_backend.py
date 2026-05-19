@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
+import json
 import math
 import os
+import shutil
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,6 +22,11 @@ from offroad_sim.backends.registry import BackendStatus
 from offroad_sim.core import Action, Observation, StepResult, VehicleState
 from offroad_sim.scenarios import ScenarioConfig, scenario_metadata_section
 from offroad_sim.vehicles import VehicleConfig
+
+
+POINT_PICKER_EXTENSION = "offroadSimBench/pointPicker"
+POINT_PICKER_GLOBAL = "offroadSimBench_pointPicker"
+POINT_PICKER_SOURCE = Path(__file__).resolve().parent / "beamng_lua" / "offroadSimBench" / "pointPicker.lua"
 
 
 class BeamNGUnavailableError(RuntimeError):
@@ -45,6 +52,7 @@ class BeamNGConnectionConfig:
     vehicle_id: str = "ego"
     steps_per_action: int = 6
     gfx: str | None = "vk"
+    enable_point_picker: bool = False
 
 
 class BeamNGBackend(OffroadSimBackend):
@@ -131,7 +139,18 @@ class BeamNGBackend(OffroadSimBackend):
         if self.connection.gfx:
             kwargs["gfx"] = self.connection.gfx
         self._bng = BeamNGpy(self.connection.host, self.connection.port, **kwargs)
-        self._bng.open(launch=self.connection.launch)
+        extensions: list[str] = []
+        if self.connection.enable_point_picker:
+            self._install_point_picker_extension()
+            extensions.append(POINT_PICKER_EXTENSION)
+        try:
+            self._bng.open(extensions=extensions or None, launch=self.connection.launch)
+        except TypeError:
+            self._bng.open(launch=self.connection.launch)
+            if extensions:
+                self._load_point_picker_extension()
+        if self.connection.enable_point_picker:
+            self._set_point_picker_enabled(True)
         self._connected = True
 
     def load_scenario(self, scenario_config: ScenarioConfig | Mapping[str, Any] | None = None) -> None:
@@ -302,6 +321,31 @@ class BeamNGBackend(OffroadSimBackend):
             "level": self._active_level,
         }
 
+    def consume_point_picker(self) -> dict[str, Any]:
+        self._ensure_connected()
+        if not self.connection.enable_point_picker:
+            return {"available": False, "message": "BeamNG point picker is disabled."}
+        queue_lua_command = getattr(self._bng, "queue_lua_command", None)
+        if not callable(queue_lua_command):
+            return {"available": False, "message": "BeamNG Lua command API is unavailable."}
+        chunk = (
+            f"local picker = extensions['{POINT_PICKER_GLOBAL}'] or _G['{POINT_PICKER_GLOBAL}']; "
+            "if picker and picker.consumeOrCaptureMouseJson then "
+            "return picker.consumeOrCaptureMouseJson(); "
+            "end; "
+            "if picker and picker.consumePickJson then "
+            "return picker.consumePickJson(); "
+            "end; "
+            "return jsonEncode({available=false, message='BeamNG point picker extension is not loaded.'});"
+        )
+        try:
+            response = queue_lua_command(chunk, response=True)
+        except TypeError:
+            response = queue_lua_command(chunk, True)
+        except Exception as exc:
+            return {"available": False, "message": str(exc)}
+        return self._decode_point_picker_response(response)
+
     def get_metrics(self) -> dict[str, Any]:
         return {
             "backend": "beamng",
@@ -326,6 +370,7 @@ class BeamNGBackend(OffroadSimBackend):
         }
 
     def close(self) -> None:
+        self._disable_point_picker()
         if self._bng is not None and hasattr(self._bng, "close"):
             self._bng.close()
         self._bng = None
@@ -354,6 +399,69 @@ class BeamNGBackend(OffroadSimBackend):
         self._last_damage = 0.0
         self._last_goal_distance = math.nan
         self._last_goal_reached = False
+
+    def _install_point_picker_extension(self) -> None:
+        bng_home = self._resolve_bng_home(self.connection.bng_home)
+        if bng_home is None:
+            raise BeamNGUnavailableError("Cannot install BeamNG point picker: BNG_HOME is not configured.")
+        if not POINT_PICKER_SOURCE.is_file():
+            raise BeamNGUnavailableError(f"Cannot install BeamNG point picker: missing {POINT_PICKER_SOURCE}.")
+        destination = bng_home / "lua" / "ge" / "extensions" / "offroadSimBench" / "pointPicker.lua"
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if destination.exists() and destination.read_text(encoding="utf-8") == POINT_PICKER_SOURCE.read_text(encoding="utf-8"):
+            return
+        shutil.copyfile(POINT_PICKER_SOURCE, destination)
+
+    def _load_point_picker_extension(self) -> None:
+        queue_lua_command = getattr(self._bng, "queue_lua_command", None)
+        if not callable(queue_lua_command):
+            return
+        try:
+            queue_lua_command(f"extensions.load('{POINT_PICKER_EXTENSION}')", response=False)
+        except TypeError:
+            queue_lua_command(f"extensions.load('{POINT_PICKER_EXTENSION}')", False)
+        except Exception:
+            pass
+
+    def _disable_point_picker(self) -> None:
+        self._set_point_picker_enabled(False)
+
+    def _set_point_picker_enabled(self, enabled: bool) -> None:
+        if self._bng is None or not self.connection.enable_point_picker:
+            return
+        queue_lua_command = getattr(self._bng, "queue_lua_command", None)
+        if not callable(queue_lua_command):
+            return
+        chunk = (
+            f"local picker = extensions['{POINT_PICKER_GLOBAL}'] or _G['{POINT_PICKER_GLOBAL}']; "
+            f"if picker and picker.setEnabled then picker.setEnabled({str(enabled).lower()}); end"
+        )
+        try:
+            queue_lua_command(chunk, response=False)
+        except TypeError:
+            try:
+                queue_lua_command(chunk, False)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def _decode_point_picker_response(self, response: Any) -> dict[str, Any]:
+        if isinstance(response, Mapping):
+            return dict(response)
+        if response is None:
+            return {"available": False, "message": "BeamNG point picker returned no response."}
+        if isinstance(response, bytes):
+            response = response.decode("utf-8", errors="replace")
+        if not isinstance(response, str):
+            return {"available": False, "message": f"Unexpected BeamNG point picker response: {type(response).__name__}"}
+        try:
+            payload = json.loads(response)
+        except json.JSONDecodeError as exc:
+            return {"available": False, "message": f"Invalid BeamNG point picker JSON: {exc}"}
+        if not isinstance(payload, dict):
+            return {"available": False, "message": "BeamNG point picker JSON is not an object."}
+        return payload
 
     @classmethod
     def _resolve_bng_home(cls, bng_home: str | Path | None = None) -> Path | None:
