@@ -343,6 +343,28 @@ def test_navigation_task_dialog_applies_beamng_window_picks_by_current_mode(tmp_
     assert "sequence=4" in dialog.beamng_pick_label.text()
 
 
+def test_navigation_task_dialog_mode_buttons_toggle_and_highlight(tmp_path) -> None:
+    _ensure_app()
+    dialog = NavigationTaskDialog(str(tmp_path / "draft.yaml"))
+
+    assert dialog.canvas.mode == "region"
+    assert dialog.mode_buttons["region"].isCheckable()
+    assert dialog.mode_buttons["region"].isChecked()
+    assert not dialog.mode_buttons["start"].isChecked()
+
+    dialog.mode_buttons["region"].click()
+
+    assert dialog.canvas.mode is None
+    assert all(not button.isChecked() for button in dialog.mode_buttons.values())
+
+    dialog.mode_buttons["goal"].click()
+
+    assert dialog.canvas.mode == "goal"
+    assert dialog.mode_buttons["goal"].isChecked()
+    assert not dialog.mode_buttons["region"].isChecked()
+    dialog.close()
+
+
 def test_region_task_editor_opens_non_modal(monkeypatch) -> None:
     _ensure_app()
     window = MainWindow()
@@ -388,6 +410,28 @@ def test_navigation_task_canvas_drag_moves_region_point_without_adding() -> None
 
     assert len(canvas.region) == 4
     assert canvas.region[0] == (2.0, 3.0)
+
+
+def test_navigation_task_canvas_ignores_clicks_without_active_mode() -> None:
+    _ensure_app()
+
+    class FakeMouseEvent:
+        def __init__(self, point: QPointF) -> None:
+            self._point = point
+
+        def position(self) -> QPointF:
+            return self._point
+
+    canvas = NavigationTaskCanvas()
+    canvas.resize(480, 360)
+    canvas.region = []
+    canvas.route = []
+    canvas.set_mode(None)
+
+    canvas.mousePressEvent(FakeMouseEvent(QPointF(120.0, 120.0)))
+
+    assert canvas.region == []
+    assert canvas.route == []
 
 
 def test_navigation_task_canvas_preserves_world_aspect_ratio() -> None:

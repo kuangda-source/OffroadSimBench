@@ -241,10 +241,11 @@ class TrajectoryCanvas(QWidget):
 
 class NavigationTaskCanvas(QWidget):
     changed = Signal()
+    mode_changed = Signal(object)
 
     def __init__(self) -> None:
         super().__init__()
-        self.mode = "region"
+        self.mode: str | None = "region"
         self.region: list[tuple[float, float]] = [(0.0, -160.0), (30.0, -160.0), (30.0, -230.0), (0.0, -230.0)]
         self.start: tuple[float, float, float] = (1.0, -170.0, 100.6)
         self.goal: tuple[float, float] = (6.0, -215.0)
@@ -256,9 +257,14 @@ class NavigationTaskCanvas(QWidget):
         self.setMinimumHeight(360)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
-    def set_mode(self, mode: str) -> None:
+    def set_mode(self, mode: str | None) -> None:
+        if mode not in {None, "region", "start", "goal", "route"}:
+            raise ValueError(f"Unsupported navigation edit mode: {mode}")
+        if self.mode == mode:
+            return
         self.mode = mode
         self.update()
+        self.mode_changed.emit(mode)
 
     def clear_region(self) -> None:
         self.region = []
@@ -356,11 +362,16 @@ class NavigationTaskCanvas(QWidget):
             painter.drawEllipse(QRectF(projected_pose.x() - 9, projected_pose.y() - 9, 18, 18))
         painter.setPen(QPen(QColor("#8da1af"), 1))
         painter.setFont(QFont("Segoe UI", 10))
-        painter.drawText(18, 22, f"mode: {self.mode} | click to set points")
+        mode_label = self.mode or "none"
+        mode_hint = "click to set points" if self.mode else "select a mode button"
+        painter.drawText(18, 22, f"mode: {mode_label} | {mode_hint}")
 
     def mousePressEvent(self, event: Any) -> None:
         canvas_point = event.position() if hasattr(event, "position") else QPointF(event.x(), event.y())
         point = self._from_canvas(canvas_point)
+        if self.mode is None:
+            self._drag_target = None
+            return
         self._drag_target = self._nearest_drag_target(canvas_point)
         if self._drag_target is not None:
             return
@@ -512,6 +523,7 @@ class NavigationTaskDialog(QDialog):
         self.current_beamng_pose: dict[str, Any] = {"available": False}
         self.last_beamng_pick_sequence: Any = None
         self.canvas = NavigationTaskCanvas()
+        self.mode_buttons: dict[str, QPushButton] = {}
         self.preview_timer = QTimer(self)
         self.preview_timer.setSingleShot(True)
         self.preview_timer.setInterval(650)
@@ -594,7 +606,11 @@ class NavigationTaskDialog(QDialog):
             ("加专家路径点", "route"),
         ]:
             button = QPushButton(label)
-            button.clicked.connect(lambda checked=False, value=mode: self.canvas.set_mode(value))
+            button.setObjectName("modeButton")
+            button.setCheckable(True)
+            button.setChecked(self.canvas.mode == mode)
+            button.clicked.connect(lambda checked=False, value=mode: self._toggle_canvas_mode(value))
+            self.mode_buttons[mode] = button
             mode_row.addWidget(button)
         clear_region = QPushButton("清空区域")
         clear_region.clicked.connect(self.canvas.clear_region)
@@ -607,6 +623,7 @@ class NavigationTaskDialog(QDialog):
         mode_row.addWidget(preview_button)
         layout.addLayout(mode_row)
         layout.addWidget(self.canvas, 1)
+        self.canvas.mode_changed.connect(self._sync_mode_buttons)
 
         hint = QLabel("在这个窗口里编辑区域、起点、终点和专家路径；点击预览会保存当前草稿并刷新 BeamNG 画面，默认使用俯视高视角观察是否可通行。")
         hint.setObjectName("mutedText")
@@ -619,6 +636,14 @@ class NavigationTaskDialog(QDialog):
         self._connect_realtime_preview_signals()
         self.schedule_realtime_preview()
         self._sync_beamng_pick_timer()
+
+    def _toggle_canvas_mode(self, mode: str) -> None:
+        self.canvas.set_mode(None if self.canvas.mode == mode else mode)
+        self._sync_mode_buttons()
+
+    def _sync_mode_buttons(self, *_args: Any) -> None:
+        for mode, button in self.mode_buttons.items():
+            button.setChecked(self.canvas.mode == mode)
 
     def save_task(self) -> None:
         self._save_task(close_after_save=True, show_errors=True)
@@ -1882,6 +1907,18 @@ QPushButton {
 }
 QPushButton:hover {
     background: #203748;
+}
+QPushButton#modeButton {
+    min-height: 24px;
+}
+QPushButton#modeButton:checked {
+    background: #20b58f;
+    border-color: #58e0bd;
+    color: #06130f;
+    font-weight: 700;
+}
+QPushButton#modeButton:checked:hover {
+    background: #2cc6a0;
 }
 QPushButton:disabled {
     color: #667582;
