@@ -247,8 +247,8 @@ class NavigationTaskCanvas(QWidget):
         super().__init__()
         self.mode: str | None = "region"
         self.region: list[tuple[float, float]] = [(0.0, -160.0), (30.0, -160.0), (30.0, -230.0), (0.0, -230.0)]
-        self.start: tuple[float, float, float] = (1.0, -170.0, 100.6)
-        self.goal: tuple[float, float] = (6.0, -215.0)
+        self.start: tuple[float, float, float] | None = (1.0, -170.0, 100.6)
+        self.goal: tuple[float, float] | None = (6.0, -215.0)
         self.route: list[tuple[float, float]] = [(1.0, -170.0), (6.0, -215.0)]
         self.beamng_pose: tuple[float, float] | None = None
         self._drag_target: tuple[str, int] | None = None
@@ -283,7 +283,8 @@ class NavigationTaskCanvas(QWidget):
         self.changed.emit()
 
     def set_start_pose(self, point: tuple[float, float], z: float | None = None) -> None:
-        self.start = (float(point[0]), float(point[1]), self.start[2] if z is None else float(z))
+        current_z = self.start[2] if self.start is not None else 100.6
+        self.start = (float(point[0]), float(point[1]), current_z if z is None else float(z))
         if not self.route:
             self.route = [(self.start[0], self.start[1])]
         else:
@@ -353,8 +354,10 @@ class NavigationTaskCanvas(QWidget):
         for point in self.route:
             self._draw_point(painter, point, QColor("#43d9ad"), 4)
 
-        self._draw_point(painter, (self.start[0], self.start[1]), QColor("#f6c85f"), 7)
-        self._draw_point(painter, self.goal, QColor("#ff6b6b"), 8)
+        if self.start is not None:
+            self._draw_point(painter, (self.start[0], self.start[1]), QColor("#f6c85f"), 7)
+        if self.goal is not None:
+            self._draw_point(painter, self.goal, QColor("#ff6b6b"), 8)
         if self.beamng_pose is not None:
             projected_pose = self._to_canvas(self.beamng_pose)
             painter.setPen(QPen(QColor("#d77bff"), 2))
@@ -368,17 +371,21 @@ class NavigationTaskCanvas(QWidget):
 
     def mousePressEvent(self, event: Any) -> None:
         canvas_point = event.position() if hasattr(event, "position") else QPointF(event.x(), event.y())
-        point = self._from_canvas(canvas_point)
         if self.mode is None:
             self._drag_target = None
             return
+        if hasattr(event, "button") and event.button() == Qt.MouseButton.RightButton:
+            self._delete_nearest_target(canvas_point)
+            return
+        point = self._from_canvas(canvas_point)
         self._drag_target = self._nearest_drag_target(canvas_point)
         if self._drag_target is not None:
             return
         if self.mode == "region":
             self.region.append(point)
         elif self.mode == "start":
-            self.start = (point[0], point[1], self.start[2])
+            current_z = self.start[2] if self.start is not None else 100.6
+            self.start = (point[0], point[1], current_z)
             if not self.route:
                 self.route = [(point[0], point[1])]
             else:
@@ -460,9 +467,9 @@ class NavigationTaskCanvas(QWidget):
             handles.extend(("region", index, point) for index, point in enumerate(self.region))
         elif self.mode == "route":
             handles.extend(("route", index, point) for index, point in enumerate(self.route))
-        elif self.mode == "start":
+        elif self.mode == "start" and self.start is not None:
             handles.append(("start", 0, (self.start[0], self.start[1])))
-        elif self.mode == "goal":
+        elif self.mode == "goal" and self.goal is not None:
             handles.append(("goal", 0, self.goal))
         best: tuple[str, int] | None = None
         best_distance = self._drag_pick_radius_px
@@ -483,7 +490,8 @@ class NavigationTaskCanvas(QWidget):
         elif kind == "route" and 0 <= index < len(self.route):
             self.route[index] = point
         elif kind == "start":
-            self.start = (point[0], point[1], self.start[2])
+            current_z = self.start[2] if self.start is not None else 100.6
+            self.start = (point[0], point[1], current_z)
             if self.route:
                 self.route[0] = point
         elif kind == "goal":
@@ -494,10 +502,38 @@ class NavigationTaskCanvas(QWidget):
         self.update()
         self.changed.emit()
 
+    def _delete_nearest_target(self, canvas_point: QPointF) -> None:
+        target = self._nearest_drag_target(canvas_point)
+        if target is None:
+            return
+        kind, index = target
+        if kind == "region" and 0 <= index < len(self.region):
+            self.region.pop(index)
+        elif kind == "route" and 0 <= index < len(self.route):
+            self.route.pop(index)
+        elif kind == "start":
+            self.start = None
+            if self.route:
+                self.route.pop(0)
+        elif kind == "goal":
+            self.goal = None
+            if self.route:
+                self.route.pop(-1)
+        self._drag_target = None
+        self._fit_bounds()
+        self.update()
+        self.changed.emit()
+
     def _fit_bounds(self) -> None:
-        points = [*self.region, (self.start[0], self.start[1]), self.goal, *self.route]
+        points = [*self.region, *self.route]
+        if self.start is not None:
+            points.append((self.start[0], self.start[1]))
+        if self.goal is not None:
+            points.append(self.goal)
         if self.beamng_pose is not None:
             points.append(self.beamng_pose)
+        if not points:
+            return
         xs = [point[0] for point in points]
         ys = [point[1] for point in points]
         margin = 8.0
@@ -548,7 +584,7 @@ class NavigationTaskDialog(QDialog):
         self.preview_camera_combo.addItem("俯视高视角", "topdown")
         self.preview_camera_combo.addItem("环绕车辆", "orbit")
         self.preview_camera_combo.addItem("自由跟随", "free")
-        self.preview_height_spin = self._double_spin(90.0, 10.0, 500.0)
+        self.preview_height_spin = self._double_spin(150.0, 10.0, 500.0)
         self.realtime_preview_check = QCheckBox("实时预览")
         self.realtime_preview_check.setChecked(True)
         self.beamng_pick_check = QCheckBox("BeamNG 窗口点击拾点")
@@ -825,8 +861,12 @@ class NavigationTaskDialog(QDialog):
             return False
 
     def _save_task(self, *, close_after_save: bool, show_errors: bool = True) -> bool:
-        start = (self.canvas.start[0], self.canvas.start[1], float(self.start_z_spin.value()))
         try:
+            if self.canvas.start is None:
+                raise ValueError("Start point is not set.")
+            if self.canvas.goal is None:
+                raise ValueError("Goal point is not set.")
+            start = (self.canvas.start[0], self.canvas.start[1], float(self.start_z_spin.value()))
             payload = services.save_manual_navigation_task(
                 services.ManualNavigationTaskRequest(
                     output_path=self.output_path_edit.text().strip(),

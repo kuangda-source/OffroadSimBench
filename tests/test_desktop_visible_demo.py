@@ -250,7 +250,7 @@ def test_navigation_task_dialog_previews_draft_from_same_editor(tmp_path) -> Non
 
     assert dialog.result() == 0
     assert preview_calls == [
-        {"task_path": str(task_path.resolve()), "camera_mode": "topdown", "camera_height_m": 90.0}
+        {"task_path": str(task_path.resolve()), "camera_mode": "topdown", "camera_height_m": 150.0}
     ]
     assert task_path.exists()
 
@@ -410,6 +410,66 @@ def test_navigation_task_canvas_drag_moves_region_point_without_adding() -> None
 
     assert len(canvas.region) == 4
     assert canvas.region[0] == (2.0, 3.0)
+
+
+def test_navigation_task_canvas_right_click_deletes_active_region_point() -> None:
+    _ensure_app()
+
+    class FakeMouseEvent:
+        def __init__(self, point: QPointF, button: Qt.MouseButton = Qt.MouseButton.LeftButton) -> None:
+            self._point = point
+            self._button = button
+
+        def position(self) -> QPointF:
+            return self._point
+
+        def button(self) -> Qt.MouseButton:
+            return self._button
+
+    canvas = NavigationTaskCanvas()
+    canvas.resize(480, 360)
+    canvas.region = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]
+    canvas.start = (1.0, 1.0, 0.0)
+    canvas.goal = (9.0, 9.0)
+    canvas.route = [(1.0, 1.0), (9.0, 9.0)]
+    canvas._fit_bounds()
+    canvas.set_mode("region")
+
+    canvas.mousePressEvent(FakeMouseEvent(canvas._to_canvas((10.0, 0.0)), Qt.MouseButton.RightButton))
+
+    assert canvas.region == [(0.0, 0.0), (10.0, 10.0), (0.0, 10.0)]
+
+
+def test_navigation_task_canvas_right_click_deletes_start_and_goal_points() -> None:
+    _ensure_app()
+
+    class FakeMouseEvent:
+        def __init__(self, point: QPointF, button: Qt.MouseButton = Qt.MouseButton.LeftButton) -> None:
+            self._point = point
+            self._button = button
+
+        def position(self) -> QPointF:
+            return self._point
+
+        def button(self) -> Qt.MouseButton:
+            return self._button
+
+    canvas = NavigationTaskCanvas()
+    canvas.resize(480, 360)
+    canvas.region = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]
+    canvas.start = (1.0, 1.0, 0.0)
+    canvas.goal = (9.0, 9.0)
+    canvas.route = [(1.0, 1.0), (5.0, 5.0), (9.0, 9.0)]
+    canvas._fit_bounds()
+
+    canvas.set_mode("start")
+    canvas.mousePressEvent(FakeMouseEvent(canvas._to_canvas((1.0, 1.0)), Qt.MouseButton.RightButton))
+    canvas.set_mode("goal")
+    canvas.mousePressEvent(FakeMouseEvent(canvas._to_canvas((9.0, 9.0)), Qt.MouseButton.RightButton))
+
+    assert canvas.start is None
+    assert canvas.goal is None
+    assert canvas.route == [(5.0, 5.0)]
 
 
 def test_navigation_task_canvas_ignores_clicks_without_active_mode() -> None:

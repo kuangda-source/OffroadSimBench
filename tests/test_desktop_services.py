@@ -193,7 +193,7 @@ def test_preview_navigation_task_in_beamng_uses_manual_preview(tmp_path) -> None
     assert scenario["metadata"]["beamng"]["drive_mode"] == "manual"
     assert scenario["metadata"]["beamng"]["preview_mode"] is True
     assert scenario["metadata"]["beamng"]["camera_mode"] == "topdown"
-    assert scenario["metadata"]["beamng"]["camera_height_m"] == 90.0
+    assert scenario["metadata"]["beamng"]["camera_height_m"] == 150.0
     assert scenario["metadata"]["beamng"]["route"] == [[2.0, -170.0], [5.0, -190.0], [6.0, -210.0]]
 
 
