@@ -400,18 +400,42 @@ class NavigationTaskCanvas(QWidget):
         return QRectF(self.rect()).adjusted(32.0, 28.0, -20.0, -28.0)
 
     def _to_canvas(self, point: tuple[float, float]) -> QPointF:
-        min_x, max_x, min_y, max_y = self.bounds
         plot = self._plot_rect()
+        min_x, max_x, min_y, max_y = self._view_bounds(plot)
         x = plot.left() + (point[0] - min_x) / max(max_x - min_x, 1e-6) * plot.width()
         y = plot.bottom() - (point[1] - min_y) / max(max_y - min_y, 1e-6) * plot.height()
         return QPointF(x, y)
 
     def _from_canvas(self, point: QPointF) -> tuple[float, float]:
-        min_x, max_x, min_y, max_y = self.bounds
         plot = self._plot_rect()
+        min_x, max_x, min_y, max_y = self._view_bounds(plot)
         x = min_x + (point.x() - plot.left()) / max(plot.width(), 1e-6) * (max_x - min_x)
         y = min_y + (plot.bottom() - point.y()) / max(plot.height(), 1e-6) * (max_y - min_y)
         return (round(x, 3), round(y, 3))
+
+    def _view_bounds(self, plot: QRectF | None = None) -> tuple[float, float, float, float]:
+        min_x, max_x, min_y, max_y = self.bounds
+        world_width = max(max_x - min_x, 1e-6)
+        world_height = max(max_y - min_y, 1e-6)
+        plot = plot or self._plot_rect()
+        plot_width = max(plot.width(), 1e-6)
+        plot_height = max(plot.height(), 1e-6)
+        plot_aspect = plot_width / plot_height
+        world_aspect = world_width / world_height
+        center_x = (min_x + max_x) / 2.0
+        center_y = (min_y + max_y) / 2.0
+        if world_aspect > plot_aspect:
+            view_width = world_width
+            view_height = world_width / plot_aspect
+        else:
+            view_height = world_height
+            view_width = world_height * plot_aspect
+        return (
+            center_x - view_width / 2.0,
+            center_x + view_width / 2.0,
+            center_y - view_height / 2.0,
+            center_y + view_height / 2.0,
+        )
 
     def _draw_point(self, painter: QPainter, point: tuple[float, float], color: QColor, radius: int) -> None:
         projected = self._to_canvas(point)
@@ -858,6 +882,8 @@ class MainWindow(QMainWindow):
         self.dataset_info: dict[str, Any] | None = None
         self.navigation_preview_session = services.BeamNGNavigationPreviewSession()
         self.region_task_dialog: NavigationTaskDialog | None = None
+        self._navigation_preview_busy = False
+        self._navigation_preview_pending: tuple[str, str, float] | None = None
 
         self._init_shared_controls()
 
@@ -1209,9 +1235,25 @@ class MainWindow(QMainWindow):
     def _clear_region_task_editor(self, dialog: NavigationTaskDialog) -> None:
         if self.region_task_dialog is dialog:
             self.region_task_dialog = None
+            self._navigation_preview_pending = None
 
     def _preview_task_from_editor(self, task_path: str, camera_mode: str, camera_height_m: float) -> None:
         self.task_path_edit.setText(task_path)
+        request = (task_path, camera_mode, camera_height_m)
+        if self._navigation_preview_busy:
+            self._navigation_preview_pending = request
+            self.beamng_summary.setText(
+                _compact_json(
+                    {
+                        "status": "preview_queued",
+                        "task_path": task_path,
+                        "camera_mode": camera_mode,
+                        "camera_height_m": camera_height_m,
+                    }
+                )
+            )
+            return
+        self._navigation_preview_busy = True
         self.log(f"BeamNG 预览区域/起终点: {task_path}, camera={camera_mode}, height={camera_height_m:.1f}m")
         self._run_task(
             lambda: self.navigation_preview_session.update(
@@ -1222,6 +1264,13 @@ class MainWindow(QMainWindow):
             self._navigation_preview_finished,
             "navigation realtime preview failed",
         )
+
+    def _finish_navigation_preview_task(self) -> None:
+        self._navigation_preview_busy = False
+        pending = self._navigation_preview_pending
+        self._navigation_preview_pending = None
+        if pending is not None:
+            self._preview_task_from_editor(*pending)
 
     def _read_navigation_preview_pose(self) -> dict[str, Any]:
         return self.navigation_preview_session.current_pose()
@@ -1513,6 +1562,7 @@ class MainWindow(QMainWindow):
             f"route={services.display_value(analysis.get('route_in_region'))}"
         )
         self.refresh_catalogs()
+        self._finish_navigation_preview_task()
 
     def _update_metrics(self, metrics: dict[str, Any]) -> None:
         diagnostics = metrics.get("agent_diagnostics", {}) if isinstance(metrics.get("agent_diagnostics"), dict) else {}
@@ -1579,7 +1629,7 @@ class MainWindow(QMainWindow):
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.finished.connect(on_success)
-        worker.failed.connect(lambda message: self.log(f"{failure_label}: {message}"))
+        worker.failed.connect(lambda message: self._task_failed(failure_label, message))
         worker.finished.connect(thread.quit)
         worker.failed.connect(thread.quit)
         thread.finished.connect(worker.deleteLater)
@@ -1588,6 +1638,12 @@ class MainWindow(QMainWindow):
         self.threads.append(thread)
         self.workers.append(worker)
         thread.start()
+
+    def _task_failed(self, failure_label: str, message: str) -> None:
+        self.log(f"{failure_label}: {message}")
+        if failure_label == "navigation realtime preview failed":
+            self.beamng_summary.setText(_compact_json({"status": "preview_failed", "message": message}))
+            self._finish_navigation_preview_task()
 
     def _remove_thread(self, thread: QThread, worker: TaskWorker) -> None:
         if thread in self.threads:

@@ -8,6 +8,7 @@ local logTag = "offroadSimBench_pointPicker"
 local windowOpen = im and im.BoolPtr(true) or nil
 
 local enabled = true
+local showOverlay = false
 local sequence = 0
 local lastPick = nil
 local lastMarker = nil
@@ -88,7 +89,7 @@ local function drawLastMarker()
 end
 
 local function drawPickerWindow()
-  if not im or not windowOpen then return end
+  if not showOverlay or not im or not windowOpen then return end
   im.SetNextWindowSize(im.ImVec2(320, 92), im.Cond_FirstUseEver)
   if im.Begin("OffroadSimBench Picker", windowOpen) then
     im.Text("Left-click terrain to send a point to the GUI.")
@@ -140,6 +141,11 @@ local function setEnabled(value)
   return enabled
 end
 
+local function setOverlayVisible(value)
+  showOverlay = value == true
+  return showOverlay
+end
+
 local function consumePickJson()
   local payload = lastPick
   lastPick = nil
@@ -171,6 +177,7 @@ local function statusJson()
     available = false,
     loaded = true,
     enabled = enabled,
+    overlay_visible = showOverlay,
     sequence = sequence,
     update_frames = updateFrames,
     gui_frames = guiFrames,
@@ -209,6 +216,7 @@ M.onGuiUpdate = onGuiUpdate
 M.onExtensionLoaded = onExtensionLoaded
 M.onUnload = onUnload
 M.setEnabled = setEnabled
+M.setOverlayVisible = setOverlayVisible
 M.consumePickJson = consumePickJson
 M.consumeOrCaptureMouseJson = consumeOrCaptureMouseJson
 M.currentPickJson = currentPickJson

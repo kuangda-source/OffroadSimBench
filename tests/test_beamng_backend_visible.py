@@ -386,6 +386,7 @@ def test_beamng_backend_loads_lua_point_picker_and_consumes_pick(fake_beamngpy: 
     assert "last_mouse_down" in installed_text
     assert "last_mouse_down_edge" in installed_text
     assert "consumeOrCaptureMouseJson" in installed_text
+    assert "showOverlay = false" in installed_text
     assert fake_beamngpy.open_extensions == ["offroadSimBench/pointPicker"]
     assert pick["available"] is True
     assert pick["sequence"] == 7

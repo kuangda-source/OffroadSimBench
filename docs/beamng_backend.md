@@ -118,9 +118,18 @@ Select the editor mode (`region`, `start`, `goal`, or `route`), click or briefly
 hold in the BeamNG render window, and the GUI consumes the pick through
 `queue_lua_command` on a 50 ms polling loop. The Lua consumer checks the current
 ImGui mouse-down edge before returning, which keeps picking responsive even when
-BeamNGpy is not continuously stepping the scenario. Non-BeamNG runs are
-unaffected because the extension is only installed and loaded for BeamNG
+BeamNGpy is not continuously stepping the scenario. Its ImGui overlay is hidden
+by default, so picking does not add a flashing in-game banner; diagnostics can
+still be read through `statusJson()` and the JSON fallback file. Non-BeamNG runs
+are unaffected because the extension is only installed and loaded for BeamNG
 connections that opt in.
+
+Realtime preview work is scheduled from the GUI into a worker thread. While
+BeamNG is loading or updating a level, pose and picker reads use a non-blocking
+busy response instead of waiting on the backend lock, and repeated preview
+requests are coalesced so the application keeps only the newest pending draft.
+The editor canvas uses an equal-scale world-coordinate projection, matching the
+shape proportions drawn by BeamNG debug masks.
 
 At runtime, the BeamNG backend includes the region task metadata in each
 observation. This keeps simulator control, model planning, and evaluation

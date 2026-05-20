@@ -806,6 +806,14 @@ class BeamNGNavigationPreviewSession:
         self._level: str | None = None
         self._lock = threading.RLock()
 
+    @staticmethod
+    def _busy_payload(level: str | None) -> dict[str, Any]:
+        return {
+            "available": False,
+            "message": "BeamNG preview is busy loading or updating.",
+            "level": level,
+        }
+
     def update(
         self,
         task_path: str | Path,
@@ -852,7 +860,9 @@ class BeamNGNavigationPreviewSession:
             }
 
     def current_pose(self) -> dict[str, Any]:
-        with self._lock:
+        if not self._lock.acquire(blocking=False):
+            return self._busy_payload(self._level)
+        try:
             if self._backend is None:
                 return {
                     "available": False,
@@ -870,9 +880,13 @@ class BeamNGNavigationPreviewSession:
             pose.setdefault("available", True)
             pose.setdefault("level", self._level)
             return pose
+        finally:
+            self._lock.release()
 
     def consume_picker_pick(self) -> dict[str, Any]:
-        with self._lock:
+        if not self._lock.acquire(blocking=False):
+            return self._busy_payload(self._level)
+        try:
             if self._backend is None:
                 return {
                     "available": False,
@@ -890,6 +904,8 @@ class BeamNGNavigationPreviewSession:
             pick.setdefault("available", False)
             pick.setdefault("level", self._level)
             return pick
+        finally:
+            self._lock.release()
 
     def close(self) -> None:
         with self._lock:

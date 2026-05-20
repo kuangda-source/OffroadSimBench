@@ -198,6 +198,36 @@ def test_gui_navigation_preview_uses_editor_callback(monkeypatch) -> None:
     window.close()
 
 
+def test_gui_navigation_preview_coalesces_requests_while_loading(monkeypatch) -> None:
+    _ensure_app()
+    window = MainWindow()
+    started: list[dict[str, object]] = []
+
+    def fake_run_task(task, callback, label, **kwargs):
+        started.append({"task": task, "callback": callback, "label": label, "kwargs": kwargs})
+
+    monkeypatch.setattr(window, "_run_task", fake_run_task)
+    monkeypatch.setattr(
+        window.navigation_preview_session,
+        "update",
+        lambda task_path, **kwargs: {"task_path": task_path, "kwargs": kwargs, "analysis": {}},
+    )
+
+    window._preview_task_from_editor("configs/tasks/beamng_region_nav_001.yaml", "topdown", 90.0)
+    window._preview_task_from_editor("configs/tasks/beamng_region_nav_001.yaml", "orbit", 150.0)
+
+    assert len(started) == 1
+
+    first_payload = started[0]["task"]()
+    started[0]["callback"](first_payload)
+
+    assert len(started) == 2
+    second_payload = started[1]["task"]()
+    assert second_payload["kwargs"]["camera_mode"] == "orbit"
+    assert second_payload["kwargs"]["camera_height_m"] == 150.0
+    window.close()
+
+
 def test_navigation_task_dialog_previews_draft_from_same_editor(tmp_path) -> None:
     _ensure_app()
     preview_calls: list[dict[str, object]] = []
@@ -358,6 +388,23 @@ def test_navigation_task_canvas_drag_moves_region_point_without_adding() -> None
 
     assert len(canvas.region) == 4
     assert canvas.region[0] == (2.0, 3.0)
+
+
+def test_navigation_task_canvas_preserves_world_aspect_ratio() -> None:
+    _ensure_app()
+    canvas = NavigationTaskCanvas()
+    canvas.resize(640, 360)
+    canvas.bounds = (0.0, 100.0, 0.0, 100.0)
+
+    origin = canvas._to_canvas((0.0, 0.0))
+    east = canvas._to_canvas((100.0, 0.0))
+    north = canvas._to_canvas((0.0, 100.0))
+    roundtrip = canvas._from_canvas(canvas._to_canvas((25.0, 75.0)))
+
+    east_distance = abs(east.x() - origin.x())
+    north_distance = abs(north.y() - origin.y())
+    assert abs(east_distance - north_distance) < 1e-6
+    assert roundtrip == (25.0, 75.0)
 
 
 def test_navigation_task_dialog_delays_invalid_region_warning_until_save(tmp_path, monkeypatch) -> None:

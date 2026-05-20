@@ -141,7 +141,7 @@ powershell -ExecutionPolicy Bypass -File scripts\phase4_visible_beamng_acceptanc
 当前仓库提供 `configs\tasks\beamng_johnson_valley_nav_001.yaml` 作为
 Johnson Valley 原生越野地形上的固定区域/起终点任务。桌面 GUI 的 BeamNG 页面提供
 `编辑/预览区域与起终点` 联合入口，可在同一个窗口里编辑区域、起点、终点和专家路线，
-并可勾选实时预览，让同一个 BeamNG 场景增量刷新区域、起终点、路线标记和俯视相机。
+并可勾选实时预览，让后台 worker 在同一个 BeamNG 场景中增量刷新区域、起终点、路线标记和俯视相机。
 预览默认使用俯视高视角，也可以在编辑窗口里切换相机模式和高度。编辑窗口还可以读取
 当前 BeamNG 车辆世界坐标，并一键把当前位置写入区域点、起点、终点或路线点，用真实地图
 画面辅助选点。区域编辑窗口是非模态独立窗口，主 GUI 可以最小化或移到一边，不会挡住
@@ -149,9 +149,10 @@ BeamNG。实时预览会自动加载 BeamNG 侧 `offroadSimBench/pointPicker` Lu
 `BeamNG 窗口点击拾点` 后，先在编辑器里选择区域点/起点/终点/路线点模式，再直接在
 BeamNG 窗口左键点击或短按地面，GUI 会以 50ms 轮询通过 Tech 通信消费
 `cameraMouseRayCast()` 的世界坐标
-并写入当前任务草稿。BeamNG 预览会用更高对比度的半透明区域 mask、闭合边界线和区域点
+并写入当前任务草稿。首次加载或切换地图时 GUI 不会阻塞，实时预览会合并加载期间产生的
+重复请求，只保留最新一次草稿。BeamNG 预览会用更高对比度的半透明区域 mask、闭合边界线和区域点
 标出当前可通行区域；区域点在编辑画布里可以拖动调整，未闭合/不合法的区域只在正式保存
-任务时弹出错误提示。
+任务时弹出错误提示。GUI 画布使用等比例世界坐标投影，避免编辑区形状相对 BeamNG 地图被拉伸。
 
 评估阶段使用 `drive_mode=manual`，不是 BeamNG `ai_line`。`route_world_model`
 会记录 LE-WM/CEM 的原始规划动作，同时由 `model_guided_route_tracker` 将其转换为
@@ -279,8 +280,8 @@ of 11.59 m and 11.51 m against a 12 m goal radius, and zero collisions.
 In the desktop GUI, open the BeamNG page and use `编辑/预览区域与起终点` to
 edit a polygonal region, start point, goal point, and optional expert route
 while refreshing a BeamNG preview from the same dialog. Enable realtime preview
-to incrementally update the same BeamNG scene with region, start/goal, route
-marker, and top-down camera changes. Preview defaults to a high top-down camera,
+to update the same BeamNG scene from a background worker with region,
+start/goal, route marker, and top-down camera changes. Preview defaults to a high top-down camera,
 and the camera mode/height are adjustable in the editor. The editor can also read
 the current BeamNG vehicle world pose and apply it as a region point, start,
 goal, or route waypoint, so operators can pick points from the real map view.
@@ -291,9 +292,12 @@ With `BeamNG 窗口点击拾点` enabled, select the editor mode for region/star
 or route, then left-click or briefly hold on the BeamNG render window; the GUI
 polls every 50 ms and consumes the `cameraMouseRayCast()` world coordinate
 through Tech communication before writing it into the task draft. BeamNG preview
-draws a higher-contrast translucent region
-mask, closed outline, and region point markers; region points are draggable in
-the editor, and invalid regions only show blocking warnings when saving.
+loading does not block the GUI; repeated drafts are coalesced so only the newest
+pending preview runs after the active load finishes. BeamNG preview draws a
+higher-contrast translucent region mask, closed outline, and region point
+markers; region points are draggable in the editor, invalid regions only show
+blocking warnings when saving, and the GUI canvas preserves the same world-axis
+scale as the BeamNG map.
 Saved tasks default to `evaluation_drive_mode: manual`, which means
 the `OffroadAgent`/planner commands control the vehicle during evaluation.
 `evaluation_drive_mode: ai_line` remains available only for BeamNG-native

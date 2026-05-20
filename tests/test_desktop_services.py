@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import threading
 from unittest.mock import Mock, patch
 
 from offroad_sim.datasets import create_mock_orfd_dataset
@@ -271,6 +272,31 @@ def test_realtime_navigation_preview_session_reports_current_pose(monkeypatch) -
     assert pose["x"] == 12.5
     assert pose["y"] == -34.25
     assert pose["level"] == "johnson_valley"
+
+
+def test_realtime_navigation_preview_session_pose_and_picker_do_not_block_while_busy() -> None:
+    class FakeBackend:
+        def get_current_vehicle_pose(self):
+            raise AssertionError("busy preview should not call pose API")
+
+        def consume_point_picker(self):
+            raise AssertionError("busy preview should not call picker API")
+
+    session = services.BeamNGNavigationPreviewSession()
+    session._backend = FakeBackend()
+    session._level = "johnson_valley"
+    session._lock = threading.Lock()
+    session._lock.acquire()
+    try:
+        pose = session.current_pose()
+        pick = session.consume_picker_pick()
+    finally:
+        session._lock.release()
+
+    assert pose["available"] is False
+    assert pick["available"] is False
+    assert "busy" in pose["message"].lower()
+    assert "busy" in pick["message"].lower()
 
 
 def test_orfd_lewm_pipeline_uses_selected_sequence_and_options() -> None:
