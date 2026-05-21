@@ -6,7 +6,7 @@ from unittest.mock import patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QPointF, Qt
-from PySide6.QtWidgets import QApplication, QDialog, QPushButton
+from PySide6.QtWidgets import QApplication, QDialog, QLabel, QPushButton
 
 from desktop_app import services
 from desktop_app.qt_main import MainWindow, NavigationTaskCanvas, NavigationTaskDialog
@@ -92,6 +92,40 @@ def test_gui_exposes_algorithm_choice() -> None:
     window.close()
 
 
+def test_gui_overview_uses_world_model_config_selector() -> None:
+    _ensure_app()
+    window = MainWindow()
+
+    overview = window.page_stack.widget(0)
+    labels = [label.text() for label in overview.findChildren(QLabel)]
+
+    assert "World model config" in labels
+    assert "Model path" not in labels
+    assert "Algorithm" not in labels
+    assert "World model" not in labels
+    window.close()
+
+
+def test_gui_world_model_page_saves_config_for_home(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(services, "WORLD_MODEL_CONFIGS_PATH", tmp_path / "world_model_configs.json")
+    _ensure_app()
+    window = MainWindow()
+    window.model_config_name_edit.setText("Test LE-WM")
+    window.home_model_combo.setCurrentText("outputs/test/model/lewm_cost_object.ckpt")
+    window._select_combo_value(window.algorithm_combo, "stablewm_lewm")
+    window._select_combo_value(window.world_model_combo, "le_wm")
+
+    window.save_world_model_config()
+
+    ids = [
+        window.world_model_config_combo.itemData(index)["id"]
+        for index in range(window.world_model_config_combo.count())
+    ]
+    assert "Test_LE-WM" in ids
+    assert window.world_model_config_combo.currentData()["model_path"] == "outputs/test/model/lewm_cost_object.ckpt"
+    window.close()
+
+
 def test_gui_visible_demo_uses_minimum_human_visible_steps(monkeypatch) -> None:
     _ensure_app()
     window = MainWindow()
@@ -158,12 +192,20 @@ def test_gui_region_navigation_loop_uses_task_path(monkeypatch) -> None:
     window.close()
 
 
-def test_gui_home_start_uses_selected_task_and_checkpoint(monkeypatch) -> None:
+def test_gui_home_start_uses_selected_task_and_checkpoint(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(services, "WORLD_MODEL_CONFIGS_PATH", tmp_path / "world_model_configs.json")
+    services.save_world_model_config(
+        config_id="test_home_lewm",
+        label="Test Home LE-WM",
+        algorithm="stablewm_lewm",
+        world_model="le_wm",
+        model_path="outputs/region_navigation/model/lewm_cost_object.ckpt",
+    )
     _ensure_app()
     window = MainWindow()
     window.settings.max_steps = 9
     window.home_task_combo.setCurrentText("configs/tasks/beamng_johnson_valley_nav_test.yaml")
-    window.home_model_combo.setCurrentText("outputs/region_navigation/model/lewm_cost_object.ckpt")
+    window._select_world_model_config("test_home_lewm")
     captured: dict[str, services.RegionNavigationClosedLoopRequest] = {}
 
     monkeypatch.setattr(services, "run_region_navigation_closed_loop", lambda request: captured.setdefault("request", request))

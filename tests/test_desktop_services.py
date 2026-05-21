@@ -20,6 +20,31 @@ def test_desktop_catalog_snapshot_exposes_runtime_choices() -> None:
     assert any(item["name"] == "local_lewm_cost" for item in catalog["algorithms"])
     assert "navigation_tasks" in catalog
     assert "model_checkpoints" in catalog
+    assert "world_model_configs" in catalog
+
+
+def test_world_model_config_save_and_list(tmp_path) -> None:
+    config_path = tmp_path / "world_model_configs.json"
+
+    defaults = services.world_model_config_entries(config_path)
+    assert any(row["id"] == services.DEFAULT_WORLD_MODEL_CONFIG_ID for row in defaults)
+
+    saved = services.save_world_model_config(
+        config_id="my_lewm_config",
+        label="My LE-WM Config",
+        algorithm="stablewm_lewm",
+        world_model="le_wm",
+        model_path="outputs/region_navigation/model/lewm_cost_object.ckpt",
+        path=config_path,
+    )
+    rows = services.world_model_config_entries(config_path)
+    row = next(item for item in rows if item["id"] == "my_lewm_config")
+
+    assert saved["id"] == "my_lewm_config"
+    assert row["label"] == "My LE-WM Config"
+    assert row["algorithm"] == "stablewm_lewm"
+    assert row["world_model"] == "le_wm"
+    assert row["model_path"] == "outputs/region_navigation/model/lewm_cost_object.ckpt"
 
 
 def test_desktop_services_list_navigation_tasks_and_checkpoints(tmp_path) -> None:

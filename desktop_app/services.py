@@ -38,6 +38,8 @@ DEFAULT_LEWM_CHECKPOINT_PATH = (
     / "model"
     / "lewm_cost_object.ckpt"
 )
+WORLD_MODEL_CONFIGS_PATH = CONFIG_ROOT / "world_model_configs.json"
+DEFAULT_WORLD_MODEL_CONFIG_ID = "johnson_valley_lewm_validated"
 NAN_TEXT = "NaN"
 UNFINISHED_TEXT = "未完成"
 
@@ -187,6 +189,7 @@ def catalog_snapshot() -> dict[str, list[dict[str, Any]]]:
         "algorithms": _algorithm_rows(),
         "navigation_tasks": navigation_task_entries(),
         "model_checkpoints": model_checkpoint_entries(),
+        "world_model_configs": world_model_config_entries(),
         "episodes": episode_summaries(),
     }
 
@@ -247,6 +250,59 @@ def model_checkpoint_entries(root: str | Path | None = None) -> list[dict[str, A
             str(row["path"]),
         ),
     )
+
+
+def world_model_config_entries(path: str | Path | None = None) -> list[dict[str, Any]]:
+    config_path = Path(path or WORLD_MODEL_CONFIGS_PATH)
+    rows: dict[str, dict[str, Any]] = {
+        DEFAULT_WORLD_MODEL_CONFIG_ID: _world_model_config_row(
+            {
+                "id": DEFAULT_WORLD_MODEL_CONFIG_ID,
+                "label": "Johnson Valley LE-WM validated",
+                "algorithm": "stablewm_lewm",
+                "world_model": "le_wm",
+                "model_path": str(DEFAULT_LEWM_CHECKPOINT_PATH),
+            }
+        )
+    }
+    if config_path.exists():
+        payload = _read_json(config_path)
+        raw_rows: Any = payload.get("configs", payload) if isinstance(payload, dict) else payload
+        if isinstance(raw_rows, list):
+            for raw in raw_rows:
+                if not isinstance(raw, dict):
+                    continue
+                row = _world_model_config_row(raw)
+                rows[row["id"]] = row
+    return list(rows.values())
+
+
+def save_world_model_config(
+    *,
+    config_id: str,
+    label: str,
+    algorithm: str,
+    world_model: str,
+    model_path: str,
+    path: str | Path | None = None,
+) -> dict[str, Any]:
+    if not model_path.strip():
+        raise ValueError("Model path is required.")
+    row = _world_model_config_row(
+        {
+            "id": config_id or label,
+            "label": label or config_id,
+            "algorithm": algorithm or "stablewm_lewm",
+            "world_model": world_model or "le_wm",
+            "model_path": model_path,
+        }
+    )
+    config_path = Path(path or WORLD_MODEL_CONFIGS_PATH)
+    rows = [item for item in world_model_config_entries(config_path) if item["id"] != row["id"]]
+    rows.append(row)
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(json.dumps({"configs": rows}, indent=2, ensure_ascii=False), encoding="utf-8")
+    return row
 
 
 def beamng_status() -> dict[str, Any]:
@@ -1322,6 +1378,18 @@ def _algorithm_rows() -> list[dict[str, Any]]:
         row["display_name"] = spec.manifest.display_name
         rows.append(row)
     return rows
+
+
+def _world_model_config_row(raw: dict[str, Any]) -> dict[str, Any]:
+    config_id = _safe_name(str(raw.get("id") or raw.get("label") or "world_model_config"))
+    label = str(raw.get("label") or config_id)
+    return {
+        "id": config_id,
+        "label": label,
+        "algorithm": str(raw.get("algorithm") or "stablewm_lewm"),
+        "world_model": str(raw.get("world_model") or "le_wm"),
+        "model_path": str(raw.get("model_path") or ""),
+    }
 
 
 def _read_json(path: Path) -> dict[str, Any]:

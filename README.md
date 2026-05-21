@@ -140,7 +140,9 @@ powershell -ExecutionPolicy Bypass -File scripts\phase4_visible_beamng_acceptanc
 
 当前仓库提供 `configs\tasks\beamng_johnson_valley_nav_test.yaml` 作为
 Johnson Valley 原生越野地形上的当前验证区域/起终点任务。桌面 GUI 首页会自动列出
-可用的 BeamNG region task 和 LE-WM checkpoint，默认指向这条已验证任务和
+可用的 BeamNG region task 和世界模型配置；具体的模型 checkpoint、算法和 world model
+在 `世界模型` 页面选择并保存后，会作为首页的 `World model config` 下拉项读取。
+默认配置指向这条已验证任务和
 `outputs\region_navigation\johnson_valley_nav_test_train_v2_validated\model\lewm_cost_object.ckpt`；
 当首页 Backend 选择为 `beamng` 时，点击 `开始测试` 会进入
 `stablewm_lewm + navigation_mpc + model_mpc` 的 BeamNG 手动控车评估，默认规划参数为
@@ -275,8 +277,10 @@ python scripts\run_region_navigation_loop.py --task configs\tasks\beamng_region_
 
 Johnson Valley now has a repeatable stock-terrain route task at
 `configs\tasks\beamng_johnson_valley_nav_test.yaml`. The desktop GUI overview
-page lists available BeamNG region tasks and LE-WM checkpoints as dropdowns;
-the default selection points at this validated task and
+page lists available BeamNG region tasks and saved world-model configs; the
+checkpoint path, algorithm, and world-model type are selected and saved from
+the `世界模型` page, then read by the overview `World model config` dropdown.
+The default config points at this validated task and
 `outputs\region_navigation\johnson_valley_nav_test_train_v2_validated\model\lewm_cost_object.ckpt`.
 When the overview Backend is `beamng`, clicking `开始测试` runs the selected task
 through `stablewm_lewm + navigation_mpc + model_mpc` in BeamNG with default

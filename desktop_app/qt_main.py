@@ -969,6 +969,10 @@ class MainWindow(QMainWindow):
         self.world_model_combo = self._combo()
         self.planner_combo = self._combo()
         self.algorithm_combo = self._combo()
+        self.world_model_config_combo = self._combo()
+        self.world_model_config_edit_combo = self._combo()
+        self.model_config_name_edit = QLineEdit()
+        self.model_config_name_edit.setPlaceholderText("Johnson Valley LE-WM validated")
 
         self.dataset_root_edit = QLineEdit()
         self.dataset_root_edit.setPlaceholderText(r"datasets\ORFD_Dataset_ICRA2022_ZIP")
@@ -983,7 +987,16 @@ class MainWindow(QMainWindow):
         self.home_model_combo = self._combo(editable=True)
         self.home_task_combo.currentTextChanged.connect(self._sync_home_task_to_edit)
         self.home_model_combo.currentTextChanged.connect(self._sync_home_model_to_edit)
-        for edit in (self.dataset_root_edit, self.adapter_edit, self.stablewm_hdf5_edit, self.model_path_edit, self.task_path_edit):
+        self.world_model_config_combo.currentIndexChanged.connect(self._sync_home_world_model_config)
+        self.world_model_config_edit_combo.currentIndexChanged.connect(self._sync_edit_world_model_config)
+        for edit in (
+            self.dataset_root_edit,
+            self.adapter_edit,
+            self.stablewm_hdf5_edit,
+            self.model_path_edit,
+            self.model_config_name_edit,
+            self.task_path_edit,
+        ):
             self._configure_control(edit)
 
     def _build_sidebar(self) -> QWidget:
@@ -1069,11 +1082,9 @@ class MainWindow(QMainWindow):
                 [
                     self._field("Backend", self.backend_combo),
                     self._field("BeamNG region task", self.home_task_combo),
-                    self._field("Model path", self.home_model_combo),
+                    self._field("World model config", self.world_model_config_combo),
                     self._field("Scenario", self.scenario_combo),
                     self._field("Agent", self.agent_combo),
-                    self._field("Algorithm", self.algorithm_combo),
-                    self._field("World model", self.world_model_combo),
                     self._field("Planner", self.planner_combo),
                 ],
             ),
@@ -1149,11 +1160,16 @@ class MainWindow(QMainWindow):
 
         model_browse = QPushButton("选择")
         self._configure_button(model_browse)
-        model_browse.clicked.connect(lambda: self._browse_path_or_dir(self.model_path_edit))
+        model_browse.clicked.connect(lambda: self._browse_path_combo(self.home_model_combo))
         controls = self._group(
             "模型训练与加载",
             [
-                self._field("Model path", self._with_button(self.model_path_edit, model_browse)),
+                self._field("World model config", self.world_model_config_edit_combo),
+                self._field("Config name", self.model_config_name_edit),
+                self._field("Model path", self._with_button(self.home_model_combo, model_browse)),
+                self._field("Algorithm", self.algorithm_combo),
+                self._field("World model", self.world_model_combo),
+                self._action_button("Save world model config", self.save_world_model_config, primary=True),
                 self._action_button("训练 LE-WM cost model", self.train_lewm_cost_model),
                 self._action_button("训练 tiny world model", self.train_tiny_model),
                 self._action_button("一键 ORFD → LE-WM → BeamNG", self.run_orfd_lewm_pipeline, primary=True),
@@ -1270,6 +1286,16 @@ class MainWindow(QMainWindow):
             self.catalog.get("model_checkpoints", []),
             default_path=str(services.DEFAULT_LEWM_CHECKPOINT_PATH),
         )
+        self._fill_world_model_config_combo(
+            self.world_model_config_combo,
+            self.catalog.get("world_model_configs", []),
+            default_id=services.DEFAULT_WORLD_MODEL_CONFIG_ID,
+        )
+        self._fill_world_model_config_combo(
+            self.world_model_config_edit_combo,
+            self.catalog.get("world_model_configs", []),
+            default_id=services.DEFAULT_WORLD_MODEL_CONFIG_ID,
+        )
         self._fill_episode_list()
         self._refresh_planner_summary()
         beamng = _find_named(self.catalog["backends"], "beamng")
@@ -1369,27 +1395,35 @@ class MainWindow(QMainWindow):
         if str(backend) == "beamng":
             self.run_home_region_model_test()
             return
+        row = self._combo_config_row(self.world_model_config_combo)
+        if row:
+            self._apply_world_model_config(row, sync_editor=True)
         self.run_episode()
 
     def run_home_region_model_test(self) -> None:
         task_path = self._path_combo_value(self.home_task_combo).strip()
-        model_path = self._path_combo_value(self.home_model_combo).strip()
+        config = self._combo_config_row(self.world_model_config_combo)
+        if config:
+            self._apply_world_model_config(config, sync_editor=True)
+        algorithm = str(config.get("algorithm") or self.algorithm_combo.currentData() or self.algorithm_combo.currentText() or "stablewm_lewm")
+        world_model = str(config.get("world_model") or self.world_model_combo.currentData() or self.world_model_combo.currentText() or "le_wm")
+        model_path = str(config.get("model_path") or self._path_combo_value(self.home_model_combo)).strip()
         if not task_path:
             self.log("开始测试需要先选择 BeamNG region task。")
             return
-        if not model_path:
+        if algorithm == "stablewm_lewm" and not model_path:
             self.log("开始测试需要先选择模型 checkpoint。")
             return
         self.task_path_edit.setText(task_path)
         self.model_path_edit.setText(model_path)
         self._select_combo_value(self.agent_combo, "model_mpc")
-        self._select_combo_value(self.algorithm_combo, "stablewm_lewm")
-        self._select_combo_value(self.world_model_combo, "le_wm")
+        self._select_combo_value(self.algorithm_combo, algorithm)
+        self._select_combo_value(self.world_model_combo, world_model)
         self._select_combo_value(self.planner_combo, "navigation_mpc")
         request = services.RegionNavigationClosedLoopRequest(
             task_path=task_path,
-            algorithm="stablewm_lewm",
-            algorithm_model_path=model_path,
+            algorithm=algorithm,
+            algorithm_model_path=model_path if algorithm == "stablewm_lewm" else "",
             collect_steps=max(int(self.settings.max_steps), 520),
             eval_steps=max(int(self.settings.max_steps), 520),
             seed=self.settings.seed,
@@ -1437,6 +1471,28 @@ class MainWindow(QMainWindow):
             self._preview_ready,
             "dataset preview failed",
         )
+
+    def save_world_model_config(self) -> None:
+        label = self.model_config_name_edit.text().strip()
+        selected = self._combo_config_row(self.world_model_config_edit_combo)
+        if not label:
+            label = str(selected.get("label") or selected.get("id") or "World Model Config")
+        model_path = self._path_combo_value(self.home_model_combo).strip() or self.model_path_edit.text().strip()
+        try:
+            row = services.save_world_model_config(
+                config_id=label,
+                label=label,
+                algorithm=self.algorithm_combo.currentData() or self.algorithm_combo.currentText() or "stablewm_lewm",
+                world_model=self.world_model_combo.currentData() or self.world_model_combo.currentText() or "le_wm",
+                model_path=model_path,
+            )
+        except ValueError as exc:
+            self.log(f"World model config save failed: {exc}")
+            return
+        self.model_summary.setText(_compact_json({"status": "saved", "world_model_config": row}))
+        self.log(f"World model config saved: {row['label']}")
+        self.refresh_catalogs()
+        self._select_world_model_config(str(row["id"]))
 
     def train_tiny_model(self) -> None:
         root = self.dataset_root_edit.text().strip()
@@ -1710,6 +1766,7 @@ class MainWindow(QMainWindow):
         self.planner_summary.setText(_compact_json(payload))
 
     def _current_request(self) -> services.RunRequest:
+        config = self._combo_config_row(self.world_model_config_combo)
         return services.RunRequest(
             backend=self.backend_combo.currentData() or self.backend_combo.currentText(),
             scenario=self.scenario_combo.currentData() or self.scenario_combo.currentText(),
@@ -1718,8 +1775,8 @@ class MainWindow(QMainWindow):
             max_steps=self.settings.max_steps,
             record=self.settings.record,
             record_arrays=self.settings.record_arrays,
-            world_model_type=self.world_model_combo.currentData() or self.world_model_combo.currentText(),
-            world_model_path=self.model_path_edit.text().strip(),
+            world_model_type=config.get("world_model") or self.world_model_combo.currentData() or self.world_model_combo.currentText(),
+            world_model_path=str(config.get("model_path") or self.model_path_edit.text().strip()),
             planner=self.planner_combo.currentData() or "",
             planner_horizon=self.settings.planner_horizon,
             planner_samples=self.settings.planner_samples,
@@ -1815,6 +1872,24 @@ class MainWindow(QMainWindow):
                 selected_index = combo.count() - 1
         combo.setCurrentIndex(selected_index)
 
+    def _fill_world_model_config_combo(self, combo: QComboBox, rows: list[dict[str, Any]], *, default_id: str) -> None:
+        current = combo.currentData()
+        current_id = current.get("id") if isinstance(current, dict) else ""
+        combo.blockSignals(True)
+        combo.clear()
+        selected_index = -1
+        for row in rows:
+            config_id = str(row.get("id") or "")
+            if not config_id:
+                continue
+            label = str(row.get("label") or config_id)
+            combo.addItem(label, dict(row))
+            if config_id == (current_id or default_id):
+                selected_index = combo.count() - 1
+        if combo.count():
+            combo.setCurrentIndex(max(0, selected_index))
+        combo.blockSignals(False)
+
     def _fill_path_combo(self, combo: QComboBox, rows: list[dict[str, Any]], *, default_path: str) -> None:
         current = self._path_combo_value(combo) or default_path
         combo.blockSignals(True)
@@ -1860,6 +1935,53 @@ class MainWindow(QMainWindow):
         path = self._path_combo_value(self.home_model_combo)
         if path:
             self.model_path_edit.setText(path)
+
+    def _combo_config_row(self, combo: QComboBox) -> dict[str, Any]:
+        data = combo.currentData()
+        return dict(data) if isinstance(data, dict) else {}
+
+    def _sync_home_world_model_config(self) -> None:
+        row = self._combo_config_row(self.world_model_config_combo)
+        if row:
+            self._apply_world_model_config(row, sync_editor=True)
+
+    def _sync_edit_world_model_config(self) -> None:
+        row = self._combo_config_row(self.world_model_config_edit_combo)
+        if row:
+            self._apply_world_model_config(row, sync_editor=False)
+            self._select_world_model_config(str(row.get("id") or ""), combos=[self.world_model_config_combo])
+
+    def _apply_world_model_config(self, row: dict[str, Any], *, sync_editor: bool) -> None:
+        if hasattr(self, "model_config_name_edit"):
+            self.model_config_name_edit.setText(str(row.get("label") or row.get("id") or ""))
+        algorithm = str(row.get("algorithm") or "")
+        world_model = str(row.get("world_model") or "")
+        model_path = str(row.get("model_path") or "")
+        if algorithm:
+            self._select_combo_value(self.algorithm_combo, algorithm)
+        if world_model:
+            self._select_combo_value(self.world_model_combo, world_model)
+        if model_path:
+            self._select_path_combo_value(self.home_model_combo, model_path)
+            self.model_path_edit.setText(model_path)
+        if sync_editor and hasattr(self, "world_model_config_edit_combo"):
+            self._select_world_model_config(str(row.get("id") or ""), combos=[self.world_model_config_edit_combo])
+
+    def _select_path_combo_value(self, combo: QComboBox, path: str) -> None:
+        for index in range(combo.count()):
+            data = combo.itemData(index)
+            if _same_path_text(str(data or ""), path):
+                combo.setCurrentIndex(index)
+                return
+        combo.setCurrentText(path)
+
+    def _select_world_model_config(self, config_id: str, *, combos: list[QComboBox] | None = None) -> None:
+        for combo in combos or [self.world_model_config_combo, self.world_model_config_edit_combo]:
+            for index in range(combo.count()):
+                data = combo.itemData(index)
+                if isinstance(data, dict) and str(data.get("id") or "") == config_id:
+                    combo.setCurrentIndex(index)
+                    break
 
     def _select_combo_value(self, combo: QComboBox, value: str) -> None:
         for index in range(combo.count()):
@@ -1935,6 +2057,13 @@ class MainWindow(QMainWindow):
         path = QFileDialog.getExistingDirectory(self, "选择目录", target.text() or str(services.ROOT))
         if path:
             target.setText(path)
+
+    def _browse_path_combo(self, target: QComboBox) -> None:
+        path = QFileDialog.getExistingDirectory(self, "Select directory", self._path_combo_value(target) or str(services.ROOT))
+        if path:
+            target.setCurrentText(path)
+            if target is self.home_model_combo:
+                self._sync_home_model_to_edit()
 
 
 def _find_named(rows: list[dict[str, Any]], name: str) -> dict[str, Any] | None:
