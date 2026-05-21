@@ -45,6 +45,7 @@ def test_desktop_services_list_navigation_tasks_and_checkpoints(tmp_path) -> Non
     assert tasks[0]["id"] == "menu_task"
     assert tasks[0]["path"] == str(task_path.resolve())
     assert checkpoints[0]["path"] == str(checkpoint.resolve())
+    assert checkpoints[0]["label"] == "runs/model/lewm_cost_object.ckpt"
 
 
 def test_desktop_request_builds_dataset_and_planner_options() -> None:

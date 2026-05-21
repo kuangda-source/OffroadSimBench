@@ -228,7 +228,7 @@ def model_checkpoint_entries(root: str | Path | None = None) -> list[dict[str, A
             stat = path.stat()
         except OSError:
             continue
-        label = f"{path.parent.name}/{path.name}"
+        label = _checkpoint_display_label(path, output_root)
         rows.append(
             {
                 "id": path.stem,
@@ -1546,6 +1546,18 @@ def _same_path(left: str | Path, right: str | Path) -> bool:
         return Path(left).resolve() == Path(right).resolve()
     except OSError:
         return str(left) == str(right)
+
+
+def _checkpoint_display_label(path: Path, output_root: Path) -> str:
+    resolved = path.resolve()
+    try:
+        label_path = resolved.relative_to(output_root.resolve())
+    except ValueError:
+        try:
+            label_path = resolved.relative_to(ROOT)
+        except ValueError:
+            label_path = resolved
+    return str(label_path).replace("\\", "/")
 
 
 def _safe_name(value: str) -> str:
