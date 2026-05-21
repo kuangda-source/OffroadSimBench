@@ -176,3 +176,59 @@ def test_region_navigation_closed_loop_passes_planner_settings(tmp_path: Path) -
     assert seen_agent_options[1]["planner_config"] == {"horizon": 7, "num_samples": 24, "iterations": 3}
     assert seen_agent_options[1]["algorithm_name"] == "fake_region"
     assert seen_agent_options[1]["algorithm_model_path"].endswith("model")
+
+
+def test_region_navigation_closed_loop_can_use_existing_algorithm_checkpoint(tmp_path: Path) -> None:
+    task_path = tmp_path / "task.yaml"
+    _write_task(task_path)
+    model_path = tmp_path / "real_lewm_object.ckpt"
+    model_path.write_bytes(b"checkpoint")
+    evaluation_episode = _save_episode(tmp_path / "evaluation", 4.5, -240.5)
+    seen_agent_names: list[str] = []
+    seen_agent_options: list[dict[str, object]] = []
+
+    def fake_run_episode(**kwargs):
+        seen_agent_names.append(kwargs["agent_name"])
+        seen_agent_options.append(kwargs["agent_options"])
+
+        class Result:
+            def to_dict(self):
+                return {
+                    "episode_id": "eval",
+                    "episode_path": str(evaluation_episode),
+                    "metrics": {"horizontal_distance_traveled": 20.0, "collision_count": 0, "drive_mode": "manual"},
+                }
+
+        return Result()
+
+    class FakeAlgorithm:
+        algorithm_id = "stablewm_lewm"
+
+        def prepare_data(self, request):
+            raise AssertionError("prepare_data should not run when algorithm_model_path is provided")
+
+        def train(self, request):
+            raise AssertionError("train should not run when algorithm_model_path is provided")
+
+    with (
+        patch("desktop_app.services.run_episode", side_effect=fake_run_episode),
+        patch("desktop_app.services.make_algorithm_adapter", return_value=FakeAlgorithm()),
+    ):
+        payload = services.run_region_navigation_closed_loop(
+            services.RegionNavigationClosedLoopRequest(
+                task_path=str(task_path),
+                algorithm="stablewm_lewm",
+                algorithm_model_path=str(model_path),
+                output_dir=str(tmp_path / "out"),
+                collect_steps=0,
+                eval_steps=8,
+                close_beamng=True,
+            )
+        )
+
+    assert seen_agent_names == ["model_mpc"]
+    assert seen_agent_options[0]["algorithm_name"] == "stablewm_lewm"
+    assert seen_agent_options[0]["algorithm_model_path"] == str(model_path)
+    assert payload["collection"]["status"] == "skipped"
+    assert payload["training"]["status"] == "skipped"
+    assert payload["region_navigation"]["algorithm_model_path"] == str(model_path)

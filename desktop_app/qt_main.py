@@ -1498,9 +1498,11 @@ class MainWindow(QMainWindow):
         )
 
     def run_region_navigation_loop(self) -> None:
+        algorithm = self.algorithm_combo.currentData() or self.algorithm_combo.currentText() or "local_lewm_cost"
         request = services.RegionNavigationClosedLoopRequest(
             task_path=self.task_path_edit.text().strip() or r"configs\tasks\beamng_region_nav_001.yaml",
-            algorithm=self.algorithm_combo.currentData() or self.algorithm_combo.currentText() or "local_lewm_cost",
+            algorithm=algorithm,
+            algorithm_model_path=self.model_path_edit.text().strip() if algorithm == "stablewm_lewm" else "",
             collect_steps=max(int(self.settings.max_steps), 160),
             eval_steps=max(int(self.settings.max_steps), 80),
             seed=self.settings.seed,
@@ -1520,9 +1522,11 @@ class MainWindow(QMainWindow):
     def run_johnson_valley_demo_loop(self) -> None:
         self.task_path_edit.setText(r"configs\tasks\beamng_johnson_valley_nav_001.yaml")
         planner = self.planner_combo.currentData() or self.planner_combo.currentText() or "le_wm_cem"
+        algorithm = self.algorithm_combo.currentData() or self.algorithm_combo.currentText() or "local_lewm_cost"
         request = services.RegionNavigationClosedLoopRequest(
             task_path=r"configs\tasks\beamng_johnson_valley_nav_001.yaml",
-            algorithm=self.algorithm_combo.currentData() or self.algorithm_combo.currentText() or "local_lewm_cost",
+            algorithm=algorithm,
+            algorithm_model_path=self.model_path_edit.text().strip() if algorithm == "stablewm_lewm" else "",
             collect_steps=max(int(self.settings.max_steps), 240),
             eval_steps=max(int(self.settings.max_steps), 300),
             seed=self.settings.seed,

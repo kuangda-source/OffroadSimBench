@@ -8,6 +8,7 @@ from typing import Any, Mapping
 import numpy as np
 
 from offroad_sim.core import Action, Observation, VehicleState
+from offroad_sim.planning.lewm_checkpoint import LeWMCheckpointReference, normalize_lewm_checkpoint_reference
 from offroad_sim.planning.types import ActionPlanner, PlanningResult
 from offroad_sim.utils.runtime_env import prepare_stable_worldmodel_runtime
 from offroad_sim.world_models import BaseWorldModel
@@ -45,6 +46,7 @@ class LeWMCEMPlanner(ActionPlanner):
         self.seed = int(seed)
         self.image_size = max(16, int(image_size))
         self._loaded_checkpoint: str | None = None
+        self._checkpoint_ref: LeWMCheckpointReference | None = None
         self._solver: Any | None = None
         self._torch: Any | None = None
 
@@ -70,6 +72,7 @@ class LeWMCEMPlanner(ActionPlanner):
             raise StableWorldModelUnavailableError("LE-WM planning requires a checkpoint path.")
 
         solver, torch = self._solver_for_checkpoint(checkpoint)
+        checkpoint_ref = self._checkpoint_ref or normalize_lewm_checkpoint_reference(checkpoint, cache_dir=self.cache_dir)
         info = self._observation_to_info(observation, torch)
         outputs = solver(info)
         action_array = np.asarray(outputs["actions"][0], dtype=np.float32)
@@ -88,11 +91,16 @@ class LeWMCEMPlanner(ActionPlanner):
                 "num_samples": self.num_samples,
                 "iterations": self.iterations,
                 "topk": self.topk,
+                "checkpoint_run_name": checkpoint_ref.run_name,
+                "checkpoint_cache_dir": checkpoint_ref.cache_dir,
+                "checkpoint_source_kind": checkpoint_ref.source_kind,
+                "checkpoint_object_path": str(checkpoint_ref.object_checkpoint) if checkpoint_ref.object_checkpoint else None,
             },
         )
 
     def _solver_for_checkpoint(self, checkpoint: str | Path) -> tuple[Any, Any]:
-        checkpoint_key = str(checkpoint)
+        checkpoint_ref = normalize_lewm_checkpoint_reference(checkpoint, cache_dir=self.cache_dir)
+        checkpoint_key = f"{checkpoint_ref.cache_dir or ''}|{checkpoint_ref.run_name}"
         if self._solver is not None and self._torch is not None and self._loaded_checkpoint == checkpoint_key:
             return self._solver, self._torch
 
@@ -107,7 +115,7 @@ class LeWMCEMPlanner(ActionPlanner):
                 "Install stable-worldmodel, torch, and gymnasium before using le_wm_cem planning."
             ) from exc
 
-        cost_model = AutoCostModel(checkpoint_key, cache_dir=self.cache_dir)
+        cost_model = AutoCostModel(checkpoint_ref.run_name, cache_dir=checkpoint_ref.cache_dir)
         solver = CEMSolver(
             cost_model,
             batch_size=1,
@@ -127,6 +135,7 @@ class LeWMCEMPlanner(ActionPlanner):
         self._solver = solver
         self._torch = torch
         self._loaded_checkpoint = checkpoint_key
+        self._checkpoint_ref = checkpoint_ref
         return solver, torch
 
     def _observation_to_info(self, observation: Observation, torch: Any) -> dict[str, Any]:

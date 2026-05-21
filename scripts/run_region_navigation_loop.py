@@ -18,6 +18,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--task", default="configs/tasks/beamng_region_nav_001.yaml")
     parser.add_argument("--algorithm", default="local_lewm_cost")
+    parser.add_argument("--algorithm-model-path", default="", help="Use an existing algorithm/checkpoint path and skip collection/training.")
     parser.add_argument("--vehicle", default="configs/vehicles/ugv_medium.yaml")
     parser.add_argument("--output-dir", default="")
     parser.add_argument("--collect-steps", type=int, default=160)
@@ -35,6 +36,7 @@ def main() -> int:
         RegionNavigationClosedLoopRequest(
             task_path=args.task,
             algorithm=args.algorithm,
+            algorithm_model_path=args.algorithm_model_path,
             vehicle=args.vehicle,
             output_dir=args.output_dir,
             collect_steps=args.collect_steps,

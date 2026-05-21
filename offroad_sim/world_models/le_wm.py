@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from offroad_sim.core import Action, Observation
+from offroad_sim.planning.lewm_checkpoint import LeWMCheckpointFormatError, normalize_lewm_checkpoint_reference
 from offroad_sim.world_models.base import BaseWorldModel, WorldModelPrediction
 
 
@@ -36,16 +37,30 @@ class LeWMWorldModel(BaseWorldModel):
         stable_worldmodel = importlib.util.find_spec("stable_worldmodel") is not None
         torch_available = importlib.util.find_spec("torch") is not None
         source_dir = os.environ.get("LE_WM_HOME")
+        checkpoint_ref = None
+        checkpoint_message = ""
+        if checkpoint_path:
+            try:
+                checkpoint_ref = normalize_lewm_checkpoint_reference(checkpoint_path)
+            except LeWMCheckpointFormatError as exc:
+                checkpoint_message = str(exc)
         checkpoint = Path(checkpoint_path) if checkpoint_path else None
-        checkpoint_exists = checkpoint is not None and checkpoint.exists()
-        available = stable_worldmodel and torch_available and (checkpoint is None or checkpoint_exists)
+        checkpoint_exists = bool(
+            checkpoint_ref is not None
+            and (
+                checkpoint_ref.object_checkpoint is not None
+                or checkpoint is None
+                or not checkpoint.exists()
+            )
+        )
+        available = stable_worldmodel and torch_available and (checkpoint_path is None or bool(checkpoint_ref))
         missing: list[str] = []
         if not stable_worldmodel:
             missing.append("stable_worldmodel package")
         if not torch_available:
             missing.append("torch package")
-        if checkpoint is not None and not checkpoint_exists:
-            missing.append("LE-WM checkpoint")
+        if checkpoint_path is not None and checkpoint_ref is None:
+            missing.append(checkpoint_message or "LE-WM checkpoint")
         return {
             "name": cls.model_type,
             "available": available,
@@ -56,6 +71,9 @@ class LeWMWorldModel(BaseWorldModel):
                 "le_wm_home": source_dir,
                 "checkpoint_path": str(checkpoint) if checkpoint else None,
                 "checkpoint_exists": checkpoint_exists if checkpoint else None,
+                "checkpoint_run_name": checkpoint_ref.run_name if checkpoint_ref else None,
+                "checkpoint_object_path": str(checkpoint_ref.object_checkpoint) if checkpoint_ref and checkpoint_ref.object_checkpoint else None,
+                "checkpoint_source_kind": checkpoint_ref.source_kind if checkpoint_ref else None,
                 "repository": "https://github.com/lucas-maes/le-wm",
             },
         }

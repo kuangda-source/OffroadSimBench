@@ -112,12 +112,13 @@ class BeamNGMapLeWMClosedLoopRequest:
 class RegionNavigationClosedLoopRequest:
     task_path: str
     algorithm: str = "local_lewm_cost"
+    algorithm_model_path: str = ""
     vehicle: str = "configs/vehicles/ugv_medium.yaml"
     output_dir: str = ""
     collect_steps: int = 160
     eval_steps: int = 120
     seed: int = 7
-    planner: str = "le_wm_cem"
+    planner: str = "navigation_mpc"
     planner_horizon: int = 4
     planner_samples: int = 16
     planner_iterations: int = 2
@@ -572,38 +573,45 @@ def run_region_navigation_closed_loop(request: RegionNavigationClosedLoopRequest
     output_dir.mkdir(parents=True, exist_ok=True)
     collection_scenario = task.to_beamng_scenario(mode="collection")
     evaluation_scenario = task.to_beamng_scenario(mode="evaluation")
-
-    collection = _run_region_beamng_episode(
-        scenario=collection_scenario,
-        vehicle=request.vehicle,
-        max_steps=min(max(1, int(request.collect_steps)), task.max_steps),
-        seed=request.seed,
-        world_model_type="simple_kinematic",
-        world_model_path="",
-        planner="",
-        planner_horizon=request.planner_horizon,
-        planner_samples=request.planner_samples,
-        planner_iterations=request.planner_iterations,
-        record=True,
-        beamng_gfx=request.beamng_gfx,
-        pre_run_hold_sec=request.pre_run_hold_sec,
-        step_delay_sec=request.step_delay_sec,
-        post_run_hold_sec=0.0,
-        close_beamng=True,
-    )
-    episode_path = collection.get("episode_path")
-    if not episode_path:
-        raise RuntimeError("Region navigation collection did not produce an episode path.")
-
-    algorithm = make_algorithm_adapter(request.algorithm)
     hdf5_path = output_dir / f"{_safe_name(task.task_id)}.h5"
-    prep = algorithm.prepare_data(DataPrepRequest(episode_root=str(episode_path), output_path=str(hdf5_path), actions_from_state=True))
-    hdf5 = {"output_hdf5": prep.output_path, **prep.metadata}
+    algorithm = make_algorithm_adapter(request.algorithm)
+    existing_model_path = str(request.algorithm_model_path or "").strip()
 
-    model_dir = output_dir / "model"
-    trained = algorithm.train(TrainRequest(input_path=str(hdf5["output_hdf5"]), output_dir=str(model_dir)))
-    training = {"output_dir": trained.output_dir, "checkpoint_path": trained.checkpoint_path, **trained.metadata}
-    model_path = str(training.get("output_dir") or model_dir)
+    if existing_model_path:
+        collection = {"status": "skipped", "reason": "algorithm_model_path provided"}
+        hdf5 = {"status": "skipped", "reason": "algorithm_model_path provided"}
+        training = {"status": "skipped", "output_dir": existing_model_path, "checkpoint_path": existing_model_path}
+        model_path = existing_model_path
+    else:
+        collection = _run_region_beamng_episode(
+            scenario=collection_scenario,
+            vehicle=request.vehicle,
+            max_steps=min(max(1, int(request.collect_steps)), task.max_steps),
+            seed=request.seed,
+            world_model_type="simple_kinematic",
+            world_model_path="",
+            planner="",
+            planner_horizon=request.planner_horizon,
+            planner_samples=request.planner_samples,
+            planner_iterations=request.planner_iterations,
+            record=True,
+            beamng_gfx=request.beamng_gfx,
+            pre_run_hold_sec=request.pre_run_hold_sec,
+            step_delay_sec=request.step_delay_sec,
+            post_run_hold_sec=0.0,
+            close_beamng=True,
+        )
+        episode_path = collection.get("episode_path")
+        if not episode_path:
+            raise RuntimeError("Region navigation collection did not produce an episode path.")
+
+        prep = algorithm.prepare_data(DataPrepRequest(episode_root=str(episode_path), output_path=str(hdf5_path), actions_from_state=True))
+        hdf5 = {"output_hdf5": prep.output_path, **prep.metadata}
+
+        model_dir = output_dir / "model"
+        trained = algorithm.train(TrainRequest(input_path=str(hdf5["output_hdf5"]), output_dir=str(model_dir)))
+        training = {"output_dir": trained.output_dir, "checkpoint_path": trained.checkpoint_path, **trained.metadata}
+        model_path = str(training.get("output_dir") or model_dir)
 
     evaluation = _run_region_beamng_episode(
         scenario=evaluation_scenario,

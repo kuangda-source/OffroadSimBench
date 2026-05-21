@@ -88,6 +88,26 @@ External algorithm packages can follow the same `algorithm.yaml + adapter.py`
 contract and declare whether they provide a full agent, world model, cost model,
 or trajectory model.
 
+Existing upstream/stable-worldmodel checkpoints can be used without retraining
+the local smoke cost model:
+
+```powershell
+python -m offroad_sim.cli algorithms inspect stablewm_lewm --json
+python scripts\run_region_navigation_loop.py --task configs\tasks\beamng_johnson_valley_nav_001.yaml --algorithm stablewm_lewm --algorithm-model-path D:\models\lewm\orfd\lewm_object.ckpt --eval-steps 300 --keep-beamng-open
+```
+
+`stablewm_lewm` accepts either a run directory containing `*_object.ckpt`, a
+direct `*_object.ckpt` file, or a stable-worldmodel run name relative to
+`STABLEWM_HOME`.
+
+HuggingFace mirrors from the upstream LE-WM release contain `weights.pt` and
+`config.json`. Convert those first:
+
+```powershell
+$env:LE_WM_HOME = "D:\programs\le-wm"
+python scripts\convert_lewm_hf_checkpoint.py D:\models\lewm_hf\pusht D:\models\lewm\pusht
+```
+
 Region navigation tasks are the preferred path for start/goal experiments:
 
 ```powershell

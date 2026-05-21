@@ -369,6 +369,21 @@ class BeamNGBackend(OffroadSimBackend):
             "goal_reached": self._last_goal_reached,
         }
 
+    def hold_vehicle(self) -> None:
+        """Brake the vehicle before leaving a visible BeamNG window open."""
+
+        if self._vehicle is None or self._active_drive_mode == "ai_line":
+            return
+        command = Action(steer=0.0, throttle=0.0, brake=1.0)
+        control = self._manual_control_payload(command)
+        control["parkingbrake"] = 1.0
+        try:
+            self._vehicle.control(**control)
+        except TypeError:
+            self._vehicle.control(throttle=0.0, steering=0.0, brake=1.0)
+        if self._bng is not None and hasattr(self._bng, "step"):
+            self._bng.step(max(1, min(int(self._active_steps_per_action), 6)))
+
     def close(self) -> None:
         self._disable_point_picker()
         if self._bng is not None and hasattr(self._bng, "close"):

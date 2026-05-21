@@ -324,13 +324,28 @@ List and inspect pluggable algorithm adapters:
 ```powershell
 python -m offroad_sim.cli algorithms list
 python -m offroad_sim.cli algorithms inspect local_lewm_cost --json
+python -m offroad_sim.cli algorithms inspect stablewm_lewm --json
 ```
 
 Third-party algorithms can be added under `algorithms/<name>/` with an
-`algorithm.yaml` manifest and an `adapter.py` class. The first built-in
-reference adapter is `local_lewm_cost`, which prepares BeamNG episode data,
-trains the local LE-WM-compatible cost checkpoint, and routes evaluation
-through `le_wm_cem`.
+`algorithm.yaml` manifest and an `adapter.py` class. `local_lewm_cost` prepares
+BeamNG episode data and trains the local LE-WM-compatible smoke checkpoint.
+`stablewm_lewm` loads an existing stable-worldmodel / upstream LE-WM checkpoint
+directly and exposes it as an action-cost scorer for `model_mpc`.
+
+Use a real checkpoint without retraining the local smoke model:
+
+```powershell
+python scripts\run_region_navigation_loop.py --task configs\tasks\beamng_johnson_valley_nav_001.yaml --algorithm stablewm_lewm --algorithm-model-path D:\models\lewm\orfd\lewm_object.ckpt --eval-steps 300 --keep-beamng-open
+```
+
+If the upstream checkpoint was downloaded as HuggingFace `weights.pt` +
+`config.json`, convert it first:
+
+```powershell
+$env:LE_WM_HOME = "D:\programs\le-wm"
+python scripts\convert_lewm_hf_checkpoint.py D:\models\lewm_hf\pusht D:\models\lewm\pusht
+```
 
 BeamNG checks and LE-WM CEM smoke:
 

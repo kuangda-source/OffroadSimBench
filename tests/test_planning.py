@@ -112,6 +112,22 @@ def test_lewm_planner_requires_checkpoint() -> None:
         planner.plan(_observation(), SimpleKinematicWorldModel())
 
 
+def test_lewm_planner_accepts_direct_object_checkpoint(tmp_path) -> None:
+    torch = pytest.importorskip("torch")
+
+    from offroad_sim.planning.lewm_cost_model import LeWMCostModel
+
+    checkpoint = tmp_path / "lewm_direct_object.ckpt"
+    torch.save(LeWMCostModel().eval(), checkpoint)
+    planner = LeWMCEMPlanner(checkpoint_path=checkpoint, horizon=2, num_samples=8, iterations=1, topk=2)
+
+    result = planner.plan(_observation(), SimpleKinematicWorldModel())
+
+    assert len(result.actions) == 2
+    assert result.metadata["checkpoint_source_kind"] == "stablewm_object_file"
+    assert result.metadata["checkpoint_object_path"] == str(checkpoint)
+
+
 def test_lewm_planner_passes_navigation_region_to_cost_model() -> None:
     torch = pytest.importorskip("torch")
     planner = LeWMCEMPlanner()

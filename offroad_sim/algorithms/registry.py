@@ -78,6 +78,11 @@ class AlgorithmRegistry:
 
 def default_algorithm_registry(search_paths: list[str | Path] | None = None) -> AlgorithmRegistry:
     from offroad_sim.algorithms.builtins.local_lewm_cost import LocalLeWMCostAlgorithm, builtin_manifest, runtime_status
+    from offroad_sim.algorithms.builtins.stablewm_lewm import (
+        StableWMLeWMAlgorithm,
+        builtin_manifest as stablewm_builtin_manifest,
+        runtime_status as stablewm_runtime_status,
+    )
 
     registry = AlgorithmRegistry()
     manifest = builtin_manifest()
@@ -87,6 +92,15 @@ def default_algorithm_registry(search_paths: list[str | Path] | None = None) -> 
             factory=lambda **kwargs: LocalLeWMCostAlgorithm(manifest=manifest, **kwargs),
             description="Local LE-WM-compatible cost-model adapter.",
             status_fn=runtime_status,
+        )
+    )
+    stablewm_manifest = stablewm_builtin_manifest()
+    registry.register(
+        AlgorithmSpec(
+            manifest=stablewm_manifest,
+            factory=lambda **kwargs: StableWMLeWMAlgorithm(manifest=stablewm_manifest, **kwargs),
+            description="Existing stable-worldmodel / upstream LE-WM checkpoint adapter.",
+            status_fn=stablewm_runtime_status,
         )
     )
     for search_path in search_paths if search_paths is not None else [ROOT / "algorithms"]:

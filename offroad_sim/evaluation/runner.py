@@ -158,6 +158,8 @@ def run_episode(
         )
     finally:
         agent.close()
+        if completed and (post_run_hold_sec > 0.0 or not close_backend):
+            _hold_backend_vehicle(backend)
         if completed and post_run_hold_sec > 0.0:
             time.sleep(float(post_run_hold_sec))
         if close_backend:
@@ -207,6 +209,16 @@ def _create_backend(
         if "seed" not in str(exc):
             raise
         return make_backend(name, **kwargs)
+
+
+def _hold_backend_vehicle(backend: Any) -> None:
+    hold_vehicle = getattr(backend, "hold_vehicle", None)
+    if not callable(hold_vehicle):
+        return
+    try:
+        hold_vehicle()
+    except Exception:
+        return
 
 
 def _agent_diagnostics(agent: Any) -> dict[str, Any]:
