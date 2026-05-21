@@ -13,19 +13,23 @@ offroad-sim-gui
 
 ## Connected Features
 
-- Left navigation is organized by workflow: overview, dataset, world model,
-  path planning, BeamNG, and episode records.
-- The overview page keeps only basic run configuration, the selected BeamNG
-  region task, a saved world-model config selector, and the start button.
-- The world model page owns checkpoint path, algorithm, and world-model type
-  selection; saving a config makes it available to the overview dropdown.
+- Left navigation is organized by workflow: guided overview, Dataset and
+  Training, BeamNG Simulation, and episode records.
+- The overview page is a guided demo launcher: select a demo preset, confirm
+  the BeamNG region task, world-model config, and planner, then run the visible
+  demo.
+- The Dataset and Training workbench owns dataset import/preview, HDF5 export,
+  checkpoint path, algorithm, world-model type, model training, and saved
+  world-model configs.
+- The BeamNG Simulation workbench owns task selection, region/start/goal
+  editing, model-config selection, runtime checks, simulation runs, evaluation,
+  and terrain draft export.
 - Runtime catalogs for backends, agents, world models, and planners.
 - Dataset inspection through the registered dataset adapters.
 - Episode execution through `offroad_sim.evaluation.run_episode`.
 - Tiny learned world-model training through `TinyLearnedWorldModel.fit`.
 - StableWM HDF5 export with configurable image size from the advanced settings dialog.
 - LE-WM-compatible cost-model training from exported HDF5 files.
-- One-click ORFD -> HDF5 -> LE-WM cost checkpoint -> dataset replay -> optional BeamNG run.
 - ORFD frame preview for RGB, depth, and label assets, including official ORFD ZIP releases.
 - ORFD-derived local heightmap/OBJ terrain draft export for BeamNG map prototyping.
 - BeamNG navigation task editing with realtime preview of region, start/goal, route markers, camera height,
@@ -34,8 +38,8 @@ offroad-sim-gui
 - Episode list loading from `outputs/episodes`.
 - BEV-style trajectory preview from recorded episode state traces.
 - Metric cards populated from real episode metrics and agent diagnostics.
-- Advanced settings dialog for planner samples/iterations, image export size, preview frame,
-  terrain grid size, recording flags, and BeamNG pipeline behavior.
+- Advanced settings dialog for planner samples/iterations, image export size,
+  preview frame, terrain grid size, and recording flags.
 
 ## Explicit Placeholders
 

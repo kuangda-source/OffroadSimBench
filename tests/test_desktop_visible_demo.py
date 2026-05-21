@@ -106,6 +106,36 @@ def test_gui_overview_uses_world_model_config_selector() -> None:
     window.close()
 
 
+def test_gui_uses_guided_demo_and_two_workbenches() -> None:
+    _ensure_app()
+    window = MainWindow()
+
+    nav_texts = [button.text() for button in window.nav_buttons]
+
+    assert nav_texts == ["总览", "数据集与训练", "BeamNG 仿真", "实验记录"]
+    window.close()
+
+
+def test_gui_overview_is_guided_demo_launcher() -> None:
+    _ensure_app()
+    window = MainWindow()
+
+    overview = window.page_stack.widget(0)
+    labels = [label.text() for label in overview.findChildren(QLabel)]
+    buttons = [button.text() for button in overview.findChildren(QPushButton)]
+
+    assert "Demo preset" in labels
+    assert "BeamNG region task" in labels
+    assert "World model config" in labels
+    assert "Run guided demo" in buttons
+    assert "Open Dataset & Training" in buttons
+    assert "Open BeamNG Simulation" in buttons
+    assert "Backend" not in labels
+    assert "Scenario" not in labels
+    assert "Agent" not in labels
+    window.close()
+
+
 def test_gui_world_model_page_saves_config_for_home(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(services, "WORLD_MODEL_CONFIGS_PATH", tmp_path / "world_model_configs.json")
     _ensure_app()
@@ -178,7 +208,7 @@ def test_gui_region_navigation_loop_uses_task_path(monkeypatch) -> None:
     _ensure_app()
     window = MainWindow()
     window.settings.max_steps = 5
-    window.task_path_edit.setText("configs/tasks/beamng_region_nav_001.yaml")
+    window.task_path_edit.setText("configs/tasks/beamng_johnson_valley_nav_test.yaml")
     captured: dict[str, services.RegionNavigationClosedLoopRequest] = {}
 
     monkeypatch.setattr(services, "run_region_navigation_closed_loop", lambda request: captured.setdefault("request", request))
@@ -186,7 +216,7 @@ def test_gui_region_navigation_loop_uses_task_path(monkeypatch) -> None:
 
     window.run_region_navigation_loop()
 
-    assert captured["request"].task_path == "configs/tasks/beamng_region_nav_001.yaml"
+    assert captured["request"].task_path == "configs/tasks/beamng_johnson_valley_nav_test.yaml"
     assert captured["request"].collect_steps >= 160
     assert captured["request"].close_beamng is False
     window.close()
@@ -265,9 +295,9 @@ def test_gui_navigation_preview_uses_editor_callback(monkeypatch) -> None:
     monkeypatch.setattr(window.navigation_preview_session, "update", fake_preview)
     monkeypatch.setattr(window, "_run_task", lambda task, callback, label: callback(task()))
 
-    window._preview_task_from_editor("configs/tasks/beamng_johnson_valley_nav_001.yaml", "topdown", 120.0)
+    window._preview_task_from_editor("configs/tasks/beamng_johnson_valley_nav_test.yaml", "topdown", 120.0)
 
-    assert captured["task_path"] == "configs/tasks/beamng_johnson_valley_nav_001.yaml"
+    assert captured["task_path"] == "configs/tasks/beamng_johnson_valley_nav_test.yaml"
     assert captured["camera_mode"] == "topdown"
     assert captured["camera_height_m"] == 120.0
     assert "preview" in window.beamng_summary.toPlainText()
@@ -289,8 +319,8 @@ def test_gui_navigation_preview_coalesces_requests_while_loading(monkeypatch) ->
         lambda task_path, **kwargs: {"task_path": task_path, "kwargs": kwargs, "analysis": {}},
     )
 
-    window._preview_task_from_editor("configs/tasks/beamng_region_nav_001.yaml", "topdown", 90.0)
-    window._preview_task_from_editor("configs/tasks/beamng_region_nav_001.yaml", "orbit", 150.0)
+    window._preview_task_from_editor("configs/tasks/beamng_johnson_valley_nav_test.yaml", "topdown", 90.0)
+    window._preview_task_from_editor("configs/tasks/beamng_johnson_valley_nav_test.yaml", "orbit", 150.0)
 
     assert len(started) == 1
 

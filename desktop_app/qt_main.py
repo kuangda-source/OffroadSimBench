@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
     QSpinBox,
     QSplitter,
     QStackedWidget,
+    QTabWidget,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -70,7 +71,6 @@ class GuiSettings:
     record: bool = True
     record_arrays: bool = False
     load_assets: bool = False
-    pipeline_runs_beamng: bool = True
 
 
 class TaskWorker(QObject):
@@ -129,7 +129,6 @@ class AdvancedSettingsDialog(QDialog):
             ("record", "记录 episode"),
             ("record_arrays", "记录数组"),
             ("load_assets", "回放时加载数据资产"),
-            ("pipeline_runs_beamng", "一键流程完成后运行 BeamNG"),
         ]:
             checkbox = QCheckBox()
             checkbox.setChecked(bool(getattr(settings, name)))
@@ -926,12 +925,10 @@ class NavigationTaskDialog(QDialog):
 
 class MainWindow(QMainWindow):
     PAGE_TITLES = [
-        ("总览", "配置最常用的运行项并开始测试。"),
-        ("数据集", "导入、检查和预览 ORFD 数据，导出 StableWM HDF5。"),
-        ("世界模型", "训练 tiny/LE-WM cost model，或运行一键 ORFD 到 BeamNG 流程。"),
-        ("路径规划", "查看当前规划器和 CEM 参数，复杂参数从高级参数调整。"),
-        ("BeamNG", "检查 BeamNG 运行时，导出 ORFD 局部地形草案。"),
-        ("实验记录", "浏览 episode、轨迹和运行日志。"),
+        ("总览", "通过引导式 demo 快速检查配置并运行可视演示。"),
+        ("数据集与训练", "导入/预览数据集，训练算法模型，并检查训练或推理结果。"),
+        ("BeamNG 仿真", "编辑地图任务，选择模型配置，运行自动驾驶并评估。"),
+        ("实验记录", "浏览 episode、轨迹、指标和日志。"),
     ]
 
     def __init__(self) -> None:
@@ -969,8 +966,11 @@ class MainWindow(QMainWindow):
         self.world_model_combo = self._combo()
         self.planner_combo = self._combo()
         self.algorithm_combo = self._combo()
+        self.demo_preset_combo = self._combo()
+        self.demo_preset_combo.addItem("Johnson Valley LE-WM navigation", "johnson_valley_lewm_navigation")
         self.world_model_config_combo = self._combo()
         self.world_model_config_edit_combo = self._combo()
+        self.beamng_model_config_combo = self._combo()
         self.model_config_name_edit = QLineEdit()
         self.model_config_name_edit.setPlaceholderText("Johnson Valley LE-WM validated")
 
@@ -984,11 +984,14 @@ class MainWindow(QMainWindow):
         self.model_path_edit.setPlaceholderText(str(services.DEFAULT_LEWM_CHECKPOINT_PATH))
         self.task_path_edit = QLineEdit(str(services.DEFAULT_NAVIGATION_TASK_PATH))
         self.home_task_combo = self._combo(editable=True)
+        self.beamng_task_combo = self._combo(editable=True)
         self.home_model_combo = self._combo(editable=True)
         self.home_task_combo.currentTextChanged.connect(self._sync_home_task_to_edit)
+        self.beamng_task_combo.currentTextChanged.connect(self._sync_beamng_task_to_edit)
         self.home_model_combo.currentTextChanged.connect(self._sync_home_model_to_edit)
         self.world_model_config_combo.currentIndexChanged.connect(self._sync_home_world_model_config)
         self.world_model_config_edit_combo.currentIndexChanged.connect(self._sync_edit_world_model_config)
+        self.beamng_model_config_combo.currentIndexChanged.connect(self._sync_beamng_world_model_config)
         for edit in (
             self.dataset_root_edit,
             self.adapter_edit,
@@ -1064,10 +1067,8 @@ class MainWindow(QMainWindow):
 
         self.page_stack = QStackedWidget()
         self.page_stack.addWidget(self._build_overview_page())
-        self.page_stack.addWidget(self._build_dataset_page())
-        self.page_stack.addWidget(self._build_world_model_page())
-        self.page_stack.addWidget(self._build_planning_page())
-        self.page_stack.addWidget(self._build_beamng_page())
+        self.page_stack.addWidget(self._build_dataset_training_page())
+        self.page_stack.addWidget(self._build_beamng_simulation_page())
         self.page_stack.addWidget(self._build_records_page())
         layout.addWidget(self.page_stack, 1)
         return area
@@ -1075,36 +1076,49 @@ class MainWindow(QMainWindow):
     def _build_overview_page(self) -> QWidget:
         page, layout = self._page()
 
-        config_row = self._row_layout()
-        config_row.addWidget(
-            self._group(
-                "基础运行配置",
-                [
-                    self._field("Backend", self.backend_combo),
-                    self._field("BeamNG region task", self.home_task_combo),
-                    self._field("World model config", self.world_model_config_combo),
-                    self._field("Scenario", self.scenario_combo),
-                    self._field("Agent", self.agent_combo),
-                    self._field("Planner", self.planner_combo),
-                ],
-            ),
-            1,
+        body = self._row_layout()
+        launcher_box, launcher_layout = self._new_group("Guided demo launcher")
+        guide = QLabel(
+            "按步骤检查 demo 配置，然后运行 BeamNG 可视自动驾驶。复杂的数据集、训练和任务编辑放到对应工作台。"
         )
+        guide.setObjectName("mutedText")
+        guide.setWordWrap(True)
+        launcher_layout.addWidget(guide)
+        launcher_layout.addWidget(self._field("Demo preset", self.demo_preset_combo))
+        launcher_layout.addWidget(self._field("BeamNG region task", self.home_task_combo))
+        launcher_layout.addWidget(self._field("World model config", self.world_model_config_combo))
+        launcher_layout.addWidget(self._field("Planner", self.planner_combo))
 
-        action_panel, action_layout = self._new_group("开始")
-        run_button = QPushButton("开始测试")
+        run_button = QPushButton("Run guided demo")
         self._configure_button(run_button, primary=True)
-        run_button.clicked.connect(self.run_home_start)
-        hint = QLabel("开始测试会按当前 Backend 运行；只有 Backend=beamng 时才使用区域任务和模型 checkpoint。采集、训练、编辑任务等操作在左侧对应页面完成。")
-        hint.setObjectName("mutedText")
-        hint.setWordWrap(True)
-        action_layout.addWidget(run_button)
-        action_layout.addWidget(hint)
-        action_layout.addStretch(1)
-        config_row.addWidget(action_panel, 1)
-        layout.addLayout(config_row)
+        run_button.clicked.connect(self.run_guided_demo)
+        launcher_layout.addWidget(run_button)
 
-        metrics_box, metrics_layout = self._new_group("运行指标")
+        shortcut_row = self._row_layout(spacing=8)
+        dataset_button = QPushButton("Open Dataset & Training")
+        self._configure_button(dataset_button)
+        dataset_button.clicked.connect(lambda: self.select_page(1))
+        beamng_button = QPushButton("Open BeamNG Simulation")
+        self._configure_button(beamng_button)
+        beamng_button.clicked.connect(lambda: self.select_page(2))
+        records_button = QPushButton("Open Records")
+        self._configure_button(records_button)
+        records_button.clicked.connect(lambda: self.select_page(3))
+        shortcut_row.addWidget(dataset_button)
+        shortcut_row.addWidget(beamng_button)
+        shortcut_row.addWidget(records_button)
+        launcher_layout.addLayout(shortcut_row)
+        body.addWidget(launcher_box, 2)
+
+        status_box, status_layout = self._new_group("Demo status")
+        self.demo_status_summary = QTextEdit()
+        self.demo_status_summary.setReadOnly(True)
+        self.demo_status_summary.setPlaceholderText("Demo status: NaN")
+        status_layout.addWidget(self.demo_status_summary, 1)
+        body.addWidget(status_box, 1)
+        layout.addLayout(body)
+
+        metrics_box, metrics_layout = self._new_group("Demo metrics")
         metrics = QGridLayout()
         metrics.setContentsMargins(0, 0, 0, 0)
         metrics.setHorizontalSpacing(CARD_SPACING)
@@ -1118,15 +1132,19 @@ class MainWindow(QMainWindow):
         layout.addStretch(1)
         return page
 
-    def _build_dataset_page(self) -> QWidget:
+    def _build_dataset_training_page(self) -> QWidget:
         page, layout = self._page()
-        body = self._row_layout()
+        tabs = QTabWidget()
 
+        data_tab = QWidget()
+        data_layout = QHBoxLayout(data_tab)
+        data_layout.setContentsMargins(0, 0, 0, 0)
+        data_layout.setSpacing(PAGE_SPACING)
         dataset_browse = QPushButton("选择")
         self._configure_button(dataset_browse)
         dataset_browse.clicked.connect(lambda: self._browse_dir(self.dataset_root_edit))
         controls = self._group(
-            "数据集导入与转换",
+            "Dataset import and preview",
             [
                 self._field("Dataset root", self._with_button(self.dataset_root_edit, dataset_browse)),
                 self._field("Sequence", self.sequence_combo),
@@ -1137,9 +1155,8 @@ class MainWindow(QMainWindow):
                 self._action_button("导出 StableWM HDF5", self.export_stablewm_hdf5),
             ],
         )
-        body.addWidget(controls, 1)
-
-        preview_box, preview_layout = self._new_group("数据预览")
+        data_layout.addWidget(controls, 1)
+        preview_box, preview_layout = self._new_group("Dataset preview")
         image_row = self._row_layout(spacing=CARD_SPACING)
         self.rgb_preview = self._preview_label("RGB: NaN")
         self.depth_preview = self._preview_label("Depth/Label: NaN")
@@ -1150,19 +1167,18 @@ class MainWindow(QMainWindow):
         self.dataset_summary.setReadOnly(True)
         self.dataset_summary.setPlaceholderText("数据集检查结果：NaN")
         preview_layout.addWidget(self.dataset_summary, 1)
-        body.addWidget(preview_box, 2)
-        layout.addLayout(body, 1)
-        return page
+        data_layout.addWidget(preview_box, 2)
+        tabs.addTab(data_tab, "数据集")
 
-    def _build_world_model_page(self) -> QWidget:
-        page, layout = self._page()
-        body = self._row_layout()
-
+        training_tab = QWidget()
+        training_layout = QHBoxLayout(training_tab)
+        training_layout.setContentsMargins(0, 0, 0, 0)
+        training_layout.setSpacing(PAGE_SPACING)
         model_browse = QPushButton("选择")
         self._configure_button(model_browse)
         model_browse.clicked.connect(lambda: self._browse_path_combo(self.home_model_combo))
-        controls = self._group(
-            "模型训练与加载",
+        training_controls = self._group(
+            "Model and algorithm training",
             [
                 self._field("World model config", self.world_model_config_edit_combo),
                 self._field("Config name", self.model_config_name_edit),
@@ -1172,61 +1188,97 @@ class MainWindow(QMainWindow):
                 self._action_button("Save world model config", self.save_world_model_config, primary=True),
                 self._action_button("训练 LE-WM cost model", self.train_lewm_cost_model),
                 self._action_button("训练 tiny world model", self.train_tiny_model),
-                self._action_button("一键 ORFD → LE-WM → BeamNG", self.run_orfd_lewm_pipeline, primary=True),
             ],
         )
-        body.addWidget(controls, 1)
-        output_box, output_layout = self._new_group("模型输出")
+        training_layout.addWidget(training_controls, 1)
+        output_box, output_layout = self._new_group("Training and inference results")
         self.model_summary = QTextEdit()
         self.model_summary.setReadOnly(True)
-        self.model_summary.setPlaceholderText("模型训练/一键流程结果：NaN")
+        self.model_summary.setPlaceholderText("模型训练/推理结果：NaN")
         output_layout.addWidget(self.model_summary, 1)
-        body.addWidget(output_box, 2)
-        layout.addLayout(body, 1)
+        training_layout.addWidget(output_box, 2)
+        tabs.addTab(training_tab, "模型训练")
+
+        processing_tab = QWidget()
+        processing_layout = QVBoxLayout(processing_tab)
+        processing_layout.setContentsMargins(0, 0, 0, 0)
+        processing_layout.setSpacing(PAGE_SPACING)
+        processing_hint = QLabel(
+            "图像分割、标签检查、terrain mask 和数据集到 BeamNG 地图转换会放在这里；未实现项保持 NaN/未完成。"
+        )
+        processing_hint.setObjectName("mutedText")
+        processing_hint.setWordWrap(True)
+        processing_layout.addWidget(self._group("Dataset processing and labels", [processing_hint]))
+        processing_layout.addStretch(1)
+        tabs.addTab(processing_tab, "处理/标注")
+
+        layout.addWidget(tabs, 1)
         return page
 
-    def _build_planning_page(self) -> QWidget:
+    def _build_beamng_simulation_page(self) -> QWidget:
         page, layout = self._page()
-        body = self._row_layout()
-        hint = QLabel("规划器选择在总览页，详细 CEM 参数在高级参数中调整。")
-        hint.setObjectName("mutedText")
-        hint.setWordWrap(True)
-        self.planner_summary = QTextEdit()
-        self.planner_summary.setReadOnly(True)
-        self.planner_summary.setMaximumHeight(220)
-        body.addWidget(self._group("当前规划参数", [hint, self.planner_summary]), 2)
-        advanced_button = QPushButton("打开高级参数")
-        self._configure_button(advanced_button)
-        advanced_button.clicked.connect(self.open_advanced_settings)
-        body.addWidget(self._group("操作", [advanced_button]), 1)
-        layout.addLayout(body)
-        layout.addStretch(1)
-        return page
+        tabs = QTabWidget()
 
-    def _build_beamng_page(self) -> QWidget:
-        page, layout = self._page()
-        body = self._row_layout()
-
+        setup_tab = QWidget()
+        setup_layout = QHBoxLayout(setup_tab)
+        setup_layout.setContentsMargins(0, 0, 0, 0)
+        setup_layout.setSpacing(PAGE_SPACING)
         controls = self._group(
-            "BeamNG 与地形草案",
+            "BeamNG task and model",
             [
-                self._field("Region task", self.task_path_edit),
+                self._field("Region task", self.beamng_task_combo),
+                self._field("World model config", self.beamng_model_config_combo),
+                self._field("Resolved task path", self.task_path_edit),
                 self._action_button("编辑/预览区域与起终点", self.open_region_task_editor),
                 self._action_button("运行当前区域任务", self.run_region_navigation_loop, primary=True),
                 self._action_button("检查 BeamNG", self.check_beamng),
+            ],
+        )
+        setup_layout.addWidget(controls, 1)
+        summary_box, summary_layout = self._new_group("Simulation status")
+        self.beamng_summary = QTextEdit()
+        self.beamng_summary.setReadOnly(True)
+        self.beamng_summary.setPlaceholderText("BeamNG 状态、任务分析与运行结果：NaN")
+        summary_layout.addWidget(self.beamng_summary, 1)
+        setup_layout.addWidget(summary_box, 2)
+        tabs.addTab(setup_tab, "运行配置")
+
+        map_tab = QWidget()
+        map_layout = QHBoxLayout(map_tab)
+        map_layout.setContentsMargins(0, 0, 0, 0)
+        map_layout.setSpacing(PAGE_SPACING)
+        map_controls = self._group(
+            "Map and terrain tools",
+            [
+                self._action_button("编辑/预览区域与起终点", self.open_region_task_editor),
                 self._action_button("导出 BeamNG 地形草案", self.export_beamng_terrain_draft),
             ],
         )
-        body.addWidget(controls, 1)
-        preview_box, preview_layout = self._new_group("地形草案预览")
+        map_layout.addWidget(map_controls, 1)
+        preview_box, preview_layout = self._new_group("Terrain draft preview")
         self.terrain_preview = self._preview_label("Terrain: NaN")
-        preview_layout.addWidget(self.terrain_preview, 2)
-        self.beamng_summary = QTextEdit()
-        self.beamng_summary.setReadOnly(True)
-        self.beamng_summary.setPlaceholderText("BeamNG 状态与地形草案信息：NaN")
-        preview_layout.addWidget(self.beamng_summary, 1)
-        body.addWidget(preview_box, 2)
-        layout.addLayout(body, 1)
+        preview_layout.addWidget(self.terrain_preview, 1)
+        map_layout.addWidget(preview_box, 2)
+        tabs.addTab(map_tab, "地图/区域")
+
+        eval_tab = QWidget()
+        eval_layout = QVBoxLayout(eval_tab)
+        eval_layout.setContentsMargins(0, 0, 0, 0)
+        eval_layout.setSpacing(PAGE_SPACING)
+        self.planner_summary = QTextEdit()
+        self.planner_summary.setReadOnly(True)
+        self.planner_summary.setMaximumHeight(220)
+        hint = QLabel("规划器和 CEM 参数在高级参数中调整；运行后指标会写入总览和实验记录。")
+        hint.setObjectName("mutedText")
+        hint.setWordWrap(True)
+        advanced_button = QPushButton("打开高级参数")
+        self._configure_button(advanced_button)
+        advanced_button.clicked.connect(self.open_advanced_settings)
+        eval_layout.addWidget(self._group("Evaluation and planner settings", [hint, self.planner_summary, advanced_button]))
+        eval_layout.addStretch(1)
+        tabs.addTab(eval_tab, "评估")
+
+        layout.addWidget(tabs, 1)
         return page
 
     def _build_records_page(self) -> QWidget:
@@ -1265,7 +1317,7 @@ class MainWindow(QMainWindow):
         title, subtitle = self.PAGE_TITLES[index]
         self.page_title.setText(title)
         self.page_subtitle.setText(subtitle)
-        if index == 3:
+        if index == 2:
             self._refresh_planner_summary()
 
     def refresh_catalogs(self) -> None:
@@ -1278,6 +1330,11 @@ class MainWindow(QMainWindow):
         self._fill_combo(self.planner_combo, [{"name": ""}] + self.catalog["planners"], "name", default="navigation_mpc")
         self._fill_path_combo(
             self.home_task_combo,
+            self.catalog.get("navigation_tasks", []),
+            default_path=str(services.DEFAULT_NAVIGATION_TASK_PATH),
+        )
+        self._fill_path_combo(
+            self.beamng_task_combo,
             self.catalog.get("navigation_tasks", []),
             default_path=str(services.DEFAULT_NAVIGATION_TASK_PATH),
         )
@@ -1296,10 +1353,17 @@ class MainWindow(QMainWindow):
             self.catalog.get("world_model_configs", []),
             default_id=services.DEFAULT_WORLD_MODEL_CONFIG_ID,
         )
+        self._fill_world_model_config_combo(
+            self.beamng_model_config_combo,
+            self.catalog.get("world_model_configs", []),
+            default_id=services.DEFAULT_WORLD_MODEL_CONFIG_ID,
+        )
         self._fill_episode_list()
         self._refresh_planner_summary()
         beamng = _find_named(self.catalog["backends"], "beamng")
         self.runtime_label.setText(f"BeamNG: {services.display_value(beamng.get('available') if beamng else None)}")
+        if hasattr(self, "demo_status_summary"):
+            self._refresh_demo_status()
         self.log("状态已刷新")
 
     def open_advanced_settings(self) -> None:
@@ -1333,6 +1397,8 @@ class MainWindow(QMainWindow):
         if not dialog.saved_task_path:
             return
         self.task_path_edit.setText(dialog.saved_task_path)
+        self.home_task_combo.setCurrentText(dialog.saved_task_path)
+        self.beamng_task_combo.setCurrentText(dialog.saved_task_path)
         self.beamng_summary.setText(_compact_json({"status": "task_saved", "task_path": dialog.saved_task_path}))
         self.log(f"区域任务已保存: {dialog.saved_task_path}")
 
@@ -1344,6 +1410,7 @@ class MainWindow(QMainWindow):
     def _preview_task_from_editor(self, task_path: str, camera_mode: str, camera_height_m: float) -> None:
         self.task_path_edit.setText(task_path)
         self.home_task_combo.setCurrentText(task_path)
+        self.beamng_task_combo.setCurrentText(task_path)
         request = (task_path, camera_mode, camera_height_m)
         if self._navigation_preview_busy:
             self._navigation_preview_pending = request
@@ -1389,6 +1456,13 @@ class MainWindow(QMainWindow):
             self.region_task_dialog = None
         self.navigation_preview_session.close()
         super().closeEvent(event)
+
+    def run_guided_demo(self) -> None:
+        self._select_combo_value(self.backend_combo, "beamng")
+        self._select_combo_value(self.agent_combo, "model_mpc")
+        self._select_combo_value(self.planner_combo, "navigation_mpc")
+        self._refresh_demo_status()
+        self.run_home_region_model_test()
 
     def run_home_start(self) -> None:
         backend = self.backend_combo.currentData() or self.backend_combo.currentText()
@@ -1551,10 +1625,10 @@ class MainWindow(QMainWindow):
             planner_iterations=self.settings.planner_iterations,
             max_steps=self.settings.max_steps,
             seed=self.settings.seed,
-            run_beamng=self.settings.pipeline_runs_beamng,
+            run_beamng=False,
             beamng_scenario=self.scenario_combo.currentData() or self.scenario_combo.currentText(),
         )
-        self.log("启动一键流程：ORFD -> HDF5 -> LE-WM cost -> dataset replay -> BeamNG")
+        self.log("启动数据集训练流程：ORFD -> HDF5 -> LE-WM cost -> dataset replay")
         self._run_task(lambda: services.run_orfd_lewm_pipeline(request), self._pipeline_finished, "pipeline failed")
 
     def export_beamng_terrain_draft(self) -> None:
@@ -1666,7 +1740,7 @@ class MainWindow(QMainWindow):
             path = metrics_source.get("episode_path")
             self.trajectory.set_trace(services.load_episode_trace(path) if path else [])
         self.model_summary.setText(_compact_json(payload))
-        self.log("一键流程完成")
+        self.log("流程完成")
         self.refresh_catalogs()
 
     def _dataset_inspected(self, payload: dict[str, Any]) -> None:
@@ -1764,6 +1838,22 @@ class MainWindow(QMainWindow):
             "load_assets": self.settings.load_assets,
         }
         self.planner_summary.setText(_compact_json(payload))
+
+    def _refresh_demo_status(self) -> None:
+        if not hasattr(self, "demo_status_summary"):
+            return
+        beamng = _find_named(self.catalog.get("backends", []), "beamng") if self.catalog else None
+        config = self._combo_config_row(self.world_model_config_combo)
+        payload = {
+            "demo_preset": self.demo_preset_combo.currentText() or "NaN",
+            "beamng_available": beamng.get("available") if beamng else None,
+            "region_task": self._path_combo_value(self.home_task_combo) or services.NAN_TEXT,
+            "world_model_config": config.get("label") or services.NAN_TEXT,
+            "model_path": config.get("model_path") or services.NAN_TEXT,
+            "planner": self.planner_combo.currentData() or self.planner_combo.currentText() or services.NAN_TEXT,
+            "last_result": services.NAN_TEXT,
+        }
+        self.demo_status_summary.setText(_compact_json(payload))
 
     def _current_request(self) -> services.RunRequest:
         config = self._combo_config_row(self.world_model_config_combo)
@@ -1915,6 +2005,8 @@ class MainWindow(QMainWindow):
         combo.blockSignals(False)
         if combo is self.home_task_combo:
             self._sync_home_task_to_edit()
+        elif combo is self.beamng_task_combo:
+            self._sync_beamng_task_to_edit()
         elif combo is self.home_model_combo:
             self._sync_home_model_to_edit()
 
@@ -1928,6 +2020,11 @@ class MainWindow(QMainWindow):
 
     def _sync_home_task_to_edit(self) -> None:
         path = self._path_combo_value(self.home_task_combo)
+        if path:
+            self.task_path_edit.setText(path)
+
+    def _sync_beamng_task_to_edit(self) -> None:
+        path = self._path_combo_value(self.beamng_task_combo)
         if path:
             self.task_path_edit.setText(path)
 
@@ -1949,6 +2046,15 @@ class MainWindow(QMainWindow):
         row = self._combo_config_row(self.world_model_config_edit_combo)
         if row:
             self._apply_world_model_config(row, sync_editor=False)
+            self._select_world_model_config(
+                str(row.get("id") or ""),
+                combos=[self.world_model_config_combo, self.beamng_model_config_combo],
+            )
+
+    def _sync_beamng_world_model_config(self) -> None:
+        row = self._combo_config_row(self.beamng_model_config_combo)
+        if row:
+            self._apply_world_model_config(row, sync_editor=True)
             self._select_world_model_config(str(row.get("id") or ""), combos=[self.world_model_config_combo])
 
     def _apply_world_model_config(self, row: dict[str, Any], *, sync_editor: bool) -> None:
@@ -1965,7 +2071,10 @@ class MainWindow(QMainWindow):
             self._select_path_combo_value(self.home_model_combo, model_path)
             self.model_path_edit.setText(model_path)
         if sync_editor and hasattr(self, "world_model_config_edit_combo"):
-            self._select_world_model_config(str(row.get("id") or ""), combos=[self.world_model_config_edit_combo])
+            self._select_world_model_config(
+                str(row.get("id") or ""),
+                combos=[self.world_model_config_edit_combo, self.beamng_model_config_combo],
+            )
 
     def _select_path_combo_value(self, combo: QComboBox, path: str) -> None:
         for index in range(combo.count()):
@@ -1976,7 +2085,7 @@ class MainWindow(QMainWindow):
         combo.setCurrentText(path)
 
     def _select_world_model_config(self, config_id: str, *, combos: list[QComboBox] | None = None) -> None:
-        for combo in combos or [self.world_model_config_combo, self.world_model_config_edit_combo]:
+        for combo in combos or [self.world_model_config_combo, self.world_model_config_edit_combo, self.beamng_model_config_combo]:
             for index in range(combo.count()):
                 data = combo.itemData(index)
                 if isinstance(data, dict) and str(data.get("id") or "") == config_id:

@@ -78,7 +78,7 @@ same pluggable adapter contract instead of changing BeamNG backend code.
 For an explicit region/start/goal task, use:
 
 ```powershell
-python scripts\run_region_navigation_loop.py --task configs\tasks\beamng_region_nav_001.yaml --algorithm local_lewm_cost --collect-steps 160 --eval-steps 120 --output-dir outputs\region_navigation\beamng_region_nav_001
+python scripts\run_region_navigation_loop.py --task configs\tasks\beamng_johnson_valley_nav_test.yaml --algorithm local_lewm_cost --collect-steps 240 --eval-steps 520 --output-dir outputs\region_navigation\johnson_valley_nav_test_train
 ```
 
 The task YAML contains a polygonal region, start pose, goal radius, and expert
@@ -91,7 +91,7 @@ uses BeamNG's own route follower. The BeamNG backend terminates the episode
 when the vehicle enters the configured goal radius and records distance-to-goal
 metrics.
 
-The desktop GUI exposes a `编辑区域/起终点` dialog on the BeamNG page. It lets a
+The desktop GUI exposes the `编辑区域/起终点` dialog from the BeamNG Simulation workbench. It lets a
 user click a 2D coordinate canvas to select the region polygon, start point,
 goal point, and optional expert route waypoints, then saves a
 `navigation_region_v1` YAML file under `configs/tasks/`. When realtime preview
