@@ -96,6 +96,7 @@ class NavigationRegionTask:
             "camera_mode": str(self.beamng.get("camera_mode", "orbit")),
             "draw_route": bool(self.beamng.get("draw_route", True)),
             "drive_mode": str(drive_mode),
+            "manual_control_is_adas": bool(self.beamng.get("manual_control_is_adas", False)),
             "ai_line_speed": float(self.beamng.get("ai_line_speed", 10.0)),
             "steps_per_action": int(self.beamng.get("steps_per_action", 18)),
         }
@@ -166,5 +167,8 @@ def _points2(values: Any) -> list[Point2]:
 
 
 def _yaw_to_quat(yaw: float) -> list[float]:
-    half = float(yaw) * 0.5
+    # BeamNG vehicles face the negative Y axis for the identity rotation, while
+    # OffroadSimBench yaw follows the usual XY convention where yaw=0 faces +X.
+    beamng_yaw = -float(yaw) - math.pi * 0.5
+    half = beamng_yaw * 0.5
     return [0.0, 0.0, round(math.sin(half), 6), round(math.cos(half), 6)]

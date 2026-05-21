@@ -1022,7 +1022,9 @@ class BeamNGBackend(OffroadSimBackend):
         beamng_options = self._beamng_metadata(self._scenario_config)
         payload: dict[str, Any] = {
             "throttle": command.throttle,
-            "steering": command.steer,
+            # BeamNG's manual steering input is opposite to the simulator-neutral
+            # Action convention used by the local kinematic/world-model stack.
+            "steering": -command.steer,
             "brake": command.brake,
             "parkingbrake": 0.0,
         }

@@ -93,6 +93,7 @@ def test_navigation_region_task_can_share_expert_route_with_manual_evaluation() 
     evaluation = task.to_beamng_scenario(mode="evaluation")
 
     assert evaluation["metadata"]["beamng"]["drive_mode"] == "manual"
+    assert evaluation["metadata"]["beamng"]["manual_control_is_adas"] is False
     assert evaluation["metadata"]["beamng"]["route"] == [
         [1161.112, 178.102],
         [1171.219, 157.693],
@@ -119,8 +120,8 @@ def test_navigation_region_task_derives_spawn_rotation_from_start_yaw() -> None:
     assert scenario["metadata"]["beamng"]["vehicle_start"]["rot_quat"] == [
         0.0,
         0.0,
-        0.707107,
-        0.707107,
+        -1.0,
+        0.0,
     ]
 
 

@@ -690,6 +690,7 @@ def save_manual_navigation_task(request: ManualNavigationTaskRequest) -> dict[st
             "collection_drive_mode": str(request.collection_drive_mode or "ai_line"),
             "evaluation_drive_mode": str(request.evaluation_drive_mode or "manual"),
             "evaluation_route_mode": str(request.evaluation_route_mode or "expert"),
+            "manual_control_is_adas": False,
             "ai_line_speed": float(request.ai_line_speed),
             "steps_per_action": int(request.steps_per_action),
             "weather": "sunny",

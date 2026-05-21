@@ -240,7 +240,7 @@ def test_beamng_backend_clamps_control_actions(fake_beamngpy: SimpleNamespace) -
 
     backend.step(Action(steer=2.0, throttle=-0.5, brake=1.5))
 
-    assert fake_beamngpy.vehicle.last_control["steering"] == 1.0
+    assert fake_beamngpy.vehicle.last_control["steering"] == -1.0
     assert fake_beamngpy.vehicle.last_control["throttle"] == 0.0
     assert fake_beamngpy.vehicle.last_control["brake"] == 1.0
 
@@ -255,6 +255,7 @@ def test_beamng_backend_sends_manual_agent_control_as_adas(fake_beamngpy: Simple
     backend.step(Action(steer=0.2, throttle=0.6, brake=0.0))
 
     assert fake_beamngpy.vehicle.last_control["is_adas"] is True
+    assert fake_beamngpy.vehicle.last_control["steering"] == -0.2
     assert "gear" not in fake_beamngpy.vehicle.last_control
     assert "clutch" not in fake_beamngpy.vehicle.last_control
     assert fake_beamngpy.shift_mode == "arcade"

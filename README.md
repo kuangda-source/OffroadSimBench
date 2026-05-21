@@ -308,6 +308,11 @@ the `OffroadAgent`/planner commands control the vehicle during evaluation.
 `evaluation_drive_mode: ai_line` remains available only for BeamNG-native
 visual smoke tests, because it follows a simulator line rather than proving
 model navigation.
+Navigation-region BeamNG tasks also default to `manual_control_is_adas: false`
+for evaluation so model actions are sent as direct steering/throttle/brake
+commands. `start_pose.yaw` stays in OffroadSimBench's XY convention
+(`yaw=0` faces +X); the task exporter converts it to BeamNG's vehicle
+quaternion convention when spawning the vehicle.
 
 The selected region is propagated into `Observation.info` during BeamNG runs.
 Local CEM planners and the LE-WM-compatible cost checkpoint use it as a
@@ -332,6 +337,12 @@ Third-party algorithms can be added under `algorithms/<name>/` with an
 BeamNG episode data and trains the local LE-WM-compatible smoke checkpoint.
 `stablewm_lewm` loads an existing stable-worldmodel / upstream LE-WM checkpoint
 directly and exposes it as an action-cost scorer for `model_mpc`.
+
+Train and validate the Johnson Valley region task saved from the GUI:
+
+```powershell
+python scripts\run_region_navigation_loop.py --task configs\tasks\beamng_johnson_valley_nav_test.yaml --algorithm local_lewm_cost --collect-steps 240 --eval-steps 520 --planner navigation_mpc --output-dir outputs\region_navigation\johnson_valley_nav_test_train
+```
 
 Use a real checkpoint without retraining the local smoke model:
 

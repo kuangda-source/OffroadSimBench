@@ -22,6 +22,7 @@ class ModelMPCAgent(OffroadAgent):
         self,
         route: list[tuple[float, float]] | None = None,
         waypoint_radius_m: float = 6.0,
+        route_lookahead_m: float = 8.0,
         world_model_name: str = "simple_kinematic",
         world_model_path: str | Path | None = None,
         algorithm_name: str = "",
@@ -31,6 +32,7 @@ class ModelMPCAgent(OffroadAgent):
     ) -> None:
         self.route = _normalize_route(route)
         self.waypoint_radius_m = float(waypoint_radius_m)
+        self.route_lookahead_m = max(float(route_lookahead_m), self.waypoint_radius_m)
         self.cursor = 0
         self.world_model_name = str(world_model_name or "simple_kinematic")
         self.world_model_path = str(world_model_path) if world_model_path else None
@@ -43,6 +45,8 @@ class ModelMPCAgent(OffroadAgent):
         self.reference_agent = RuleBasedGoalAgent(cruise_throttle=0.55)
         self.planner = NavigationMPCPlanner(**dict(planner_config or {}))
         self._last_diagnostics: dict[str, Any] = {}
+        self._stuck_steps = 0
+        self._stuck_recovery = False
 
     def reset(self, scenario_info: Any) -> None:
         if isinstance(scenario_info, dict):
@@ -53,6 +57,8 @@ class ModelMPCAgent(OffroadAgent):
         self.world_model.reset(scenario_info if isinstance(scenario_info, dict) else {"scenario": scenario_info})
         self.reference_agent.reset(scenario_info)
         self._last_diagnostics = {}
+        self._stuck_steps = 0
+        self._stuck_recovery = False
 
     def act(self, obs: Observation) -> Action:
         if not self.route and obs.info.get("route"):
@@ -82,10 +88,14 @@ class ModelMPCAgent(OffroadAgent):
             "target_waypoint": list(target) if target is not None else None,
             "reference_action": _action_dict(reference_action),
             "executed_action": _action_dict(action),
+            "stuck_steps": self._stuck_steps,
+            "stuck_recovery": self._stuck_recovery,
         }
         return action
 
     def diagnostics(self) -> dict[str, Any]:
+        if not self._last_diagnostics:
+            return {"stuck_steps": self._stuck_steps, "stuck_recovery": self._stuck_recovery}
         return dict(self._last_diagnostics)
 
     def close(self) -> None:
@@ -104,9 +114,34 @@ class ModelMPCAgent(OffroadAgent):
         steer = max(min(float(action.steer), 1.0), -1.0)
         throttle = max(min(float(action.throttle), 1.0), 0.0)
         brake = max(min(float(action.brake), 1.0), 0.0)
-        if speed < 0.25 and throttle < 0.45:
+        reference_steer = float(reference_action.steer)
+        sharp_turn = abs(reference_steer) > 0.75
+        low_speed_turn = speed < 0.35 and abs(reference_steer) > 0.5
+        low_speed_no_progress = speed < 0.25 and max(throttle, float(reference_action.throttle)) > 0.4
+        if low_speed_turn or low_speed_no_progress:
+            self._stuck_steps += 1
+        elif speed > 0.8:
+            self._stuck_steps = 0
+        self._stuck_recovery = self._stuck_steps >= 12
+        if speed < 0.25 and throttle <= 0.45:
             throttle = max(0.65, min(1.0, float(reference_action.throttle)))
             brake = 0.0
+        if self._stuck_recovery:
+            throttle = max(throttle, 1.0)
+            brake = 0.0
+            if speed < 0.2:
+                steer = _recovery_steer(reference_steer, self._stuck_steps)
+            else:
+                recovery_steer_limit = 0.75 if sharp_turn else 0.35
+                steer = max(min(reference_steer, recovery_steer_limit), -recovery_steer_limit)
+        else:
+            if sharp_turn and speed > 5.0:
+                throttle = min(throttle, 0.35)
+            steer_limit = _speed_steer_limit(speed, sharp_turn=sharp_turn)
+            if abs(steer) > steer_limit:
+                steer = max(min(steer, steer_limit), -steer_limit)
+                if speed > 4.0:
+                    throttle = min(throttle, 0.35)
         if brake > 0.2 and throttle > 0.2:
             throttle = min(throttle, 0.2)
         return Action(steer=steer, throttle=throttle, brake=brake)
@@ -121,11 +156,26 @@ class ModelMPCAgent(OffroadAgent):
         )
         if nearest_index >= self.cursor:
             self.cursor = min(nearest_index + 1, len(self.route) - 1)
+        lookahead_index = self._lookahead_index(nearest_index)
+        if lookahead_index > self.cursor:
+            self.cursor = lookahead_index
         if self.cursor < len(self.route) - 1:
             waypoint = self.route[self.cursor]
             if math.hypot(state.x - waypoint[0], state.y - waypoint[1]) <= self.waypoint_radius_m:
                 self.cursor += 1
         return self.route[min(self.cursor, len(self.route) - 1)]
+
+    def _lookahead_index(self, nearest_index: int) -> int:
+        target_index = min(nearest_index + 1, len(self.route) - 1)
+        distance = 0.0
+        for index in range(nearest_index, len(self.route) - 1):
+            a = self.route[index]
+            b = self.route[index + 1]
+            distance += math.hypot(float(b[0]) - float(a[0]), float(b[1]) - float(a[1]))
+            target_index = index + 1
+            if distance >= self.route_lookahead_m:
+                break
+        return target_index
 
 
 def _normalize_route(route: Any) -> list[tuple[float, float]]:
@@ -138,6 +188,28 @@ def _normalize_route(route: Any) -> list[tuple[float, float]]:
         except (TypeError, ValueError, IndexError):
             continue
     return rows
+
+
+def _speed_steer_limit(speed: float, *, sharp_turn: bool = False) -> float:
+    if sharp_turn and speed >= 3.0:
+        return 0.9
+    if speed >= 7.0:
+        return 0.35
+    if speed >= 5.0:
+        return 0.45
+    if speed >= 3.0:
+        return 0.65
+    return 1.0
+
+
+def _recovery_steer(reference_steer: float, stuck_steps: int) -> float:
+    direction = 1.0 if reference_steer >= 0.0 else -1.0
+    phase = ((max(0, int(stuck_steps)) - 12) // 20) % 3
+    if phase == 0:
+        return 0.0
+    if phase == 1:
+        return 0.35 * direction
+    return 0.0
 
 
 def _action_dict(action: Action) -> dict[str, float]:
