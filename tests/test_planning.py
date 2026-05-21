@@ -81,6 +81,19 @@ def test_navigation_mpc_region_penalty_overrides_external_score() -> None:
     assert result.metadata["region_cost"] >= 0.0
 
 
+def test_navigation_mpc_reports_world_model_prediction_fallback() -> None:
+    class FailingWorldModel:
+        def predict(self, observation, action, horizon=10):  # noqa: ANN001, ANN202
+            raise RuntimeError("predict failed")
+
+    planner = NavigationMPCPlanner(horizon=3, num_samples=8, seed=1)
+
+    result = planner.plan(_observation(), FailingWorldModel(), reference_action=Action(throttle=0.4))  # type: ignore[arg-type]
+
+    assert result.metadata["prediction_fallback"] == "simple_kinematic"
+    assert "RuntimeError: predict failed" in result.metadata["prediction_error"]
+
+
 def test_world_model_agent_can_use_planner() -> None:
     agent = WorldModelAgent(planner_name="world_model_cem", planner_config={"horizon": 3, "num_samples": 12, "iterations": 1})
 

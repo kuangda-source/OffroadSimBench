@@ -127,15 +127,19 @@ class NavigationMPCPlanner:
         world_model: BaseWorldModel,
         candidate: list[Action],
     ) -> tuple[list[VehicleState], dict[str, Any]]:
+        prediction_error: str | None = None
         try:
             prediction = world_model.predict(observation, candidate, horizon=self.horizon)
             if prediction.states:
                 return prediction.states, dict(prediction.metadata)
-        except Exception:
-            pass
+            prediction_error = "world model returned no predicted states"
+        except Exception as exc:
+            prediction_error = f"{type(exc).__name__}: {exc}"
         prediction = self._fallback_model.predict(observation, candidate, horizon=self.horizon)
         metadata = dict(prediction.metadata)
         metadata["prediction_fallback"] = "simple_kinematic"
+        if prediction_error:
+            metadata["prediction_error"] = prediction_error
         return prediction.states, metadata
 
     def _trajectory_cost(
@@ -145,7 +149,7 @@ class NavigationMPCPlanner:
         states: list[VehicleState],
         prediction_metadata: dict[str, Any],
         external_score: float,
-    ) -> tuple[float, dict[str, float]]:
+    ) -> tuple[float, dict[str, Any]]:
         final_state = states[-1] if states else observation.vehicle_state
         goal_x, goal_y = observation.goal
         goal_distance = math.hypot(float(final_state.x) - goal_x, float(final_state.y) - goal_y)
@@ -168,7 +172,7 @@ class NavigationMPCPlanner:
             + self.action_weight * effort
             + self.model_score_weight * external_score
         )
-        return float(total), {
+        cost_parts: dict[str, Any] = {
             "goal_distance": float(goal_distance),
             "progress": float(progress),
             "risk_cost": float(risk),
@@ -177,6 +181,11 @@ class NavigationMPCPlanner:
             "action_cost": float(effort),
             "external_model_cost": float(external_score),
         }
+        if "prediction_fallback" in prediction_metadata:
+            cost_parts["prediction_fallback"] = str(prediction_metadata["prediction_fallback"])
+        if "prediction_error" in prediction_metadata:
+            cost_parts["prediction_error"] = str(prediction_metadata["prediction_error"])
+        return float(total), cost_parts
 
 
 def _clamp_action(action: Action) -> Action:
