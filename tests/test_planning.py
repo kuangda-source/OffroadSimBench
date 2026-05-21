@@ -5,7 +5,7 @@ import pytest
 
 from offroad_sim.agents import WorldModelAgent
 from offroad_sim.core import Action, Observation, VehicleState
-from offroad_sim.planning import StableWorldModelUnavailableError, WorldModelCEMPlanner, default_planner_registry
+from offroad_sim.planning import NavigationMPCPlanner, StableWorldModelUnavailableError, WorldModelCEMPlanner, default_planner_registry
 from offroad_sim.planning.stablewm import LeWMCEMPlanner
 from offroad_sim.world_models import SimpleKinematicWorldModel
 
@@ -21,7 +21,8 @@ def _observation() -> Observation:
 def test_planner_registry_reports_local_and_lewm_planners() -> None:
     registry = default_planner_registry()
 
-    assert {"world_model_cem", "le_wm_cem"}.issubset(set(registry.names()))
+    assert {"navigation_mpc", "world_model_cem", "le_wm_cem"}.issubset(set(registry.names()))
+    assert registry.status("navigation_mpc").available is True
     assert registry.status("world_model_cem").available is True
 
 
@@ -33,6 +34,51 @@ def test_world_model_cem_plans_toward_goal() -> None:
     assert result.first_action.throttle >= 0.0
     assert result.predicted_states[-1].x > 0.0
     assert result.metadata["planner"] == "world_model_cem"
+
+
+def test_navigation_mpc_plans_toward_off_axis_goal() -> None:
+    observation = Observation(
+        timestamp=0.0,
+        vehicle_state=VehicleState(x=0.0, y=0.0, yaw=0.0, speed=1.0),
+        goal=(0.0, 12.0),
+    )
+    planner = NavigationMPCPlanner(horizon=8, num_samples=32, seed=4)
+
+    result = planner.plan(observation, SimpleKinematicWorldModel(), reference_action=Action(throttle=0.5))
+
+    assert result.first_action.steer > 0.1
+    assert result.first_action.throttle > 0.0
+    assert result.predicted_states[-1].y > 0.0
+    assert result.metadata["planner"] == "navigation_mpc"
+
+
+def test_navigation_mpc_region_penalty_overrides_external_score() -> None:
+    observation = Observation(
+        timestamp=0.0,
+        vehicle_state=VehicleState(x=0.0, y=0.0, yaw=0.0, speed=2.5),
+        goal=(18.0, 0.0),
+        info={
+            "navigation_region": {
+                "region": {"polygon": [[-2.0, -2.0], [25.0, -2.0], [25.0, 2.0], [-2.0, 2.0]]},
+                "cost": {"out_of_region_weight": 5000.0, "boundary_weight": 20.0, "boundary_margin_m": 1.0},
+            }
+        },
+    )
+    planner = NavigationMPCPlanner(horizon=18, num_samples=40, seed=2, model_score_weight=1.0)
+
+    def score_actions(candidates: list[list[Action]]) -> list[float]:
+        return [-1000.0 if candidate[0].steer < -0.75 else 0.0 for candidate in candidates]
+
+    result = planner.plan(
+        observation,
+        SimpleKinematicWorldModel(),
+        reference_action=Action(throttle=0.6),
+        score_actions=score_actions,
+    )
+
+    assert result.first_action.steer > -0.75
+    assert result.metadata["external_score_used"] is True
+    assert result.metadata["region_cost"] >= 0.0
 
 
 def test_world_model_agent_can_use_planner() -> None:

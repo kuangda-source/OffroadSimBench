@@ -110,6 +110,7 @@ def test_region_navigation_closed_loop_uses_expert_only_for_collection(tmp_path:
     assert collection_scenario["metadata"]["beamng"]["drive_mode"] == "ai_line"
     assert evaluation_scenario["metadata"]["beamng"]["route"] == [[1.0, -170.0], [2.0, -205.0], [4.0, -240.0]]
     assert evaluation_scenario["metadata"]["beamng"]["drive_mode"] == "manual"
+    assert payload["region_navigation"]["evaluation_agent"] == "model_mpc"
     assert payload["acceptance"]["goal_success"] is True
     assert payload["acceptance"]["model_controlled"] is True
     assert payload["acceptance"]["min_goal_distance"] < 1.0
@@ -123,9 +124,11 @@ def test_region_navigation_closed_loop_passes_planner_settings(tmp_path: Path) -
     _write_task(task_path)
     collection_episode = _save_episode(tmp_path / "collection", 2.0, -205.0)
     evaluation_episode = _save_episode(tmp_path / "evaluation", 4.5, -240.5)
+    seen_agent_names: list[str] = []
     seen_agent_options: list[dict[str, object]] = []
 
     def fake_run_episode(**kwargs):
+        seen_agent_names.append(kwargs["agent_name"])
         seen_agent_options.append(kwargs["agent_options"])
 
         class Result:
@@ -167,4 +170,8 @@ def test_region_navigation_closed_loop_passes_planner_settings(tmp_path: Path) -
             )
         )
 
+    assert seen_agent_names == ["route_world_model", "model_mpc"]
+    assert seen_agent_options[1]["world_model_name"] == "simple_kinematic"
     assert seen_agent_options[1]["planner_config"] == {"horizon": 7, "num_samples": 24, "iterations": 3}
+    assert seen_agent_options[1]["algorithm_name"] == "fake_region"
+    assert seen_agent_options[1]["algorithm_model_path"].endswith("model")

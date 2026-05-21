@@ -49,6 +49,7 @@ class AgentRegistry:
 
 def default_agent_registry() -> AgentRegistry:
     from offroad_sim.agents.basic import KeyboardAgent, RandomAgent, RuleBasedGoalAgent, StopAgent
+    from offroad_sim.agents.model_mpc import ModelMPCAgent
     from offroad_sim.agents.route_world_model import RouteWorldModelAgent
     from offroad_sim.agents.world_model import WorldModelAgent
 
@@ -59,6 +60,7 @@ def default_agent_registry() -> AgentRegistry:
     registry.register(AgentSpec("stop", StopAgent, "Always command a full stop."))
     registry.register(AgentSpec("world_model", WorldModelAgent, "Rule-based controller with switchable world-model risk checks."))
     registry.register(AgentSpec("route_world_model", RouteWorldModelAgent, "Waypoint route follower with switchable world-model planning."))
+    registry.register(AgentSpec("model_mpc", ModelMPCAgent, "Model-scored MPC controller for bounded region navigation."))
     return registry
 
 

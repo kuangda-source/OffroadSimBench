@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from offroad_sim.agents import KeyboardAgent, RandomAgent, RuleBasedGoalAgent, StopAgent, make_agent
+from offroad_sim.agents import KeyboardAgent, ModelMPCAgent, RandomAgent, RuleBasedGoalAgent, StopAgent, make_agent
 from offroad_sim.core import Observation, VehicleState
 
 
@@ -48,3 +48,24 @@ def test_make_agent_factory() -> None:
     assert isinstance(make_agent("rule-based"), RuleBasedGoalAgent)
     assert isinstance(make_agent("keyboard"), KeyboardAgent)
 
+
+def test_make_agent_supports_model_mpc() -> None:
+    agent = make_agent("model_mpc", planner_config={"horizon": 8, "num_samples": 24, "iterations": 2})
+
+    assert isinstance(agent, ModelMPCAgent)
+
+
+def test_model_mpc_agent_uses_route_and_mpc_diagnostics() -> None:
+    agent = ModelMPCAgent(planner_config={"horizon": 8, "num_samples": 24, "seed": 3})
+    observation = make_observation()
+    observation.info["route"] = [(0.0, 0.0), (0.0, 12.0)]
+    observation.goal = (0.0, 12.0)
+
+    action = agent.act(observation)
+    diagnostics = agent.diagnostics()
+
+    assert action.steer > 0.1
+    assert action.throttle > 0.0
+    assert diagnostics["agent"] == "model_mpc"
+    assert diagnostics["planner"] == "navigation_mpc"
+    assert diagnostics["target_waypoint"] == [0.0, 12.0]

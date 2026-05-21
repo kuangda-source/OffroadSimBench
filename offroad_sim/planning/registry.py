@@ -62,9 +62,17 @@ class PlannerRegistry:
 
 def default_planner_registry() -> PlannerRegistry:
     from offroad_sim.planning.cem import WorldModelCEMPlanner
+    from offroad_sim.planning.navigation_mpc import NavigationMPCPlanner
     from offroad_sim.planning.stablewm import LeWMCEMPlanner
 
     registry = PlannerRegistry()
+    registry.register(
+        PlannerSpec(
+            name="navigation_mpc",
+            factory=NavigationMPCPlanner,
+            description="Region-aware MPC planner that can combine world-model predictions with external action scores.",
+        )
+    )
     registry.register(
         PlannerSpec(
             name="world_model_cem",

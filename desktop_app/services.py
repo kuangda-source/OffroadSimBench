@@ -121,6 +121,7 @@ class RegionNavigationClosedLoopRequest:
     planner_horizon: int = 4
     planner_samples: int = 16
     planner_iterations: int = 2
+    evaluation_agent: str = "model_mpc"
     beamng_gfx: str = "vk"
     close_beamng: bool = True
     step_delay_sec: float = 0.0
@@ -609,8 +610,11 @@ def run_region_navigation_closed_loop(request: RegionNavigationClosedLoopRequest
         vehicle=request.vehicle,
         max_steps=min(max(1, int(request.eval_steps)), task.max_steps),
         seed=request.seed,
-        world_model_type="le_wm",
-        world_model_path=model_path,
+        agent_name=request.evaluation_agent,
+        world_model_type="simple_kinematic" if request.evaluation_agent == "model_mpc" else "le_wm",
+        world_model_path="" if request.evaluation_agent == "model_mpc" else model_path,
+        algorithm_name=algorithm.algorithm_id if request.evaluation_agent == "model_mpc" else "",
+        algorithm_model_path=model_path if request.evaluation_agent == "model_mpc" else "",
         planner=request.planner,
         planner_horizon=request.planner_horizon,
         planner_samples=request.planner_samples,
@@ -623,6 +627,7 @@ def run_region_navigation_closed_loop(request: RegionNavigationClosedLoopRequest
         close_beamng=request.close_beamng,
     )
     acceptance = _navigation_acceptance(evaluation, task)
+    region_navigation = evaluation.get("region_navigation", {}) if isinstance(evaluation.get("region_navigation"), dict) else {}
     payload: dict[str, Any] = {
         "status": "completed",
         "algorithm": algorithm.algorithm_id,
@@ -635,6 +640,7 @@ def run_region_navigation_closed_loop(request: RegionNavigationClosedLoopRequest
         "training": training,
         "evaluation": evaluation,
         "acceptance": acceptance,
+        "region_navigation": region_navigation,
     }
     summary_path = output_dir / "region_navigation_summary.json"
     summary_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
@@ -933,25 +939,39 @@ def _run_region_beamng_episode(
     step_delay_sec: float,
     post_run_hold_sec: float,
     close_beamng: bool,
+    agent_name: str = "route_world_model",
+    algorithm_name: str = "",
+    algorithm_model_path: str = "",
 ) -> dict[str, Any]:
     planner_config = {
         "horizon": max(1, int(planner_horizon)),
         "num_samples": max(4, int(planner_samples)),
         "iterations": max(1, int(planner_iterations)),
     }
-    agent_options_payload: dict[str, Any] = {
-        "world_model_name": world_model_type,
-        "execution_mode": "model_guided_route_tracker",
-    }
-    if world_model_path:
-        agent_options_payload["world_model_path"] = world_model_path
-    if planner:
-        agent_options_payload["planner_name"] = planner
-        agent_options_payload["planner_config"] = planner_config
+    if agent_name == "model_mpc":
+        agent_options_payload = {
+            "world_model_name": world_model_type,
+            "algorithm_name": algorithm_name,
+            "algorithm_model_path": algorithm_model_path or world_model_path,
+            "planner_config": planner_config,
+        }
+        route = scenario.get("metadata", {}).get("beamng", {}).get("route", [])
+        if route:
+            agent_options_payload["route"] = route
+    else:
+        agent_options_payload = {
+            "world_model_name": world_model_type,
+            "execution_mode": "model_guided_route_tracker",
+        }
+        if world_model_path:
+            agent_options_payload["world_model_path"] = world_model_path
+        if planner:
+            agent_options_payload["planner_name"] = planner
+            agent_options_payload["planner_config"] = planner_config
     result = run_episode(
         backend_name="beamng",
         scenario=scenario,
-        agent_name="route_world_model",
+        agent_name=agent_name,
         seed=seed,
         max_steps=max_steps,
         record=record,
@@ -968,6 +988,9 @@ def _run_region_beamng_episode(
     payload["region_navigation"] = {
         "world_model_type": world_model_type,
         "world_model_path": world_model_path or None,
+        "evaluation_agent": agent_name,
+        "algorithm_name": algorithm_name or None,
+        "algorithm_model_path": algorithm_model_path or None,
         "planner": planner or None,
         "scenario_id": scenario.get("scenario_id"),
         "beamng_gfx": beamng_gfx,

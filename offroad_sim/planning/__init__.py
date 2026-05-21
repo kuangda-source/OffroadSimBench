@@ -1,6 +1,7 @@
 """Path planning interfaces and planner registry."""
 
 from offroad_sim.planning.cem import WorldModelCEMPlanner
+from offroad_sim.planning.navigation_mpc import NavigationMPCPlanner
 from offroad_sim.planning.registry import (
     PlannerRegistry,
     PlannerSpec,
@@ -14,6 +15,7 @@ from offroad_sim.planning.types import ActionPlanner, PlanningResult
 __all__ = [
     "ActionPlanner",
     "LeWMCEMPlanner",
+    "NavigationMPCPlanner",
     "PlannerRegistry",
     "PlannerSpec",
     "PlannerStatus",
