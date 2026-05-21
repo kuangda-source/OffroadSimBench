@@ -763,6 +763,9 @@ class BeamNGBackend(OffroadSimBackend):
         if camera_mode in {"orbit", "follow"} and callable(set_player_mode):
             distance = max(4.0, float(beamng_options.get("camera_distance_m", 14.0 if camera_mode == "follow" else 12.0)))
             pitch = float(beamng_options.get("camera_pitch_deg", 35.0 if camera_mode == "follow" else 0.0))
+            if camera_mode == "follow":
+                # BeamNG orbit camera uses negative pitch for the high rear view.
+                pitch = -abs(pitch)
             try:
                 set_player_mode(
                     self.connection.vehicle_id,

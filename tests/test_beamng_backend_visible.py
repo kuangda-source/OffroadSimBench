@@ -328,7 +328,7 @@ def test_beamng_backend_uses_high_follow_camera(fake_beamngpy: SimpleNamespace) 
     assert fake_beamngpy.player_camera_request[0] == "ego"
     assert fake_beamngpy.player_camera_request[1] == "orbit"
     assert fake_beamngpy.player_camera_request[2]["distance"] == 14.0
-    assert fake_beamngpy.player_camera_request[2]["rotation"] == (0.0, 35.0, 0.0)
+    assert fake_beamngpy.player_camera_request[2]["rotation"] == (0.0, -35.0, 0.0)
     assert not hasattr(fake_beamngpy, "camera_request")
 
 
