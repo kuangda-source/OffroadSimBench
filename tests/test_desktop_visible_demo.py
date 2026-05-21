@@ -182,6 +182,34 @@ def test_gui_home_start_uses_selected_task_and_checkpoint(monkeypatch) -> None:
     window.close()
 
 
+def test_gui_home_start_respects_non_beamng_backend(monkeypatch) -> None:
+    _ensure_app()
+    window = MainWindow()
+    window._select_combo_value(window.backend_combo, "gym_heightmap")
+    window._select_combo_value(window.scenario_combo, "forest_trail_001")
+    window._select_combo_value(window.agent_combo, "rule_based")
+    captured: dict[str, object] = {}
+
+    def fake_run_episode(request: services.RunRequest) -> dict[str, object]:
+        captured["request"] = request
+        return {"episode_id": "gym", "metrics": {"steps": 3}, "episode_path": ""}
+
+    monkeypatch.setattr(services, "run_episode_from_request", fake_run_episode)
+    monkeypatch.setattr(
+        services,
+        "run_region_navigation_closed_loop",
+        lambda request: (_ for _ in ()).throw(AssertionError("BeamNG region loop should not run")),
+    )
+    monkeypatch.setattr(window, "_run_task", lambda task, callback, label: callback(task()))
+
+    window.run_home_start()
+
+    assert isinstance(captured["request"], services.RunRequest)
+    assert captured["request"].backend == "gym_heightmap"
+    assert captured["request"].scenario == "forest_trail_001"
+    window.close()
+
+
 def test_gui_navigation_preview_uses_editor_callback(monkeypatch) -> None:
     _ensure_app()
     window = MainWindow()

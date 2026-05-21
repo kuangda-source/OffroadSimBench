@@ -1083,8 +1083,8 @@ class MainWindow(QMainWindow):
         action_panel, action_layout = self._new_group("开始")
         run_button = QPushButton("开始测试")
         self._configure_button(run_button, primary=True)
-        run_button.clicked.connect(self.run_home_region_model_test)
-        hint = QLabel("首页只保留最常用路径：选择 BeamNG 区域任务和模型 checkpoint 后直接开始测试；采集、训练、编辑任务等操作在左侧对应页面完成。")
+        run_button.clicked.connect(self.run_home_start)
+        hint = QLabel("开始测试会按当前 Backend 运行；只有 Backend=beamng 时才使用区域任务和模型 checkpoint。采集、训练、编辑任务等操作在左侧对应页面完成。")
         hint.setObjectName("mutedText")
         hint.setWordWrap(True)
         action_layout.addWidget(run_button)
@@ -1255,8 +1255,8 @@ class MainWindow(QMainWindow):
     def refresh_catalogs(self) -> None:
         self.catalog = services.catalog_snapshot()
         self._fill_combo(self.backend_combo, self.catalog["backends"], "name", default="gym_heightmap")
-        self._fill_combo(self.scenario_combo, self.catalog["scenarios"], "id", default="beamng_visible_autodrive")
-        self._fill_combo(self.agent_combo, self.catalog["agents"], "name", default="world_model")
+        self._fill_combo(self.scenario_combo, self.catalog["scenarios"], "id", default="forest_trail_001")
+        self._fill_combo(self.agent_combo, self.catalog["agents"], "name", default="rule_based")
         self._fill_combo(self.algorithm_combo, self.catalog["algorithms"], "name", default="stablewm_lewm")
         self._fill_combo(self.world_model_combo, self.catalog["world_models"], "name", default="le_wm")
         self._fill_combo(self.planner_combo, [{"name": ""}] + self.catalog["planners"], "name", default="navigation_mpc")
@@ -1364,6 +1364,13 @@ class MainWindow(QMainWindow):
         self.navigation_preview_session.close()
         super().closeEvent(event)
 
+    def run_home_start(self) -> None:
+        backend = self.backend_combo.currentData() or self.backend_combo.currentText()
+        if str(backend) == "beamng":
+            self.run_home_region_model_test()
+            return
+        self.run_episode()
+
     def run_home_region_model_test(self) -> None:
         task_path = self._path_combo_value(self.home_task_combo).strip()
         model_path = self._path_combo_value(self.home_model_combo).strip()
@@ -1375,7 +1382,6 @@ class MainWindow(QMainWindow):
             return
         self.task_path_edit.setText(task_path)
         self.model_path_edit.setText(model_path)
-        self._select_combo_value(self.backend_combo, "beamng")
         self._select_combo_value(self.agent_combo, "model_mpc")
         self._select_combo_value(self.algorithm_combo, "stablewm_lewm")
         self._select_combo_value(self.world_model_combo, "le_wm")

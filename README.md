@@ -142,8 +142,10 @@ powershell -ExecutionPolicy Bypass -File scripts\phase4_visible_beamng_acceptanc
 Johnson Valley 原生越野地形上的当前验证区域/起终点任务。桌面 GUI 首页会自动列出
 可用的 BeamNG region task 和 LE-WM checkpoint，默认指向这条已验证任务和
 `outputs\region_navigation\johnson_valley_nav_test_train_v2_validated\model\lewm_cost_object.ckpt`；
-点击首页 `开始测试` 即可直接进入 `stablewm_lewm + navigation_mpc + model_mpc` 的 BeamNG
-手动控车评估，默认规划参数为 horizon=6、samples=32、iterations=3。桌面 GUI 的 BeamNG 页面只保留通用操作入口，固定 Johnson Valley 单次演示按钮已移除。
+当首页 Backend 选择为 `beamng` 时，点击 `开始测试` 会进入
+`stablewm_lewm + navigation_mpc + model_mpc` 的 BeamNG 手动控车评估，默认规划参数为
+horizon=6、samples=32、iterations=3；其他 Backend 会按当前 Backend/Scenario/Agent
+运行普通 episode。桌面 GUI 的 BeamNG 页面只保留通用操作入口，固定 Johnson Valley 单次演示按钮已移除。
 BeamNG 页面提供
 `编辑/预览区域与起终点` 联合入口，可在同一个窗口里编辑区域、起点、终点和专家路线，
 并可勾选实时预览，让后台 worker 在同一个 BeamNG 场景中增量刷新区域、起终点、路线标记和俯视相机。
@@ -276,9 +278,10 @@ Johnson Valley now has a repeatable stock-terrain route task at
 page lists available BeamNG region tasks and LE-WM checkpoints as dropdowns;
 the default selection points at this validated task and
 `outputs\region_navigation\johnson_valley_nav_test_train_v2_validated\model\lewm_cost_object.ckpt`.
-Clicking `开始测试` runs the selected task through
-`stablewm_lewm + navigation_mpc + model_mpc` in BeamNG with default planner
-settings `horizon=6`, `samples=32`, and `iterations=3`. The BeamNG page keeps
+When the overview Backend is `beamng`, clicking `开始测试` runs the selected task
+through `stablewm_lewm + navigation_mpc + model_mpc` in BeamNG with default
+planner settings `horizon=6`, `samples=32`, and `iterations=3`; other backends
+run the regular Backend/Scenario/Agent episode path. The BeamNG page keeps
 only generic operations such as region editing, runtime checks, and terrain
 draft export; one-off Johnson Valley demo buttons have been removed. The GUI
 BeamNG page can preview the selected region, start point, goal point, and route
