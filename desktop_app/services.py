@@ -78,7 +78,7 @@ class VisibleBeamNGDemoRequest:
     sequence_id: str = ""
     world_model_type: str = "le_wm"
     world_model_path: str = ""
-    planner: str = "le_wm_cem"
+    planner: str = "navigation_mpc"
     scenario: str = "beamng_visible_autodrive"
     vehicle: str = "configs/vehicles/ugv_medium.yaml"
     max_steps: int = 600
@@ -100,7 +100,7 @@ class BeamNGMapLeWMClosedLoopRequest:
     collect_steps: int = 160
     eval_steps: int = 120
     seed: int = 7
-    planner: str = "le_wm_cem"
+    planner: str = "navigation_mpc"
     beamng_gfx: str = "vk"
     close_beamng: bool = True
     step_delay_sec: float = 0.0
@@ -615,7 +615,7 @@ def run_region_navigation_closed_loop(request: RegionNavigationClosedLoopRequest
         world_model_path="" if request.evaluation_agent == "model_mpc" else model_path,
         algorithm_name=algorithm.algorithm_id if request.evaluation_agent == "model_mpc" else "",
         algorithm_model_path=model_path if request.evaluation_agent == "model_mpc" else "",
-        planner=request.planner,
+        planner="navigation_mpc" if request.evaluation_agent == "model_mpc" else request.planner,
         planner_horizon=request.planner_horizon,
         planner_samples=request.planner_samples,
         planner_iterations=request.planner_iterations,

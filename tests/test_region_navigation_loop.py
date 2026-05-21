@@ -111,6 +111,7 @@ def test_region_navigation_closed_loop_uses_expert_only_for_collection(tmp_path:
     assert evaluation_scenario["metadata"]["beamng"]["route"] == [[1.0, -170.0], [2.0, -205.0], [4.0, -240.0]]
     assert evaluation_scenario["metadata"]["beamng"]["drive_mode"] == "manual"
     assert payload["region_navigation"]["evaluation_agent"] == "model_mpc"
+    assert payload["region_navigation"]["planner"] == "navigation_mpc"
     assert payload["acceptance"]["goal_success"] is True
     assert payload["acceptance"]["model_controlled"] is True
     assert payload["acceptance"]["min_goal_distance"] < 1.0

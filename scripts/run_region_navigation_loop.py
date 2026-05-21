@@ -23,7 +23,7 @@ def main() -> int:
     parser.add_argument("--collect-steps", type=int, default=160)
     parser.add_argument("--eval-steps", type=int, default=120)
     parser.add_argument("--seed", type=int, default=7)
-    parser.add_argument("--planner", default="le_wm_cem")
+    parser.add_argument("--planner", default="navigation_mpc")
     parser.add_argument("--beamng-gfx", choices=["vk", "dx11"], default="vk")
     parser.add_argument("--step-delay-sec", type=float, default=0.0)
     parser.add_argument("--pre-run-hold-sec", type=float, default=0.0)
