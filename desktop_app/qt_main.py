@@ -57,11 +57,11 @@ PREVIEW_MIN_HEIGHT = 280
 
 @dataclass
 class GuiSettings:
-    max_steps: int = 5
+    max_steps: int = 520
     seed: int = 7
-    planner_horizon: int = 4
-    planner_samples: int = 16
-    planner_iterations: int = 2
+    planner_horizon: int = 6
+    planner_samples: int = 32
+    planner_iterations: int = 3
     image_size: int = 64
     preview_frame_index: int = 0
     terrain_frame_index: int = 0
@@ -977,8 +977,12 @@ class MainWindow(QMainWindow):
         self.stablewm_hdf5_edit = QLineEdit()
         self.stablewm_hdf5_edit.setPlaceholderText(r"outputs\stablewm\orfd_gui.h5")
         self.model_path_edit = QLineEdit()
-        self.model_path_edit.setPlaceholderText(r"outputs\models\lewm_orfd_gui")
-        self.task_path_edit = QLineEdit(r"configs\tasks\beamng_johnson_valley_nav_001.yaml")
+        self.model_path_edit.setPlaceholderText(str(services.DEFAULT_LEWM_CHECKPOINT_PATH))
+        self.task_path_edit = QLineEdit(str(services.DEFAULT_NAVIGATION_TASK_PATH))
+        self.home_task_combo = self._combo(editable=True)
+        self.home_model_combo = self._combo(editable=True)
+        self.home_task_combo.currentTextChanged.connect(self._sync_home_task_to_edit)
+        self.home_model_combo.currentTextChanged.connect(self._sync_home_model_to_edit)
         for edit in (self.dataset_root_edit, self.adapter_edit, self.stablewm_hdf5_edit, self.model_path_edit, self.task_path_edit):
             self._configure_control(edit)
 
@@ -1064,6 +1068,8 @@ class MainWindow(QMainWindow):
                 "基础运行配置",
                 [
                     self._field("Backend", self.backend_combo),
+                    self._field("BeamNG region task", self.home_task_combo),
+                    self._field("Model path", self.home_model_combo),
                     self._field("Scenario", self.scenario_combo),
                     self._field("Agent", self.agent_combo),
                     self._field("Algorithm", self.algorithm_combo),
@@ -1077,8 +1083,8 @@ class MainWindow(QMainWindow):
         action_panel, action_layout = self._new_group("开始")
         run_button = QPushButton("开始测试")
         self._configure_button(run_button, primary=True)
-        run_button.clicked.connect(self.run_episode)
-        hint = QLabel("数据集路径、模型训练、地形草案等操作请从左侧对应页面进入。")
+        run_button.clicked.connect(self.run_home_region_model_test)
+        hint = QLabel("首页只保留最常用路径：选择 BeamNG 区域任务和模型 checkpoint 后直接开始测试；采集、训练、编辑任务等操作在左侧对应页面完成。")
         hint.setObjectName("mutedText")
         hint.setWordWrap(True)
         action_layout.addWidget(run_button)
@@ -1190,10 +1196,7 @@ class MainWindow(QMainWindow):
             [
                 self._field("Region task", self.task_path_edit),
                 self._action_button("编辑/预览区域与起终点", self.open_region_task_editor),
-                self._action_button("Johnson Valley LE-WM 演示", self.run_johnson_valley_demo_loop, primary=True),
-                self._action_button("区域起终点 LE-WM 闭环", self.run_region_navigation_loop, primary=True),
-                self._action_button("启动 BeamNG 可视自动驾驶", self.run_visible_beamng_demo, primary=True),
-                self._action_button("BeamNG LE-WM 闭环训练评估", self.run_beamng_lewm_closed_loop),
+                self._action_button("运行当前区域任务", self.run_region_navigation_loop, primary=True),
                 self._action_button("检查 BeamNG", self.check_beamng),
                 self._action_button("导出 BeamNG 地形草案", self.export_beamng_terrain_draft),
             ],
@@ -1254,9 +1257,19 @@ class MainWindow(QMainWindow):
         self._fill_combo(self.backend_combo, self.catalog["backends"], "name", default="gym_heightmap")
         self._fill_combo(self.scenario_combo, self.catalog["scenarios"], "id", default="beamng_visible_autodrive")
         self._fill_combo(self.agent_combo, self.catalog["agents"], "name", default="world_model")
-        self._fill_combo(self.algorithm_combo, self.catalog["algorithms"], "name", default="local_lewm_cost")
+        self._fill_combo(self.algorithm_combo, self.catalog["algorithms"], "name", default="stablewm_lewm")
         self._fill_combo(self.world_model_combo, self.catalog["world_models"], "name", default="le_wm")
-        self._fill_combo(self.planner_combo, [{"name": ""}] + self.catalog["planners"], "name", default="le_wm_cem")
+        self._fill_combo(self.planner_combo, [{"name": ""}] + self.catalog["planners"], "name", default="navigation_mpc")
+        self._fill_path_combo(
+            self.home_task_combo,
+            self.catalog.get("navigation_tasks", []),
+            default_path=str(services.DEFAULT_NAVIGATION_TASK_PATH),
+        )
+        self._fill_path_combo(
+            self.home_model_combo,
+            self.catalog.get("model_checkpoints", []),
+            default_path=str(services.DEFAULT_LEWM_CHECKPOINT_PATH),
+        )
         self._fill_episode_list()
         self._refresh_planner_summary()
         beamng = _find_named(self.catalog["backends"], "beamng")
@@ -1304,6 +1317,7 @@ class MainWindow(QMainWindow):
 
     def _preview_task_from_editor(self, task_path: str, camera_mode: str, camera_height_m: float) -> None:
         self.task_path_edit.setText(task_path)
+        self.home_task_combo.setCurrentText(task_path)
         request = (task_path, camera_mode, camera_height_m)
         if self._navigation_preview_busy:
             self._navigation_preview_pending = request
@@ -1349,6 +1363,44 @@ class MainWindow(QMainWindow):
             self.region_task_dialog = None
         self.navigation_preview_session.close()
         super().closeEvent(event)
+
+    def run_home_region_model_test(self) -> None:
+        task_path = self._path_combo_value(self.home_task_combo).strip()
+        model_path = self._path_combo_value(self.home_model_combo).strip()
+        if not task_path:
+            self.log("开始测试需要先选择 BeamNG region task。")
+            return
+        if not model_path:
+            self.log("开始测试需要先选择模型 checkpoint。")
+            return
+        self.task_path_edit.setText(task_path)
+        self.model_path_edit.setText(model_path)
+        self._select_combo_value(self.backend_combo, "beamng")
+        self._select_combo_value(self.agent_combo, "model_mpc")
+        self._select_combo_value(self.algorithm_combo, "stablewm_lewm")
+        self._select_combo_value(self.world_model_combo, "le_wm")
+        self._select_combo_value(self.planner_combo, "navigation_mpc")
+        request = services.RegionNavigationClosedLoopRequest(
+            task_path=task_path,
+            algorithm="stablewm_lewm",
+            algorithm_model_path=model_path,
+            collect_steps=max(int(self.settings.max_steps), 520),
+            eval_steps=max(int(self.settings.max_steps), 520),
+            seed=self.settings.seed,
+            planner="navigation_mpc",
+            planner_horizon=self.settings.planner_horizon,
+            planner_samples=self.settings.planner_samples,
+            planner_iterations=self.settings.planner_iterations,
+            close_beamng=False,
+            step_delay_sec=0.02,
+            post_run_hold_sec=20.0,
+        )
+        self.log(f"开始测试：task={task_path}, model={model_path}")
+        self._run_task(
+            lambda: services.run_region_navigation_closed_loop(request),
+            self._pipeline_finished,
+            "home region model test failed",
+        )
 
     def run_episode(self) -> None:
         request = self._current_request()
@@ -1500,49 +1552,25 @@ class MainWindow(QMainWindow):
     def run_region_navigation_loop(self) -> None:
         algorithm = self.algorithm_combo.currentData() or self.algorithm_combo.currentText() or "local_lewm_cost"
         request = services.RegionNavigationClosedLoopRequest(
-            task_path=self.task_path_edit.text().strip() or r"configs\tasks\beamng_region_nav_001.yaml",
+            task_path=self.task_path_edit.text().strip() or str(services.DEFAULT_NAVIGATION_TASK_PATH),
             algorithm=algorithm,
             algorithm_model_path=self.model_path_edit.text().strip() if algorithm == "stablewm_lewm" else "",
-            collect_steps=max(int(self.settings.max_steps), 160),
-            eval_steps=max(int(self.settings.max_steps), 80),
+            collect_steps=max(int(self.settings.max_steps), 520),
+            eval_steps=max(int(self.settings.max_steps), 520),
             seed=self.settings.seed,
-            planner=self.planner_combo.currentData() or self.planner_combo.currentText() or "le_wm_cem",
+            planner=self.planner_combo.currentData() or self.planner_combo.currentText() or "navigation_mpc",
             planner_horizon=self.settings.planner_horizon,
             planner_samples=self.settings.planner_samples,
             planner_iterations=self.settings.planner_iterations,
             close_beamng=False,
+            step_delay_sec=0.02,
+            post_run_hold_sec=20.0,
         )
-        self.log("区域导航闭环：task -> expert采集 -> HDF5 -> 训练 -> start/goal评估")
+        self.log("区域导航闭环：按当前 task/model/planner 运行 BeamNG start/goal 评估")
         self._run_task(
             lambda: services.run_region_navigation_closed_loop(request),
             self._pipeline_finished,
             "region navigation loop failed",
-        )
-
-    def run_johnson_valley_demo_loop(self) -> None:
-        self.task_path_edit.setText(r"configs\tasks\beamng_johnson_valley_nav_001.yaml")
-        planner = self.planner_combo.currentData() or self.planner_combo.currentText() or "le_wm_cem"
-        algorithm = self.algorithm_combo.currentData() or self.algorithm_combo.currentText() or "local_lewm_cost"
-        request = services.RegionNavigationClosedLoopRequest(
-            task_path=r"configs\tasks\beamng_johnson_valley_nav_001.yaml",
-            algorithm=algorithm,
-            algorithm_model_path=self.model_path_edit.text().strip() if algorithm == "stablewm_lewm" else "",
-            collect_steps=max(int(self.settings.max_steps), 240),
-            eval_steps=max(int(self.settings.max_steps), 300),
-            seed=self.settings.seed,
-            planner=planner if planner != "none" else "le_wm_cem",
-            planner_horizon=max(self.settings.planner_horizon, 6),
-            planner_samples=max(self.settings.planner_samples, 32),
-            planner_iterations=max(self.settings.planner_iterations, 3),
-            close_beamng=False,
-            step_delay_sec=0.02,
-            post_run_hold_sec=20.0,
-        )
-        self.log("Johnson Valley 演示：ai_line 采集 -> LE-WM cost 训练 -> manual 模型控车评估")
-        self._run_task(
-            lambda: services.run_region_navigation_closed_loop(request),
-            self._pipeline_finished,
-            "johnson valley demo loop failed",
         )
 
     def load_selected_episode(self, item: QListWidgetItem) -> None:
@@ -1564,6 +1592,8 @@ class MainWindow(QMainWindow):
     def _pipeline_finished(self, payload: dict[str, Any]) -> None:
         self.stablewm_hdf5_edit.setText(str(payload.get("hdf5_path", "")))
         self.model_path_edit.setText(str(payload.get("model_dir", "")))
+        if payload.get("model_dir"):
+            self.home_model_combo.setCurrentText(str(payload.get("model_dir", "")))
         replay = payload.get("dataset_replay") if isinstance(payload.get("dataset_replay"), dict) else {}
         beamng = payload.get("beamng") if isinstance(payload.get("beamng"), dict) else None
         evaluation = payload.get("evaluation") if isinstance(payload.get("evaluation"), dict) else None
@@ -1603,6 +1633,8 @@ class MainWindow(QMainWindow):
 
     def _training_finished(self, payload: dict[str, Any]) -> None:
         self.model_path_edit.setText(str(payload.get("output_dir", "")))
+        if payload.get("output_dir"):
+            self.home_model_combo.setCurrentText(str(payload.get("output_dir", "")))
         self.model_summary.setText(_compact_json(payload))
         self.log(f"模型训练完成: {payload.get('model_path', payload.get('checkpoint_path', services.NAN_TEXT))}")
         self.refresh_catalogs()
@@ -1777,6 +1809,58 @@ class MainWindow(QMainWindow):
                 selected_index = combo.count() - 1
         combo.setCurrentIndex(selected_index)
 
+    def _fill_path_combo(self, combo: QComboBox, rows: list[dict[str, Any]], *, default_path: str) -> None:
+        current = self._path_combo_value(combo) or default_path
+        combo.blockSignals(True)
+        combo.clear()
+        selected_index = -1
+        for row in rows:
+            path = str(row.get("path") or "")
+            if not path:
+                continue
+            label = str(row.get("label") or row.get("relative_path") or row.get("id") or path)
+            combo.addItem(label, path)
+            if _same_path_text(path, current):
+                selected_index = combo.count() - 1
+        if default_path and selected_index < 0:
+            existing = next((index for index in range(combo.count()) if _same_path_text(str(combo.itemData(index)), default_path)), -1)
+            if existing >= 0:
+                selected_index = existing
+            else:
+                combo.addItem(default_path, default_path)
+                selected_index = combo.count() - 1
+        if combo.count():
+            combo.setCurrentIndex(max(0, selected_index))
+        combo.blockSignals(False)
+        if combo is self.home_task_combo:
+            self._sync_home_task_to_edit()
+        elif combo is self.home_model_combo:
+            self._sync_home_model_to_edit()
+
+    def _path_combo_value(self, combo: QComboBox) -> str:
+        text = combo.currentText().strip()
+        index = combo.currentIndex()
+        if index >= 0 and text == combo.itemText(index):
+            data = combo.itemData(index)
+            return str(data or text).strip()
+        return text
+
+    def _sync_home_task_to_edit(self) -> None:
+        path = self._path_combo_value(self.home_task_combo)
+        if path:
+            self.task_path_edit.setText(path)
+
+    def _sync_home_model_to_edit(self) -> None:
+        path = self._path_combo_value(self.home_model_combo)
+        if path:
+            self.model_path_edit.setText(path)
+
+    def _select_combo_value(self, combo: QComboBox, value: str) -> None:
+        for index in range(combo.count()):
+            if combo.itemData(index) == value or combo.itemText(index) == value:
+                combo.setCurrentIndex(index)
+                return
+
     def _group(self, title: str, widgets: list[QWidget]) -> QGroupBox:
         group, layout = self._new_group(title)
         for widget in widgets:
@@ -1852,6 +1936,13 @@ def _find_named(rows: list[dict[str, Any]], name: str) -> dict[str, Any] | None:
         if row.get("name") == name:
             return row
     return None
+
+
+def _same_path_text(left: str | Path, right: str | Path) -> bool:
+    try:
+        return Path(left).resolve() == Path(right).resolve()
+    except OSError:
+        return str(left) == str(right)
 
 
 def _is_finite(value: Any) -> bool:

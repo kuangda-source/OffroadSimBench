@@ -138,8 +138,13 @@ powershell -ExecutionPolicy Bypass -File scripts\phase4_visible_beamng_acceptanc
 
 ### Johnson Valley 闭环验收补充
 
-当前仓库提供 `configs\tasks\beamng_johnson_valley_nav_001.yaml` 作为
-Johnson Valley 原生越野地形上的固定区域/起终点任务。桌面 GUI 的 BeamNG 页面提供
+当前仓库提供 `configs\tasks\beamng_johnson_valley_nav_test.yaml` 作为
+Johnson Valley 原生越野地形上的当前验证区域/起终点任务。桌面 GUI 首页会自动列出
+可用的 BeamNG region task 和 LE-WM checkpoint，默认指向这条已验证任务和
+`outputs\region_navigation\johnson_valley_nav_test_train_v2_validated\model\lewm_cost_object.ckpt`；
+点击首页 `开始测试` 即可直接进入 `stablewm_lewm + navigation_mpc + model_mpc` 的 BeamNG
+手动控车评估，默认规划参数为 horizon=6、samples=32、iterations=3。桌面 GUI 的 BeamNG 页面只保留通用操作入口，固定 Johnson Valley 单次演示按钮已移除。
+BeamNG 页面提供
 `编辑/预览区域与起终点` 联合入口，可在同一个窗口里编辑区域、起点、终点和专家路线，
 并可勾选实时预览，让后台 worker 在同一个 BeamNG 场景中增量刷新区域、起终点、路线标记和俯视相机。
 预览默认使用俯视高视角，也可以在编辑窗口里切换相机模式和高度。编辑窗口还可以读取
@@ -158,8 +163,10 @@ BeamNG 窗口左键点击或短按地面，GUI 会以 50ms 轮询通过 Tech 通
 `model_mpc`：它会在每一步生成候选 steer/throttle/brake 序列，用
 LE-WM-compatible cost adapter 或世界模型预测为候选动作评分，再叠加目标距离、区域越界、
 边界距离、动作平滑和低速恢复代价，最后只执行最优序列的第一步动作。`route_world_model`
-仍保留为路线跟踪基线。2026-05-19 本地连续两轮旧基线验收通过：评估阶段分别 159 步和
-153 步进入 12 m 目标半径，最终距离 11.59 m 和 11.51 m，碰撞数为 0。
+仍保留为路线跟踪基线。2026-05-21 当前 checkpoint 在
+`beamng_johnson_valley_nav_test.yaml` 上本地验收通过：272 步进入 12 m 目标半径，
+最终距离 11.217 m，碰撞数为 0，评估阶段保持在区域内。运行时相机默认使用车辆后上方
+约 45 度的 `follow` 视角，避免只看到车后尘土。
 
 ## English
 
@@ -265,9 +272,18 @@ python scripts\run_region_navigation_loop.py --task configs\tasks\beamng_region_
 ```
 
 Johnson Valley now has a repeatable stock-terrain route task at
-`configs\tasks\beamng_johnson_valley_nav_001.yaml`. The GUI BeamNG page can
-preview the selected region, start point, goal point, and route markers before
-running the closed loop. The evaluation stage uses `drive_mode=manual`, not
+`configs\tasks\beamng_johnson_valley_nav_test.yaml`. The desktop GUI overview
+page lists available BeamNG region tasks and LE-WM checkpoints as dropdowns;
+the default selection points at this validated task and
+`outputs\region_navigation\johnson_valley_nav_test_train_v2_validated\model\lewm_cost_object.ckpt`.
+Clicking `开始测试` runs the selected task through
+`stablewm_lewm + navigation_mpc + model_mpc` in BeamNG with default planner
+settings `horizon=6`, `samples=32`, and `iterations=3`. The BeamNG page keeps
+only generic operations such as region editing, runtime checks, and terrain
+draft export; one-off Johnson Valley demo buttons have been removed. The GUI
+BeamNG page can preview the selected region, start point, goal point, and route
+markers before running the closed loop. The evaluation stage uses
+`drive_mode=manual`, not
 BeamNG `ai_line`; the default `model_mpc` agent generates candidate
 steer/throttle/brake sequences, scores them through the LE-WM-compatible cost
 adapter or a world-model rollout, adds goal progress and region-boundary costs,
@@ -275,12 +291,15 @@ and sends only the first action of the best sequence to BeamNG. `route_world_mod
 remains available as a route-tracking baseline.
 
 ```powershell
-python scripts\run_region_navigation_loop.py --task configs\tasks\beamng_johnson_valley_nav_001.yaml --algorithm local_lewm_cost --collect-steps 240 --eval-steps 420 --planner le_wm_cem --output-dir outputs\region_navigation\beamng_johnson_valley_nav_001
+python scripts\run_region_navigation_loop.py --task configs\tasks\beamng_johnson_valley_nav_test.yaml --algorithm stablewm_lewm --algorithm-model-path outputs\region_navigation\johnson_valley_nav_test_train_v2_validated\model\lewm_cost_object.ckpt --eval-steps 520 --planner navigation_mpc --planner-horizon 6 --planner-samples 32 --planner-iterations 3 --keep-beamng-open
 ```
 
-Local acceptance on 2026-05-19 passed two consecutive Johnson Valley runs with
-manual model-guided control: 159 and 153 evaluation steps, final goal distances
-of 11.59 m and 11.51 m against a 12 m goal radius, and zero collisions.
+Local acceptance on 2026-05-21 passed the current Johnson Valley checkpoint
+with manual model-guided control: 272 evaluation steps, final goal distance
+of 11.217 m against a 12 m goal radius, zero collisions, and the final pose
+inside the selected region. Runtime BeamNG evaluation now defaults to a high
+rear follow camera so the vehicle remains visible instead of being hidden by
+rear dust.
 
 In the desktop GUI, open the BeamNG page and use `编辑/预览区域与起终点` to
 edit a polygonal region, start point, goal point, and optional expert route
@@ -347,7 +366,7 @@ python scripts\run_region_navigation_loop.py --task configs\tasks\beamng_johnson
 Use a real checkpoint without retraining the local smoke model:
 
 ```powershell
-python scripts\run_region_navigation_loop.py --task configs\tasks\beamng_johnson_valley_nav_001.yaml --algorithm stablewm_lewm --algorithm-model-path D:\models\lewm\orfd\lewm_object.ckpt --eval-steps 300 --keep-beamng-open
+python scripts\run_region_navigation_loop.py --task configs\tasks\beamng_johnson_valley_nav_test.yaml --algorithm stablewm_lewm --algorithm-model-path D:\models\lewm\orfd\lewm_object.ckpt --eval-steps 520 --planner navigation_mpc --planner-horizon 6 --planner-samples 32 --planner-iterations 3 --keep-beamng-open
 ```
 
 If the upstream checkpoint was downloaded as HuggingFace `weights.pt` +

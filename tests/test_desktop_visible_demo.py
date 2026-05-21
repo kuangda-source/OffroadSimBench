@@ -66,16 +66,17 @@ def test_visible_demo_defaults_are_human_visible() -> None:
     assert kwargs["close_backend"] is False
 
 
-def test_beamng_page_has_visible_demo_action() -> None:
+def test_beamng_page_uses_generic_actions_only() -> None:
     _ensure_app()
     window = MainWindow()
 
     texts = [button.text() for button in window.findChildren(QPushButton)]
 
-    assert "BeamNG LE-WM 闭环训练评估" in texts
-    assert "启动 BeamNG 可视自动驾驶" in texts
-    assert "区域起终点 LE-WM 闭环" in texts
     assert "编辑/预览区域与起终点" in texts
+    assert "运行当前区域任务" in texts
+    assert "Johnson Valley LE-WM 演示" not in texts
+    assert "启动 BeamNG 可视自动驾驶" not in texts
+    assert "BeamNG LE-WM 闭环训练评估" not in texts
     assert "编辑区域/起终点" not in texts
     assert "BeamNG 预览区域/起终点" not in texts
     window.close()
@@ -157,21 +158,26 @@ def test_gui_region_navigation_loop_uses_task_path(monkeypatch) -> None:
     window.close()
 
 
-def test_gui_johnson_valley_demo_uses_agent_control_task(monkeypatch) -> None:
+def test_gui_home_start_uses_selected_task_and_checkpoint(monkeypatch) -> None:
     _ensure_app()
     window = MainWindow()
     window.settings.max_steps = 9
+    window.home_task_combo.setCurrentText("configs/tasks/beamng_johnson_valley_nav_test.yaml")
+    window.home_model_combo.setCurrentText("outputs/region_navigation/model/lewm_cost_object.ckpt")
     captured: dict[str, services.RegionNavigationClosedLoopRequest] = {}
 
     monkeypatch.setattr(services, "run_region_navigation_closed_loop", lambda request: captured.setdefault("request", request))
     monkeypatch.setattr(window, "_run_task", lambda task, callback, label: task())
 
-    window.run_johnson_valley_demo_loop()
+    window.run_home_region_model_test()
 
-    assert captured["request"].task_path.endswith("beamng_johnson_valley_nav_001.yaml")
-    assert captured["request"].planner == "le_wm_cem"
-    assert captured["request"].collect_steps >= 240
-    assert captured["request"].eval_steps >= 300
+    assert captured["request"].task_path == "configs/tasks/beamng_johnson_valley_nav_test.yaml"
+    assert captured["request"].algorithm == "stablewm_lewm"
+    assert captured["request"].algorithm_model_path == "outputs/region_navigation/model/lewm_cost_object.ckpt"
+    assert captured["request"].planner == "navigation_mpc"
+    assert captured["request"].collect_steps >= 520
+    assert captured["request"].eval_steps >= 520
+    assert captured["request"].step_delay_sec == 0.02
     assert captured["request"].close_beamng is False
     window.close()
 

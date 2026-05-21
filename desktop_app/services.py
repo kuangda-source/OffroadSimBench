@@ -29,6 +29,15 @@ from offroad_sim.world_models import TinyLearnedWorldModel, default_world_model_
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_ROOT = ROOT / "configs"
+DEFAULT_NAVIGATION_TASK_PATH = CONFIG_ROOT / "tasks" / "beamng_johnson_valley_nav_test.yaml"
+DEFAULT_LEWM_CHECKPOINT_PATH = (
+    ROOT
+    / "outputs"
+    / "region_navigation"
+    / "johnson_valley_nav_test_train_v2_validated"
+    / "model"
+    / "lewm_cost_object.ckpt"
+)
 NAN_TEXT = "NaN"
 UNFINISHED_TEXT = "未完成"
 
@@ -153,7 +162,7 @@ class ManualNavigationTaskRequest:
     evaluation_route_mode: str = "expert"
     ai_line_speed: float = 10.0
     steps_per_action: int = 18
-    camera_mode: str = "orbit"
+    camera_mode: str = "follow"
 
 
 def config_entries(kind: str, id_field: str) -> list[dict[str, Any]]:
@@ -176,8 +185,68 @@ def catalog_snapshot() -> dict[str, list[dict[str, Any]]]:
         "world_models": _registry_rows(default_world_model_registry()),
         "planners": _registry_rows(default_planner_registry()),
         "algorithms": _algorithm_rows(),
+        "navigation_tasks": navigation_task_entries(),
+        "model_checkpoints": model_checkpoint_entries(),
         "episodes": episode_summaries(),
     }
+
+
+def navigation_task_entries(root: str | Path | None = None) -> list[dict[str, Any]]:
+    task_root = Path(root or CONFIG_ROOT / "tasks")
+    if not task_root.exists():
+        return []
+    rows: list[dict[str, Any]] = []
+    for path in sorted(task_root.glob("*.yaml")):
+        try:
+            data = load_yaml_file(path)
+        except Exception:
+            continue
+        if str(data.get("task_type", "")) != "navigation_region_v1":
+            continue
+        task_id = str(data.get("task_id") or path.stem)
+        level = str(data.get("level") or data.get("map_id") or "")
+        label = f"{task_id} ({level})" if level else task_id
+        rows.append(
+            {
+                "id": task_id,
+                "label": label,
+                "path": str(path.resolve()),
+                "relative_path": _relative_to_root(path),
+                "summary": data,
+            }
+        )
+    return sorted(rows, key=lambda row: (0 if _same_path(row["path"], DEFAULT_NAVIGATION_TASK_PATH) else 1, str(row["id"])))
+
+
+def model_checkpoint_entries(root: str | Path | None = None) -> list[dict[str, Any]]:
+    output_root = Path(root or ROOT / "outputs")
+    if not output_root.exists():
+        return []
+    rows: list[dict[str, Any]] = []
+    for path in output_root.glob("**/*_object.ckpt"):
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        label = f"{path.parent.name}/{path.name}"
+        rows.append(
+            {
+                "id": path.stem,
+                "label": label,
+                "path": str(path.resolve()),
+                "relative_path": _relative_to_root(path),
+                "mtime": stat.st_mtime,
+                "size": stat.st_size,
+            }
+        )
+    return sorted(
+        rows,
+        key=lambda row: (
+            0 if _same_path(row["path"], DEFAULT_LEWM_CHECKPOINT_PATH) else 1,
+            -float(row.get("mtime", 0.0)),
+            str(row["path"]),
+        ),
+    )
 
 
 def beamng_status() -> dict[str, Any]:
@@ -684,7 +753,7 @@ def save_manual_navigation_task(request: ManualNavigationTaskRequest) -> dict[st
         },
         beamng={
             "vehicle_model": str(request.vehicle_model or "pickup"),
-            "camera_mode": str(request.camera_mode or "orbit"),
+            "camera_mode": str(request.camera_mode or "follow"),
             "draw_route": True,
             "drive_mode": str(request.collection_drive_mode or "ai_line"),
             "collection_drive_mode": str(request.collection_drive_mode or "ai_line"),
@@ -1462,6 +1531,21 @@ def _resize_nearest(image: np.ndarray, size: int) -> np.ndarray:
     rows = np.linspace(0, height - 1, size).astype(int)
     cols = np.linspace(0, width - 1, size).astype(int)
     return image[rows][:, cols]
+
+
+def _relative_to_root(path: str | Path) -> str:
+    resolved = Path(path).resolve()
+    try:
+        return str(resolved.relative_to(ROOT))
+    except ValueError:
+        return str(resolved)
+
+
+def _same_path(left: str | Path, right: str | Path) -> bool:
+    try:
+        return Path(left).resolve() == Path(right).resolve()
+    except OSError:
+        return str(left) == str(right)
 
 
 def _safe_name(value: str) -> str:

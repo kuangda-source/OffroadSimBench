@@ -760,12 +760,18 @@ class BeamNGBackend(OffroadSimBackend):
             return
 
         set_player_mode = getattr(camera, "set_player_mode", None)
-        if callable(set_player_mode):
+        if camera_mode in {"orbit", "follow"} and callable(set_player_mode):
+            distance = max(4.0, float(beamng_options.get("camera_distance_m", 14.0 if camera_mode == "follow" else 12.0)))
+            pitch = float(beamng_options.get("camera_pitch_deg", 35.0 if camera_mode == "follow" else 0.0))
             try:
                 set_player_mode(
                     self.connection.vehicle_id,
                     "orbit",
-                    {"distance": 12.0, "fov": 65.0, "rotation": (0.0, 0.0, 0.0)},
+                    {
+                        "distance": distance,
+                        "fov": float(beamng_options.get("camera_fov_deg", 65.0)),
+                        "rotation": (0.0, pitch, 0.0),
+                    },
                 )
                 return
             except Exception:
@@ -773,16 +779,22 @@ class BeamNGBackend(OffroadSimBackend):
         if not callable(set_free):
             return
 
+        distance = max(4.0, float(beamng_options.get("camera_distance_m", 13.0)))
+        height = max(2.0, float(beamng_options.get("camera_height_m", 13.0)))
+        lookahead = float(beamng_options.get("camera_lookahead_m", 2.0))
         cam_pos = (
-            x - math.cos(yaw) * 9.0,
-            y - math.sin(yaw) * 9.0,
-            z + 5.0,
+            x - math.cos(yaw) * distance,
+            y - math.sin(yaw) * distance,
+            z + height,
         )
-        direction = (
-            math.cos(yaw),
-            math.sin(yaw),
-            -0.35,
+        target = (
+            x + math.cos(yaw) * lookahead,
+            y + math.sin(yaw) * lookahead,
+            z + 1.2,
         )
+        vector = (target[0] - cam_pos[0], target[1] - cam_pos[1], target[2] - cam_pos[2])
+        length = max(math.sqrt(vector[0] * vector[0] + vector[1] * vector[1] + vector[2] * vector[2]), 1e-6)
+        direction = (vector[0] / length, vector[1] / length, vector[2] / length)
         try:
             set_free(pos=cam_pos, direction=direction)
         except Exception:

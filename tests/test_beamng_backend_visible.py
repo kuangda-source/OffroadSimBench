@@ -302,6 +302,36 @@ def test_beamng_backend_uses_topdown_preview_camera(fake_beamngpy: SimpleNamespa
     assert not hasattr(fake_beamngpy, "player_camera_request")
 
 
+def test_beamng_backend_uses_high_follow_camera(fake_beamngpy: SimpleNamespace) -> None:
+    scenario = {
+        "scenario_id": "beamng_follow_camera",
+        "backend": "beamng",
+        "task": {"start": [10.0, 20.0], "goal": [30.0, 20.0], "success_radius_m": 1.0},
+        "metadata": {
+            "beamng": {
+                "level": "gridmap_v2",
+                "vehicle_start": {"pos": [10.0, 20.0, 3.0], "rot_quat": [0.0, 0.0, 0.0, 1.0]},
+                "camera_mode": "follow",
+                "camera_distance_m": 14.0,
+                "camera_height_m": 13.0,
+                "camera_lookahead_m": 2.0,
+                "camera_pitch_deg": 35.0,
+                "route": [[10.0, 20.0], [30.0, 20.0]],
+                "drive_mode": "manual",
+            }
+        },
+    }
+    backend = BeamNGBackend(connection=BeamNGConnectionConfig(launch=False))
+
+    backend.reset(scenario)
+
+    assert fake_beamngpy.player_camera_request[0] == "ego"
+    assert fake_beamngpy.player_camera_request[1] == "orbit"
+    assert fake_beamngpy.player_camera_request[2]["distance"] == 14.0
+    assert fake_beamngpy.player_camera_request[2]["rotation"] == (0.0, 35.0, 0.0)
+    assert not hasattr(fake_beamngpy, "camera_request")
+
+
 def test_beamng_backend_updates_navigation_preview_without_reloading(fake_beamngpy: SimpleNamespace) -> None:
     scenario = {
         "scenario_id": "beamng_preview_update",

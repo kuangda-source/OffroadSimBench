@@ -93,7 +93,7 @@ class NavigationRegionTask:
                 "yaw": self.start_yaw,
                 "rot_quat": list(self.beamng.get("rot_quat", _yaw_to_quat(self.start_yaw))),
             },
-            "camera_mode": str(self.beamng.get("camera_mode", "orbit")),
+            "camera_mode": str(self.beamng.get("camera_mode", "follow")),
             "draw_route": bool(self.beamng.get("draw_route", True)),
             "drive_mode": str(drive_mode),
             "manual_control_is_adas": bool(self.beamng.get("manual_control_is_adas", False)),

@@ -132,7 +132,7 @@ class ModelMPCAgent(OffroadAgent):
             if speed < 0.2:
                 steer = _recovery_steer(reference_steer, self._stuck_steps)
             else:
-                recovery_steer_limit = 0.75 if sharp_turn else 0.35
+                recovery_steer_limit = 1.0 if sharp_turn else 0.55
                 steer = max(min(reference_steer, recovery_steer_limit), -recovery_steer_limit)
         else:
             if sharp_turn and speed > 5.0:
@@ -206,10 +206,10 @@ def _recovery_steer(reference_steer: float, stuck_steps: int) -> float:
     direction = 1.0 if reference_steer >= 0.0 else -1.0
     phase = ((max(0, int(stuck_steps)) - 12) // 20) % 3
     if phase == 0:
-        return 0.0
+        return 0.9 * direction
     if phase == 1:
-        return 0.35 * direction
-    return 0.0
+        return 1.0 * direction
+    return 0.55 * direction
 
 
 def _action_dict(action: Action) -> dict[str, float]:

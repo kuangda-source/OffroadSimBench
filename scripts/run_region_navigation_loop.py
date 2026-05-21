@@ -25,6 +25,9 @@ def main() -> int:
     parser.add_argument("--eval-steps", type=int, default=120)
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--planner", default="navigation_mpc")
+    parser.add_argument("--planner-horizon", type=int, default=6)
+    parser.add_argument("--planner-samples", type=int, default=32)
+    parser.add_argument("--planner-iterations", type=int, default=3)
     parser.add_argument("--beamng-gfx", choices=["vk", "dx11"], default="vk")
     parser.add_argument("--step-delay-sec", type=float, default=0.0)
     parser.add_argument("--pre-run-hold-sec", type=float, default=0.0)
@@ -43,6 +46,9 @@ def main() -> int:
             eval_steps=args.eval_steps,
             seed=args.seed,
             planner=args.planner,
+            planner_horizon=args.planner_horizon,
+            planner_samples=args.planner_samples,
+            planner_iterations=args.planner_iterations,
             beamng_gfx=args.beamng_gfx,
             close_beamng=not args.keep_beamng_open,
             step_delay_sec=args.step_delay_sec,

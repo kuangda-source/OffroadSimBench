@@ -84,7 +84,7 @@ def test_model_mpc_agent_recovers_from_low_speed_stuck_turn() -> None:
         action = agent._execution_filter(Action(steer=-1.0, throttle=0.45), Action(steer=-1.0, throttle=0.25), observation)
 
     assert action.throttle >= 0.8
-    assert abs(action.steer) <= 0.75
+    assert action.steer <= -0.85
     assert agent.diagnostics().get("stuck_recovery") is True
 
 

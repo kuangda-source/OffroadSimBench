@@ -18,6 +18,33 @@ def test_desktop_catalog_snapshot_exposes_runtime_choices() -> None:
     assert any(item["name"] == "world_model_cem" for item in catalog["planners"])
     assert any(item["name"] == "tiny_learned" for item in catalog["world_models"])
     assert any(item["name"] == "local_lewm_cost" for item in catalog["algorithms"])
+    assert "navigation_tasks" in catalog
+    assert "model_checkpoints" in catalog
+
+
+def test_desktop_services_list_navigation_tasks_and_checkpoints(tmp_path) -> None:
+    task_path = tmp_path / "task.yaml"
+    services.save_manual_navigation_task(
+        services.ManualNavigationTaskRequest(
+            output_path=str(task_path),
+            task_id="menu_task",
+            level="johnson_valley",
+            region_polygon=[(0.0, 0.0), (30.0, 0.0), (30.0, 30.0), (0.0, 30.0)],
+            start_pos=(2.0, 2.0, 1.0),
+            goal_pos=(20.0, 20.0),
+            expert_route=[(2.0, 2.0), (20.0, 20.0)],
+        )
+    )
+    checkpoint = tmp_path / "runs" / "model" / "lewm_cost_object.ckpt"
+    checkpoint.parent.mkdir(parents=True)
+    checkpoint.write_bytes(b"checkpoint")
+
+    tasks = services.navigation_task_entries(tmp_path)
+    checkpoints = services.model_checkpoint_entries(tmp_path)
+
+    assert tasks[0]["id"] == "menu_task"
+    assert tasks[0]["path"] == str(task_path.resolve())
+    assert checkpoints[0]["path"] == str(checkpoint.resolve())
 
 
 def test_desktop_request_builds_dataset_and_planner_options() -> None:
