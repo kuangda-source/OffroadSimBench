@@ -97,8 +97,8 @@ class NavigationRegionTask:
             "draw_route": bool(self.beamng.get("draw_route", True)),
             "drive_mode": str(drive_mode),
             "manual_control_is_adas": bool(self.beamng.get("manual_control_is_adas", False)),
-            "ai_line_speed": float(self.beamng.get("ai_line_speed", 10.0)),
-            "steps_per_action": int(self.beamng.get("steps_per_action", 18)),
+            "ai_line_speed": float(self.beamng.get("ai_line_speed", 8.0)),
+            "steps_per_action": int(self.beamng.get("steps_per_action", 6)),
         }
         if mode == "collection" or self._uses_evaluation_route(mode):
             beamng["route"] = [list(point) for point in self.expert_route]

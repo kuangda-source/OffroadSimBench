@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from offroad_sim.scenarios import ScenarioConfig, load_scenario_config
+from offroad_sim.tasks import load_navigation_region_task
 from offroad_sim.vehicles import (
     CameraConfig,
     LidarConfig,
@@ -37,3 +38,10 @@ def test_scenario_config_loads_from_yaml() -> None:
     assert config.task.goal == (80.0, 60.0)
     assert config.metrics.terrain_risk is True
 
+
+def test_johnson_valley_demo_uses_stable_manual_control_timing() -> None:
+    task = load_navigation_region_task(ROOT / "configs" / "tasks" / "beamng_johnson_valley_nav_test.yaml")
+
+    assert task.max_steps >= 900
+    assert int(task.beamng["steps_per_action"]) <= 8
+    assert float(task.beamng["ai_line_speed"]) <= 8.0

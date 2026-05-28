@@ -81,6 +81,15 @@ def test_navigation_mpc_region_penalty_overrides_external_score() -> None:
     assert result.metadata["region_cost"] >= 0.0
 
 
+def test_navigation_mpc_samples_deceleration_candidates() -> None:
+    planner = NavigationMPCPlanner(horizon=5, num_samples=24, seed=2)
+
+    candidates = planner._candidate_sequences(Action(steer=0.7, throttle=0.55))
+
+    assert any(any(step.brake > 0.0 for step in candidate) for candidate in candidates)
+    assert any(candidate[0].throttle == 0.0 for candidate in candidates)
+
+
 def test_navigation_mpc_reports_world_model_prediction_fallback() -> None:
     class FailingWorldModel:
         def predict(self, observation, action, horizon=10):  # noqa: ANN001, ANN202

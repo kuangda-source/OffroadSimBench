@@ -338,7 +338,10 @@ visual smoke tests, because it follows a simulator line rather than proving
 model navigation.
 Navigation-region BeamNG tasks also default to `manual_control_is_adas: false`
 for evaluation so model actions are sent as direct steering/throttle/brake
-commands. `start_pose.yaw` stays in OffroadSimBench's XY convention
+commands. The Johnson Valley demo keeps `steps_per_action` at 6 and the
+collection `ai_line_speed` at 8.0 m/s; `model_mpc` also caps high-speed steering
+and samples braking candidates so sharp turns slow down instead of sliding.
+`start_pose.yaw` stays in OffroadSimBench's XY convention
 (`yaw=0` faces +X); the task exporter converts it to BeamNG's vehicle
 quaternion convention when spawning the vehicle.
 

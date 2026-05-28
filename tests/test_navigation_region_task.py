@@ -52,6 +52,7 @@ beamng:
     assert evaluation["metadata"]["beamng"]["drive_mode"] == "manual"
     assert evaluation["task"]["start"] == [1.0, -170.0]
     assert evaluation["task"]["goal"] == [4.0, -240.0]
+    assert evaluation["metadata"]["beamng"]["steps_per_action"] <= 8
 
 
 def test_navigation_region_task_can_use_agent_control_for_evaluation() -> None:

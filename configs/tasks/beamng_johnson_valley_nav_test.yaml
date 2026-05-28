@@ -53,7 +53,7 @@ expert_route:
 - - 1245.1680908203
   - -189.88800048828
 constraints:
-  max_steps: 520
+  max_steps: 1200
   max_collision_count: 0
 cost:
   out_of_region_weight: 250.0
@@ -72,6 +72,6 @@ beamng:
   evaluation_drive_mode: manual
   evaluation_route_mode: expert
   manual_control_is_adas: false
-  ai_line_speed: 10.0
-  steps_per_action: 18
+  ai_line_speed: 8.0
+  steps_per_action: 6
   weather: sunny

@@ -89,8 +89,16 @@ class NavigationMPCPlanner:
     def _candidate_sequences(self, reference_action: Action | None) -> list[list[Action]]:
         reference = reference_action or Action(throttle=0.45)
         candidates: list[list[Action]] = [[_clamp_action(reference) for _ in range(self.horizon)]]
+        for brake in (0.18, 0.35):
+            rows = []
+            for step in range(self.horizon):
+                decay = 1.0 - step / max(1, self.horizon - 1)
+                rows.append(Action(steer=float(reference.steer * decay), throttle=0.0, brake=float(brake)))
+            candidates.append(rows)
+            if len(candidates) >= self.num_samples:
+                return candidates
         steer_values = np.linspace(-0.9, 0.9, 9)
-        throttle_values = [0.25, 0.45, 0.65, 0.85]
+        throttle_values = [0.15, 0.3, 0.45, 0.65]
         for throttle in throttle_values:
             for steer in steer_values:
                 candidates.append([Action(steer=float(steer), throttle=float(throttle), brake=0.0) for _ in range(self.horizon)])

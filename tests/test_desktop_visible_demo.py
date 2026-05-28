@@ -247,8 +247,8 @@ def test_gui_home_start_uses_selected_task_and_checkpoint(tmp_path, monkeypatch)
     assert captured["request"].algorithm == "stablewm_lewm"
     assert captured["request"].algorithm_model_path == "outputs/region_navigation/model/lewm_cost_object.ckpt"
     assert captured["request"].planner == "navigation_mpc"
-    assert captured["request"].collect_steps >= 520
-    assert captured["request"].eval_steps >= 520
+    assert captured["request"].collect_steps >= 900
+    assert captured["request"].eval_steps >= 900
     assert captured["request"].step_delay_sec == 0.02
     assert captured["request"].close_beamng is False
     window.close()

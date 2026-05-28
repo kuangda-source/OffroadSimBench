@@ -135,13 +135,17 @@ class ModelMPCAgent(OffroadAgent):
                 recovery_steer_limit = 1.0 if sharp_turn else 0.55
                 steer = max(min(reference_steer, recovery_steer_limit), -recovery_steer_limit)
         else:
-            if sharp_turn and speed > 5.0:
-                throttle = min(throttle, 0.35)
             steer_limit = _speed_steer_limit(speed, sharp_turn=sharp_turn)
             if abs(steer) > steer_limit:
                 steer = max(min(steer, steer_limit), -steer_limit)
-                if speed > 4.0:
-                    throttle = min(throttle, 0.35)
+            turn_demand = max(abs(reference_steer), abs(steer))
+            target_speed = _turn_speed_target(turn_demand)
+            if turn_demand >= 0.35 and speed > target_speed:
+                overspeed = speed - target_speed
+                throttle = 0.0 if overspeed >= 1.0 else min(throttle, 0.15)
+                brake = max(brake, min(0.45, 0.08 + 0.08 * overspeed))
+            elif turn_demand >= 0.35 and speed > target_speed - 0.4:
+                throttle = min(throttle, 0.2)
         if brake > 0.2 and throttle > 0.2:
             throttle = min(throttle, 0.2)
         return Action(steer=steer, throttle=throttle, brake=brake)
@@ -191,15 +195,24 @@ def _normalize_route(route: Any) -> list[tuple[float, float]]:
 
 
 def _speed_steer_limit(speed: float, *, sharp_turn: bool = False) -> float:
-    if sharp_turn and speed >= 3.0:
-        return 0.9
     if speed >= 7.0:
-        return 0.35
+        return 0.42
     if speed >= 5.0:
-        return 0.45
+        return 0.55 if sharp_turn else 0.5
     if speed >= 3.0:
-        return 0.65
+        return 0.75 if sharp_turn else 0.65
     return 1.0
+
+
+def _turn_speed_target(turn_demand: float) -> float:
+    turn = abs(float(turn_demand))
+    if turn >= 0.75:
+        return 3.2
+    if turn >= 0.55:
+        return 4.4
+    if turn >= 0.35:
+        return 5.6
+    return 8.0
 
 
 def _recovery_steer(reference_steer: float, stuck_steps: int) -> float:

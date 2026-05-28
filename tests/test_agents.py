@@ -124,7 +124,7 @@ def test_model_mpc_agent_uses_route_lookahead_for_dense_waypoints() -> None:
     assert agent.cursor == 2
 
 
-def test_model_mpc_agent_caps_high_speed_steering() -> None:
+def test_model_mpc_agent_slows_before_high_speed_sharp_turn() -> None:
     agent = ModelMPCAgent(planner_config={"horizon": 4, "num_samples": 12, "seed": 2})
     observation = Observation(
         timestamp=0.0,
@@ -135,6 +135,22 @@ def test_model_mpc_agent_caps_high_speed_steering() -> None:
 
     action = agent._execution_filter(Action(steer=-0.9, throttle=0.55), Action(steer=-0.9, throttle=0.45), observation)
 
-    assert action.steer == -0.9
-    assert action.throttle <= 0.35
-    assert action.brake == 0.0
+    assert abs(action.steer) <= 0.45
+    assert action.throttle == 0.0
+    assert action.brake >= 0.15
+
+
+def test_model_mpc_agent_limits_sweeping_turn_speed() -> None:
+    agent = ModelMPCAgent(planner_config={"horizon": 4, "num_samples": 12, "seed": 2})
+    observation = Observation(
+        timestamp=0.0,
+        vehicle_state=VehicleState(x=0.0, y=0.0, yaw=0.0, speed=5.8),
+        goal=(20.0, 0.0),
+        info={},
+    )
+
+    action = agent._execution_filter(Action(steer=0.6, throttle=0.65), Action(steer=0.6, throttle=0.45), observation)
+
+    assert abs(action.steer) <= 0.55
+    assert action.throttle <= 0.15
+    assert action.brake >= 0.08

@@ -58,7 +58,7 @@ PREVIEW_MIN_HEIGHT = 280
 
 @dataclass
 class GuiSettings:
-    max_steps: int = 520
+    max_steps: int = 1000
     seed: int = 7
     planner_horizon: int = 6
     planner_samples: int = 32
@@ -1498,8 +1498,8 @@ class MainWindow(QMainWindow):
             task_path=task_path,
             algorithm=algorithm,
             algorithm_model_path=model_path if algorithm == "stablewm_lewm" else "",
-            collect_steps=max(int(self.settings.max_steps), 520),
-            eval_steps=max(int(self.settings.max_steps), 520),
+            collect_steps=max(int(self.settings.max_steps), 1000),
+            eval_steps=max(int(self.settings.max_steps), 1000),
             seed=self.settings.seed,
             planner="navigation_mpc",
             planner_horizon=self.settings.planner_horizon,
@@ -1691,8 +1691,8 @@ class MainWindow(QMainWindow):
             task_path=self.task_path_edit.text().strip() or str(services.DEFAULT_NAVIGATION_TASK_PATH),
             algorithm=algorithm,
             algorithm_model_path=self.model_path_edit.text().strip() if algorithm == "stablewm_lewm" else "",
-            collect_steps=max(int(self.settings.max_steps), 520),
-            eval_steps=max(int(self.settings.max_steps), 520),
+            collect_steps=max(int(self.settings.max_steps), 1000),
+            eval_steps=max(int(self.settings.max_steps), 1000),
             seed=self.settings.seed,
             planner=self.planner_combo.currentData() or self.planner_combo.currentText() or "navigation_mpc",
             planner_horizon=self.settings.planner_horizon,
