@@ -17,7 +17,9 @@ import numpy as np
 from offroad_sim.agents import default_agent_registry
 from offroad_sim.algorithms import DataPrepRequest, TrainRequest, default_algorithm_registry
 from offroad_sim.backends import BeamNGBackend, BeamNGConnectionConfig, default_backend_registry
+from offroad_sim.core import VehicleState
 from offroad_sim.datasets import default_dataset_registry
+from offroad_sim.datasets import DatasetFrame, DatasetSequence
 from offroad_sim.evaluation import run_episode
 from offroad_sim.evaluation.runner import DEFAULT_OUTPUT_ROOT
 from offroad_sim.planning import default_planner_registry
@@ -134,6 +136,28 @@ class RegionNavigationClosedLoopRequest:
     planner_samples: int = 16
     planner_iterations: int = 2
     evaluation_agent: str = "model_mpc"
+    beamng_gfx: str = "vk"
+    close_beamng: bool = True
+    step_delay_sec: float = 0.0
+    pre_run_hold_sec: float = 0.0
+    post_run_hold_sec: float = 0.0
+
+
+@dataclass(slots=True)
+class RegionSelfSupervisedWorldModelRequest:
+    task_path: str
+    world_model_type: str = "tiny_learned"
+    vehicle: str = "configs/vehicles/ugv_medium.yaml"
+    output_dir: str = ""
+    collect_steps: int = 240
+    eval_steps: int = 1000
+    seed: int = 7
+    planner: str = "navigation_mpc"
+    planner_horizon: int = 6
+    planner_samples: int = 32
+    planner_iterations: int = 3
+    evaluation_agent: str = "world_model_direct"
+    evaluation_route_mode: str = "route_free"
     beamng_gfx: str = "vk"
     close_beamng: bool = True
     step_delay_sec: float = 0.0
@@ -781,6 +805,114 @@ def run_region_navigation_closed_loop(request: RegionNavigationClosedLoopRequest
     return payload
 
 
+def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldModelRequest) -> dict[str, Any]:
+    task = load_navigation_region_task(request.task_path)
+    if request.world_model_type != "tiny_learned":
+        raise ValueError("Region self-supervised training currently supports world_model_type='tiny_learned'.")
+    stamp = time.strftime("%Y%m%dT%H%M%S")
+    output_dir = Path(request.output_dir or ROOT / "outputs" / "region_self_supervised" / _safe_name(task.task_id) / stamp)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    collection_scenario = _route_free_region_scenario(task.to_beamng_scenario(mode="evaluation"))
+    evaluation_route_free = str(request.evaluation_route_mode or "route_free").strip().lower() in {"route_free", "none", "direct"}
+    evaluation_scenario = (
+        _route_free_region_scenario(task.to_beamng_scenario(mode="evaluation"))
+        if evaluation_route_free
+        else task.to_beamng_scenario(mode="evaluation")
+    )
+
+    collection = _run_region_beamng_episode(
+        scenario=collection_scenario,
+        vehicle=request.vehicle,
+        max_steps=min(max(1, int(request.collect_steps)), task.max_steps),
+        seed=request.seed,
+        agent_name="region_explorer",
+        world_model_type="simple_kinematic",
+        world_model_path="",
+        planner="",
+        planner_horizon=request.planner_horizon,
+        planner_samples=request.planner_samples,
+        planner_iterations=request.planner_iterations,
+        record=True,
+        beamng_gfx=request.beamng_gfx,
+        pre_run_hold_sec=request.pre_run_hold_sec,
+        step_delay_sec=request.step_delay_sec,
+        post_run_hold_sec=0.0,
+        close_beamng=True,
+    )
+    episode_path = collection.get("episode_path")
+    if not episode_path:
+        raise RuntimeError("Region self-supervised collection did not produce an episode path.")
+
+    sequence = _episode_trace_to_dataset_sequence(episode_path, task)
+    model = TinyLearnedWorldModel.fit([sequence])
+    model.metadata.update(
+        {
+            "training_source": "beamng_region_self_supervised",
+            "task_id": task.task_id,
+            "episode_path": str(Path(episode_path).resolve()),
+        }
+    )
+    model_dir = output_dir / "model"
+    metadata_path = model.save(model_dir)
+    training = {
+        "status": "completed",
+        "model_type": model.model_type,
+        "model_path": str(model_dir.resolve()),
+        "metadata_path": str(metadata_path.resolve()),
+        "metrics": model.metadata,
+    }
+
+    evaluation_kwargs = {
+        "scenario": evaluation_scenario,
+        "vehicle": request.vehicle,
+        "max_steps": min(max(1, int(request.eval_steps)), task.max_steps),
+        "seed": request.seed,
+        "agent_name": request.evaluation_agent,
+        "world_model_type": model.model_type,
+        "world_model_path": str(model_dir.resolve()),
+        "planner": request.planner,
+        "planner_horizon": request.planner_horizon,
+        "planner_samples": request.planner_samples,
+        "planner_iterations": request.planner_iterations,
+        "record": True,
+        "beamng_gfx": request.beamng_gfx,
+        "pre_run_hold_sec": 0.0,
+        "step_delay_sec": request.step_delay_sec,
+        "post_run_hold_sec": request.post_run_hold_sec,
+        "close_beamng": request.close_beamng,
+    }
+    try:
+        evaluation = _run_region_beamng_episode(**evaluation_kwargs)
+    except Exception as exc:
+        if not _looks_like_beamng_reconnect_error(exc):
+            raise
+        time.sleep(6.0)
+        evaluation = _run_region_beamng_episode(**evaluation_kwargs)
+    acceptance = _navigation_acceptance(evaluation, task)
+    region_navigation = evaluation.get("region_navigation", {}) if isinstance(evaluation.get("region_navigation"), dict) else {}
+    payload: dict[str, Any] = {
+        "status": "completed",
+        "task": task.to_dict(),
+        "output_dir": str(output_dir.resolve()),
+        "model_dir": str(model_dir.resolve()),
+        "collection": collection,
+        "training": training,
+        "evaluation": evaluation,
+        "acceptance": acceptance,
+        "region_navigation": {
+            **region_navigation,
+            "collection_agent": "region_explorer",
+            "evaluation_agent": request.evaluation_agent,
+            "route_free": evaluation_route_free,
+            "evaluation_route_mode": "route_free" if evaluation_route_free else "task_route",
+        },
+    }
+    summary_path = output_dir / "region_self_supervised_summary.json"
+    summary_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    payload["summary_path"] = str(summary_path.resolve())
+    return payload
+
+
 def save_manual_navigation_task(request: ManualNavigationTaskRequest) -> dict[str, Any]:
     region = [_coerce_point2(point, "region polygon") for point in request.region_polygon]
     if len(region) < 3:
@@ -1055,6 +1187,60 @@ class BeamNGNavigationPreviewSession:
             self._level = None
 
 
+def _route_free_region_scenario(scenario: dict[str, Any]) -> dict[str, Any]:
+    cleaned = json.loads(json.dumps(scenario, default=str))
+    metadata = cleaned.setdefault("metadata", {})
+    beamng = metadata.setdefault("beamng", {})
+    if isinstance(beamng, dict):
+        beamng.pop("route", None)
+        beamng["draw_route"] = False
+        beamng["drive_mode"] = "manual"
+        beamng["evaluation_route_mode"] = "none"
+    return cleaned
+
+
+def _episode_trace_to_dataset_sequence(episode_path: str | Path, task: NavigationRegionTask) -> DatasetSequence:
+    rows = load_episode_trace(episode_path)
+    frames: list[DatasetFrame] = []
+    for index, row in enumerate(rows):
+        x = _float_or_nan(row.get("x"))
+        y = _float_or_nan(row.get("y"))
+        if not math.isfinite(x) or not math.isfinite(y):
+            continue
+        frames.append(
+            DatasetFrame(
+                frame_id=f"{index:06d}",
+                timestamp=float(row.get("timestamp") if row.get("timestamp") is not None else index),
+                vehicle_state=VehicleState(
+                    x=x,
+                    y=y,
+                    z=_finite_or_default(row.get("z"), task.start_pos[2]),
+                    yaw=_finite_or_default(row.get("yaw"), 0.0),
+                    pitch=_finite_or_default(row.get("pitch"), 0.0),
+                    roll=_finite_or_default(row.get("roll"), 0.0),
+                    speed=_finite_or_default(row.get("speed"), 0.0),
+                ),
+                metadata={"source_step_index": row.get("step_index")},
+            )
+        )
+    if len(frames) < 2:
+        raise ValueError("Self-supervised world-model training requires at least two recorded states.")
+    return DatasetSequence(
+        dataset_id=f"beamng_region_{task.task_id}",
+        dataset_type="beamng_episode",
+        sequence_id=Path(episode_path).name,
+        root=str(Path(episode_path).resolve()),
+        frames=frames,
+        goal=task.goal_pos,
+        metadata={"task_id": task.task_id, "source": "beamng_region_self_supervised"},
+    )
+
+
+def _looks_like_beamng_reconnect_error(exc: Exception) -> bool:
+    text = f"{type(exc).__name__}: {exc}"
+    return "BNGDisconnectedError" in text or "Connecting to the simulator failed" in text or "ConnectionResetError" in text
+
+
 def _run_region_beamng_episode(
     *,
     scenario: dict[str, Any],
@@ -1085,6 +1271,7 @@ def _run_region_beamng_episode(
     if agent_name == "model_mpc":
         agent_options_payload = {
             "world_model_name": world_model_type,
+            "world_model_path": world_model_path,
             "algorithm_name": algorithm_name,
             "algorithm_model_path": algorithm_model_path or world_model_path,
             "planner_config": planner_config,
@@ -1092,6 +1279,15 @@ def _run_region_beamng_episode(
         route = scenario.get("metadata", {}).get("beamng", {}).get("route", [])
         if route:
             agent_options_payload["route"] = route
+    elif agent_name == "world_model_direct":
+        agent_options_payload = {
+            "world_model_name": world_model_type,
+            "world_model_path": world_model_path,
+            "planner_name": planner or "navigation_mpc",
+            "planner_config": planner_config,
+        }
+    elif agent_name == "region_explorer":
+        agent_options_payload = {}
     else:
         agent_options_payload = {
             "world_model_name": world_model_type,
@@ -1312,8 +1508,13 @@ def load_episode_trace(episode_path: str | Path, *, limit: int = 5000) -> list[d
             rows.append(
                 {
                     "step_index": record.get("step_index"),
+                    "timestamp": _float_or_nan(observation.get("timestamp") if isinstance(observation, dict) else None),
                     "x": _float_or_nan(state.get("x")),
                     "y": _float_or_nan(state.get("y")),
+                    "z": _float_or_nan(state.get("z")),
+                    "yaw": _float_or_nan(state.get("yaw")),
+                    "pitch": _float_or_nan(state.get("pitch")),
+                    "roll": _float_or_nan(state.get("roll")),
                     "speed": _float_or_nan(state.get("speed")),
                     "reward": _float_or_nan(record.get("reward")),
                     "steer": _float_or_nan(action.get("steer")),
@@ -1415,6 +1616,11 @@ def _float_or_nan(value: Any) -> float:
         return float(value)
     except (TypeError, ValueError):
         return math.nan
+
+
+def _finite_or_default(value: Any, default: float) -> float:
+    number = _float_or_nan(value)
+    return float(number) if math.isfinite(number) else float(default)
 
 
 def _wrap_angle(angle: float) -> float:

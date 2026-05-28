@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from offroad_sim.agents import KeyboardAgent, ModelMPCAgent, RandomAgent, RuleBasedGoalAgent, StopAgent, make_agent
+from offroad_sim.agents.world_model_direct import _stabilize_action
 from offroad_sim.core import Action, Observation, VehicleState
 
 
@@ -53,6 +54,83 @@ def test_make_agent_supports_model_mpc() -> None:
     agent = make_agent("model_mpc", planner_config={"horizon": 8, "num_samples": 24, "iterations": 2})
 
     assert isinstance(agent, ModelMPCAgent)
+
+
+def test_region_explorer_targets_points_inside_navigation_region() -> None:
+    agent = make_agent("region_explorer", seed=3)
+    observation = Observation(
+        timestamp=0.0,
+        vehicle_state=VehicleState(x=2.0, y=2.0, yaw=0.0, speed=0.5),
+        goal=(20.0, 20.0),
+        info={
+            "navigation_region": {
+                "region": {"polygon": [[0.0, 0.0], [30.0, 0.0], [30.0, 30.0], [0.0, 30.0]]}
+            }
+        },
+    )
+
+    action = agent.act(observation)
+    diagnostics = agent.diagnostics()
+
+    assert -1.0 <= action.steer <= 1.0
+    assert 0.0 <= action.throttle <= 1.0
+    assert diagnostics["agent"] == "region_explorer"
+    assert diagnostics["target_in_region"] is True
+
+
+def test_world_model_direct_agent_ignores_expert_route_info() -> None:
+    agent = make_agent("world_model_direct", planner_config={"horizon": 4, "num_samples": 16, "seed": 4})
+    observation = Observation(
+        timestamp=0.0,
+        vehicle_state=VehicleState(x=0.0, y=0.0, yaw=0.0, speed=1.0),
+        goal=(20.0, 0.0),
+        info={"route": [[0.0, 0.0], [0.0, 20.0]]},
+    )
+
+    action = agent.act(observation)
+    diagnostics = agent.diagnostics()
+
+    assert action.throttle >= 0.0
+    assert diagnostics["agent"] == "world_model_direct"
+    assert diagnostics["target_goal"] == [20.0, 0.0]
+    assert diagnostics["route_used"] is False
+
+
+def test_world_model_direct_agent_keeps_low_speed_progress() -> None:
+    observation = Observation(
+        timestamp=0.0,
+        vehicle_state=VehicleState(x=0.0, y=0.0, yaw=0.0, speed=0.4),
+        goal=(20.0, 0.0),
+        info={},
+    )
+
+    action = _stabilize_action(
+        Action(steer=0.95, throttle=0.15, brake=0.0),
+        Action(steer=0.2, throttle=0.5, brake=0.0),
+        observation,
+    )
+
+    assert action.throttle >= 0.78
+    assert action.brake == 0.0
+    assert abs(action.steer) <= 0.25
+
+
+def test_world_model_direct_agent_recovers_from_low_speed_no_progress() -> None:
+    agent = make_agent("world_model_direct", planner_config={"horizon": 4, "num_samples": 16, "seed": 4})
+    observation = Observation(
+        timestamp=0.0,
+        vehicle_state=VehicleState(x=0.0, y=0.0, yaw=0.0, speed=0.02),
+        goal=(20.0, 0.0),
+        info={},
+    )
+
+    for _ in range(24):
+        action, stuck = agent._progress_filter(Action(steer=0.6, throttle=0.7, brake=0.0), Action(steer=0.6, throttle=0.5, brake=0.0), observation)
+
+    assert stuck is True
+    assert action.throttle == 1.0
+    assert action.brake == 0.0
+    assert abs(action.steer) <= 0.18
 
 
 def test_model_mpc_agent_uses_route_and_mpc_diagnostics() -> None:

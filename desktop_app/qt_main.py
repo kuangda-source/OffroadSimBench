@@ -1229,6 +1229,7 @@ class MainWindow(QMainWindow):
                 self._field("Region task", self.beamng_task_combo),
                 self._field("World model config", self.beamng_model_config_combo),
                 self._field("Resolved task path", self.task_path_edit),
+                self._action_button("区域自监督训练 world model", self.train_region_self_supervised_world_model),
                 self._action_button("编辑/预览区域与起终点", self.open_region_task_editor),
                 self._action_button("运行当前区域任务", self.run_region_navigation_loop, primary=True),
                 self._action_button("检查 BeamNG", self.check_beamng),
@@ -1505,6 +1506,7 @@ class MainWindow(QMainWindow):
             planner_horizon=self.settings.planner_horizon,
             planner_samples=self.settings.planner_samples,
             planner_iterations=self.settings.planner_iterations,
+            evaluation_agent="model_mpc",
             close_beamng=False,
             step_delay_sec=0.02,
             post_run_hold_sec=20.0,
@@ -1698,6 +1700,7 @@ class MainWindow(QMainWindow):
             planner_horizon=self.settings.planner_horizon,
             planner_samples=self.settings.planner_samples,
             planner_iterations=self.settings.planner_iterations,
+            evaluation_agent="model_mpc",
             close_beamng=False,
             step_delay_sec=0.02,
             post_run_hold_sec=20.0,
@@ -1707,6 +1710,34 @@ class MainWindow(QMainWindow):
             lambda: services.run_region_navigation_closed_loop(request),
             self._pipeline_finished,
             "region navigation loop failed",
+        )
+
+    def train_region_self_supervised_world_model(self) -> None:
+        task_path = self.task_path_edit.text().strip() or self._path_combo_value(self.beamng_task_combo).strip()
+        if not task_path:
+            self.log("区域自监督训练需要先选择 BeamNG region task。")
+            return
+        request = services.RegionSelfSupervisedWorldModelRequest(
+            task_path=task_path,
+            world_model_type="tiny_learned",
+            collect_steps=max(int(self.settings.max_steps), 1000),
+            eval_steps=max(int(self.settings.max_steps), 1000),
+            seed=self.settings.seed,
+            planner=self.planner_combo.currentData() or self.planner_combo.currentText() or "navigation_mpc",
+            planner_horizon=self.settings.planner_horizon,
+            planner_samples=self.settings.planner_samples,
+            planner_iterations=self.settings.planner_iterations,
+            evaluation_agent="model_mpc",
+            evaluation_route_mode="task_route",
+            close_beamng=False,
+            step_delay_sec=0.02,
+            post_run_hold_sec=20.0,
+        )
+        self.log("区域自监督训练：探索采集 -> tiny world model -> 无路线模型控车评估")
+        self._run_task(
+            lambda: services.run_region_self_supervised_world_model(request),
+            self._pipeline_finished,
+            "region self-supervised world model failed",
         )
 
     def load_selected_episode(self, item: QListWidgetItem) -> None:

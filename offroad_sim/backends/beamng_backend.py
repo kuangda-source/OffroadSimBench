@@ -37,6 +37,13 @@ def _clamp(value: float, lower: float, upper: float) -> float:
     return max(lower, min(upper, value))
 
 
+def _route_fallback_disabled(beamng_options: Mapping[str, Any]) -> bool:
+    route_mode = str(beamng_options.get("evaluation_route_mode", "")).strip().lower()
+    drive_mode = str(beamng_options.get("drive_mode", "")).strip().lower()
+    draw_route = bool(beamng_options.get("draw_route", False))
+    return route_mode in {"none", "off", "disabled", "route_free"} or (drive_mode == "manual" and not draw_route)
+
+
 @dataclass(slots=True)
 class BeamNGConnectionConfig:
     """Connection and launch options for BeamNG.tech."""
@@ -561,9 +568,10 @@ class BeamNGBackend(OffroadSimBackend):
             "status": "connected",
             "sensor_ids": sorted(self._sensors),
             "sensor_payload_keys": sorted(sensor_payload),
-            "route": [list(point) for point in self._route],
             "note": "BeamNG pose and best-effort sensor payloads are read when available.",
         }
+        if self._route:
+            info["route"] = [list(point) for point in self._route]
         navigation_region = self._navigation_region_metadata(scenario_config)
         if navigation_region:
             info["navigation_region"] = navigation_region
@@ -684,6 +692,8 @@ class BeamNGBackend(OffroadSimBackend):
                     continue
         if route:
             return route
+        if _route_fallback_disabled(beamng_options):
+            return []
         task = self._read_config(config, "task", None)
         return [
             tuple(float(value) for value in self._read_task_value(task, "start", (0.0, 0.0))),

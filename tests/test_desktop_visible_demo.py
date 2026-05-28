@@ -222,6 +222,30 @@ def test_gui_region_navigation_loop_uses_task_path(monkeypatch) -> None:
     window.close()
 
 
+def test_gui_exposes_region_self_supervised_training(monkeypatch) -> None:
+    _ensure_app()
+    window = MainWindow()
+    window.settings.max_steps = 5
+    window.task_path_edit.setText("configs/tasks/beamng_johnson_valley_nav_test.yaml")
+    captured: dict[str, services.RegionSelfSupervisedWorldModelRequest] = {}
+
+    monkeypatch.setattr(services, "run_region_self_supervised_world_model", lambda request: captured.setdefault("request", request))
+    monkeypatch.setattr(window, "_run_task", lambda task, callback, label: task())
+
+    window.train_region_self_supervised_world_model()
+    button_texts = [button.text() for button in window.page_stack.widget(2).findChildren(QPushButton)]
+
+    assert "区域自监督训练 world model" in button_texts
+    assert captured["request"].task_path == "configs/tasks/beamng_johnson_valley_nav_test.yaml"
+    assert captured["request"].world_model_type == "tiny_learned"
+    assert captured["request"].evaluation_agent == "model_mpc"
+    assert captured["request"].evaluation_route_mode == "task_route"
+    assert captured["request"].collect_steps >= 1000
+    assert captured["request"].eval_steps >= 1000
+    assert captured["request"].close_beamng is False
+    window.close()
+
+
 def test_gui_home_start_uses_selected_task_and_checkpoint(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(services, "WORLD_MODEL_CONFIGS_PATH", tmp_path / "world_model_configs.json")
     services.save_world_model_config(

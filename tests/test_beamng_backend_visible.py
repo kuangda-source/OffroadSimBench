@@ -214,6 +214,30 @@ def test_beamng_backend_uses_visible_scenario_metadata(fake_beamngpy: SimpleName
     assert fake_beamngpy.ai_line[0]["speed"] == 12.0
 
 
+def test_beamng_backend_keeps_route_free_manual_scenarios_route_free(fake_beamngpy: SimpleNamespace) -> None:
+    vehicle = load_vehicle_config("configs/vehicles/ugv_medium.yaml")
+    backend = BeamNGBackend(connection=BeamNGConnectionConfig(launch=False), vehicle_config=vehicle)
+    scenario = {
+        "scenario_id": "route_free_manual",
+        "backend": "beamng",
+        "task": {"start": [0.0, 0.0], "goal": [10.0, 0.0]},
+        "metadata": {
+            "beamng": {
+                "level": "gridmap_v2",
+                "vehicle_start": {"pos": [0.0, 0.0, 100.0], "yaw": 0.0},
+                "drive_mode": "manual",
+                "draw_route": False,
+                "evaluation_route_mode": "none",
+            }
+        },
+    }
+
+    observation = backend.reset(scenario)
+
+    assert "route" not in observation.info
+    assert backend.get_metrics()["route_waypoint_count"] == 0
+
+
 def test_beamng_backend_reports_motion_damage_and_sensors(fake_beamngpy: SimpleNamespace) -> None:
     vehicle = load_vehicle_config("configs/vehicles/ugv_medium.yaml")
     backend = BeamNGBackend(connection=BeamNGConnectionConfig(launch=False), vehicle_config=vehicle)

@@ -50,15 +50,19 @@ class AgentRegistry:
 def default_agent_registry() -> AgentRegistry:
     from offroad_sim.agents.basic import KeyboardAgent, RandomAgent, RuleBasedGoalAgent, StopAgent
     from offroad_sim.agents.model_mpc import ModelMPCAgent
+    from offroad_sim.agents.region_explore import RegionExploreAgent
     from offroad_sim.agents.route_world_model import RouteWorldModelAgent
     from offroad_sim.agents.world_model import WorldModelAgent
+    from offroad_sim.agents.world_model_direct import WorldModelDirectAgent
 
     registry = AgentRegistry()
     registry.register(AgentSpec("keyboard", KeyboardAgent, "Placeholder for interactive keyboard driving."))
     registry.register(AgentSpec("random", RandomAgent, "Random action baseline."))
+    registry.register(AgentSpec("region_explorer", RegionExploreAgent, "Self-supervised exploration inside a navigation region."))
     registry.register(AgentSpec("rule_based", RuleBasedGoalAgent, "Goal follower with terrain-risk slowdown."))
     registry.register(AgentSpec("stop", StopAgent, "Always command a full stop."))
     registry.register(AgentSpec("world_model", WorldModelAgent, "Rule-based controller with switchable world-model risk checks."))
+    registry.register(AgentSpec("world_model_direct", WorldModelDirectAgent, "Route-free world-model MPC controller."))
     registry.register(AgentSpec("route_world_model", RouteWorldModelAgent, "Waypoint route follower with switchable world-model planning."))
     registry.register(AgentSpec("model_mpc", ModelMPCAgent, "Model-scored MPC controller for bounded region navigation."))
     return registry

@@ -186,6 +186,7 @@ OffroadSimBench is a local off-road autonomous-driving simulation, dataset repla
 - Switchable planners: `navigation_mpc`, `world_model_cem`, and `le_wm_cem`.
 - BeamNG runtime detection, connection smoke tests, scenario reset/step, visible autonomous-driving demo, and episode recording.
 - stable-worldmodel HDF5 export, LE-WM-compatible cost checkpoint training, and `AutoCostModel + CEMSolver` planning.
+- Region self-supervised BeamNG collection and training scaffold: `region_explorer`, `world_model_direct`, and `scripts\run_region_self_supervised_world_model.py`.
 - PySide6 desktop GUI with a guided demo overview, Dataset and Training workbench, BeamNG Simulation workbench, ORFD image preview, HDF5 export, LE-WM cost-model training, visible BeamNG autodrive, local terrain draft export, episode trajectory preview, and logs.
 
 ### Environment
@@ -265,6 +266,14 @@ Run the BeamNG-map LE-WM closed loop:
 ```powershell
 python scripts\run_beamng_lewm_closed_loop.py --collect-steps 160 --eval-steps 120 --output-dir outputs\beamng_map_lewm\demo
 ```
+
+Run the region self-supervised world-model scaffold:
+
+```powershell
+python scripts\run_region_self_supervised_world_model.py configs\tasks\beamng_johnson_valley_nav_test.yaml --evaluation-agent model_mpc --evaluation-route-mode task_route --collect-steps 1000 --eval-steps 1200
+```
+
+Strict `route_free` mode is available for research runs, but the current Johnson Valley task still needs a global traversability/path prior to reach the goal reliably. See `docs\reports\2026-05-29_region_self_supervised_blocker.md`.
 
 Run a region/start/goal navigation loop. The collection stage uses
 `expert_route`; the evaluation stage removes that route and keeps only

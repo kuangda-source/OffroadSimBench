@@ -1,0 +1,53 @@
+"""Run route-free region self-supervised world-model training and evaluation."""
+
+from __future__ import annotations
+
+import argparse
+import json
+
+from desktop_app.services import RegionSelfSupervisedWorldModelRequest, run_region_self_supervised_world_model
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("task_path", help="navigation_region_v1 task YAML.")
+    parser.add_argument("--output-dir", default="", help="Output directory for model and summary.")
+    parser.add_argument("--collect-steps", type=int, default=1000)
+    parser.add_argument("--eval-steps", type=int, default=1000)
+    parser.add_argument("--seed", type=int, default=7)
+    parser.add_argument("--planner", default="navigation_mpc")
+    parser.add_argument("--planner-horizon", type=int, default=6)
+    parser.add_argument("--planner-samples", type=int, default=32)
+    parser.add_argument("--planner-iterations", type=int, default=3)
+    parser.add_argument("--evaluation-agent", default="world_model_direct")
+    parser.add_argument("--evaluation-route-mode", default="route_free", choices=["route_free", "task_route"])
+    parser.add_argument("--beamng-gfx", default="vk")
+    parser.add_argument("--close-beamng", action="store_true")
+    parser.add_argument("--step-delay-sec", type=float, default=0.02)
+    parser.add_argument("--post-run-hold-sec", type=float, default=20.0)
+    args = parser.parse_args()
+
+    payload = run_region_self_supervised_world_model(
+        RegionSelfSupervisedWorldModelRequest(
+            task_path=args.task_path,
+            output_dir=args.output_dir,
+            collect_steps=args.collect_steps,
+            eval_steps=args.eval_steps,
+            seed=args.seed,
+            planner=args.planner,
+            planner_horizon=args.planner_horizon,
+            planner_samples=args.planner_samples,
+            planner_iterations=args.planner_iterations,
+            evaluation_agent=args.evaluation_agent,
+            evaluation_route_mode=args.evaluation_route_mode,
+            beamng_gfx=args.beamng_gfx,
+            close_beamng=args.close_beamng,
+            step_delay_sec=args.step_delay_sec,
+            post_run_hold_sec=args.post_run_hold_sec,
+        )
+    )
+    print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
+
+
+if __name__ == "__main__":
+    main()
