@@ -381,14 +381,14 @@ class BeamNGBackend(OffroadSimBackend):
 
         if self._vehicle is None or self._active_drive_mode == "ai_line":
             return
-        control = self._manual_control_payload(Action(steer=0.0, throttle=0.0, brake=0.0))
+        control = self._manual_control_payload(Action(steer=0.0, throttle=0.0, brake=1.0))
         control["parkingbrake"] = 1.0
         control["gear"] = 0
         control["clutch"] = 1.0
         try:
             self._vehicle.control(**control)
         except TypeError:
-            self._vehicle.control(throttle=0.0, steering=0.0, brake=0.0, parkingbrake=1.0)
+            self._vehicle.control(throttle=0.0, steering=0.0, brake=1.0, parkingbrake=1.0)
         if self._bng is not None and hasattr(self._bng, "step"):
             self._bng.step(max(1, min(int(self._active_steps_per_action), 6)))
 

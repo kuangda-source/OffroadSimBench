@@ -61,6 +61,20 @@ class ModelMPCAgent(OffroadAgent):
         self._stuck_recovery = False
 
     def act(self, obs: Observation) -> Action:
+        terminal_action = self._terminal_stop_action(obs)
+        if terminal_action is not None:
+            self._last_diagnostics = {
+                "agent": "model_mpc",
+                "world_model": self.world_model_name,
+                "world_model_path": self.world_model_path,
+                "algorithm": self.algorithm_name or None,
+                "algorithm_model_path": self.algorithm_model_path or None,
+                "route_length": len(self.route),
+                "terminal_stop": True,
+                "target_goal": [float(obs.goal[0]), float(obs.goal[1])],
+                "executed_action": _action_dict(terminal_action),
+            }
+            return terminal_action
         if not self.route and obs.info.get("route"):
             self.route = _normalize_route(obs.info.get("route"))
             self.cursor = 0
@@ -90,6 +104,7 @@ class ModelMPCAgent(OffroadAgent):
             "executed_action": _action_dict(action),
             "stuck_steps": self._stuck_steps,
             "stuck_recovery": self._stuck_recovery,
+            "terminal_stop": False,
         }
         return action
 
@@ -108,6 +123,18 @@ class ModelMPCAgent(OffroadAgent):
             ScoreActionsRequest(observation=observation, action_candidates=candidates, task_info=observation.info)
         )
         return result.costs
+
+    def _terminal_stop_action(self, obs: Observation) -> Action | None:
+        radius = _goal_radius_from_info(obs.info)
+        if radius <= 0.0:
+            return None
+        state = obs.vehicle_state
+        distance = math.hypot(float(state.x) - float(obs.goal[0]), float(state.y) - float(obs.goal[1]))
+        if distance > radius:
+            return None
+        self._stuck_steps = 0
+        self._stuck_recovery = False
+        return Action(steer=0.0, throttle=0.0, brake=1.0)
 
     def _execution_filter(self, action: Action, reference_action: Action, obs: Observation) -> Action:
         speed = max(0.0, float(obs.vehicle_state.speed))
@@ -223,6 +250,27 @@ def _recovery_steer(reference_steer: float, stuck_steps: int) -> float:
     if phase == 1:
         return 1.0 * direction
     return 0.55 * direction
+
+
+def _goal_radius_from_info(info: dict[str, Any]) -> float:
+    candidates: list[Any] = [
+        info.get("goal_radius"),
+        info.get("success_radius_m"),
+    ]
+    navigation_region = info.get("navigation_region")
+    if isinstance(navigation_region, dict):
+        candidates.append(navigation_region.get("goal_radius"))
+        goal = navigation_region.get("goal")
+        if isinstance(goal, dict):
+            candidates.append(goal.get("radius"))
+    for value in candidates:
+        try:
+            radius = float(value)
+        except (TypeError, ValueError):
+            continue
+        if radius > 0.0:
+            return radius
+    return 0.0
 
 
 def _action_dict(action: Action) -> dict[str, float]:

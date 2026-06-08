@@ -149,6 +149,23 @@ def test_model_mpc_agent_uses_route_and_mpc_diagnostics() -> None:
     assert diagnostics["target_waypoint"] == [0.0, 12.0]
 
 
+def test_model_mpc_agent_brakes_inside_navigation_goal_radius() -> None:
+    agent = ModelMPCAgent(route=[(0.0, 0.0), (10.0, 0.0)], planner_config={"horizon": 4, "num_samples": 12, "seed": 2})
+    observation = Observation(
+        timestamp=0.0,
+        vehicle_state=VehicleState(x=9.0, y=0.0, yaw=0.0, speed=4.0),
+        goal=(10.0, 0.0),
+        info={"navigation_region": {"goal": {"pos": [10.0, 0.0], "radius": 2.0}}},
+    )
+
+    action = agent.act(observation)
+    diagnostics = agent.diagnostics()
+
+    assert action.throttle == 0.0
+    assert action.brake == 1.0
+    assert diagnostics["terminal_stop"] is True
+
+
 def test_model_mpc_agent_recovers_from_low_speed_stuck_turn() -> None:
     agent = ModelMPCAgent(route=[(0.0, 0.0), (0.0, 20.0)], planner_config={"horizon": 4, "num_samples": 12, "seed": 2})
     observation = Observation(

@@ -285,7 +285,7 @@ def test_beamng_backend_sends_manual_agent_control_as_adas(fake_beamngpy: Simple
     assert fake_beamngpy.shift_mode == "arcade"
 
 
-def test_beamng_backend_hold_vehicle_parks_without_sustained_reverse_brake(fake_beamngpy: SimpleNamespace) -> None:
+def test_beamng_backend_hold_vehicle_uses_service_and_parking_brakes(fake_beamngpy: SimpleNamespace) -> None:
     vehicle = load_vehicle_config("configs/vehicles/ugv_medium.yaml")
     scenario = load_scenario_config("configs/scenarios/beamng_visible_autodrive.yaml")
     scenario.metadata["beamng"]["drive_mode"] = "manual"
@@ -296,7 +296,7 @@ def test_beamng_backend_hold_vehicle_parks_without_sustained_reverse_brake(fake_
 
     assert fake_beamngpy.vehicle.last_control["steering"] == 0.0
     assert fake_beamngpy.vehicle.last_control["throttle"] == 0.0
-    assert fake_beamngpy.vehicle.last_control["brake"] == 0.0
+    assert fake_beamngpy.vehicle.last_control["brake"] == 1.0
     assert fake_beamngpy.vehicle.last_control["parkingbrake"] == 1.0
     assert fake_beamngpy.vehicle.last_control["gear"] == 0
     assert fake_beamngpy.step_calls[-1] == 6
