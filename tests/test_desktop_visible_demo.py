@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import threading
+import time
 from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -17,6 +19,18 @@ def _ensure_app() -> QApplication:
     if app is None:
         app = QApplication([])
     return app
+
+
+def _process_until(predicate, timeout_sec: float = 2.0) -> bool:
+    app = _ensure_app()
+    deadline = time.monotonic() + timeout_sec
+    while time.monotonic() < deadline:
+        app.processEvents()
+        if predicate():
+            return True
+        time.sleep(0.01)
+    app.processEvents()
+    return bool(predicate())
 
 
 def test_visible_demo_request_keeps_dataset_model_and_backend_switchable() -> None:
@@ -79,6 +93,49 @@ def test_beamng_page_uses_generic_actions_only() -> None:
     assert "BeamNG LE-WM 闭环训练评估" not in texts
     assert "编辑区域/起终点" not in texts
     assert "BeamNG 预览区域/起终点" not in texts
+    window.close()
+
+
+def test_gui_busy_indicator_lifecycle() -> None:
+    _ensure_app()
+    window = MainWindow()
+
+    window._set_busy(True, "开始测试")
+
+    assert window.busy_label.isHidden() is False
+    assert window.busy_bar.isHidden() is False
+    assert window.busy_bar.minimum() == 0
+    assert window.busy_bar.maximum() == 0
+    assert "开始测试" in window.busy_label.text()
+
+    window._set_busy(False)
+
+    assert window.busy_label.isHidden() is True
+    assert window.busy_bar.isHidden() is True
+    window.close()
+
+
+def test_gui_run_task_shows_and_hides_busy_indicator() -> None:
+    _ensure_app()
+    window = MainWindow()
+    release = threading.Event()
+    payload = {"ok": True}
+    seen: list[object] = []
+
+    def run_slow_task() -> dict[str, bool]:
+        release.wait(2.0)
+        return payload
+
+    window._run_task(run_slow_task, seen.append, "demo failed", task_label="开始测试")
+
+    assert window.busy_label.isHidden() is False
+    assert window.busy_bar.isHidden() is False
+    assert "开始测试" in window.busy_label.text()
+
+    release.set()
+
+    assert _process_until(lambda: window.busy_bar.isHidden() and not window.threads and not window.workers)
+    assert seen == [payload]
     window.close()
 
 
@@ -163,7 +220,7 @@ def test_gui_visible_demo_uses_minimum_human_visible_steps(monkeypatch) -> None:
     captured: dict[str, services.VisibleBeamNGDemoRequest] = {}
 
     monkeypatch.setattr(services, "run_visible_beamng_demo", lambda request: captured.setdefault("request", request))
-    monkeypatch.setattr(window, "_run_task", lambda task, callback, label: task())
+    monkeypatch.setattr(window, "_run_task", lambda task, callback, label, **kwargs: task())
 
     window.run_visible_beamng_demo()
 
@@ -178,7 +235,7 @@ def test_gui_closed_loop_uses_beamng_map_request(monkeypatch) -> None:
     captured: dict[str, services.BeamNGMapLeWMClosedLoopRequest] = {}
 
     monkeypatch.setattr(services, "run_beamng_map_lewm_closed_loop", lambda request: captured.setdefault("request", request))
-    monkeypatch.setattr(window, "_run_task", lambda task, callback, label: task())
+    monkeypatch.setattr(window, "_run_task", lambda task, callback, label, **kwargs: task())
 
     window.run_beamng_lewm_closed_loop()
 
@@ -212,7 +269,7 @@ def test_gui_region_navigation_loop_uses_task_path(monkeypatch) -> None:
     captured: dict[str, services.RegionNavigationClosedLoopRequest] = {}
 
     monkeypatch.setattr(services, "run_region_navigation_closed_loop", lambda request: captured.setdefault("request", request))
-    monkeypatch.setattr(window, "_run_task", lambda task, callback, label: task())
+    monkeypatch.setattr(window, "_run_task", lambda task, callback, label, **kwargs: task())
 
     window.run_region_navigation_loop()
 
@@ -230,7 +287,7 @@ def test_gui_exposes_region_self_supervised_training(monkeypatch) -> None:
     captured: dict[str, services.RegionSelfSupervisedWorldModelRequest] = {}
 
     monkeypatch.setattr(services, "run_region_self_supervised_world_model", lambda request: captured.setdefault("request", request))
-    monkeypatch.setattr(window, "_run_task", lambda task, callback, label: task())
+    monkeypatch.setattr(window, "_run_task", lambda task, callback, label, **kwargs: task())
 
     window.train_region_self_supervised_world_model()
     button_texts = [button.text() for button in window.page_stack.widget(2).findChildren(QPushButton)]
@@ -263,7 +320,7 @@ def test_gui_home_start_uses_selected_task_and_checkpoint(tmp_path, monkeypatch)
     captured: dict[str, services.RegionNavigationClosedLoopRequest] = {}
 
     monkeypatch.setattr(services, "run_region_navigation_closed_loop", lambda request: captured.setdefault("request", request))
-    monkeypatch.setattr(window, "_run_task", lambda task, callback, label: task())
+    monkeypatch.setattr(window, "_run_task", lambda task, callback, label, **kwargs: task())
 
     window.run_home_region_model_test()
 
@@ -296,7 +353,7 @@ def test_gui_home_start_respects_non_beamng_backend(monkeypatch) -> None:
         "run_region_navigation_closed_loop",
         lambda request: (_ for _ in ()).throw(AssertionError("BeamNG region loop should not run")),
     )
-    monkeypatch.setattr(window, "_run_task", lambda task, callback, label: callback(task()))
+    monkeypatch.setattr(window, "_run_task", lambda task, callback, label, **kwargs: callback(task()))
 
     window.run_home_start()
 
@@ -317,7 +374,7 @@ def test_gui_navigation_preview_uses_editor_callback(monkeypatch) -> None:
         return {"preview": {"realtime": True}, "analysis": {"start_in_region": True}}
 
     monkeypatch.setattr(window.navigation_preview_session, "update", fake_preview)
-    monkeypatch.setattr(window, "_run_task", lambda task, callback, label: callback(task()))
+    monkeypatch.setattr(window, "_run_task", lambda task, callback, label, **kwargs: callback(task()))
 
     window._preview_task_from_editor("configs/tasks/beamng_johnson_valley_nav_test.yaml", "topdown", 120.0)
 

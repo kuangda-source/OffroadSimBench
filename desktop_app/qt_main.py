@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMainWindow,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QSizePolicy,
     QSpinBox,
@@ -946,6 +947,7 @@ class MainWindow(QMainWindow):
         self.region_task_dialog: NavigationTaskDialog | None = None
         self._navigation_preview_busy = False
         self._navigation_preview_pending: tuple[str, str, float] | None = None
+        self._busy_depth = 0
 
         self._init_shared_controls()
 
@@ -1054,6 +1056,18 @@ class MainWindow(QMainWindow):
         title_box.addWidget(self.page_title)
         title_box.addWidget(self.page_subtitle)
         header.addLayout(title_box, 1)
+        self.busy_label = QLabel("Ready")
+        self.busy_label.setObjectName("busyLabel")
+        self.busy_bar = QProgressBar()
+        self.busy_bar.setObjectName("busyBar")
+        self.busy_bar.setRange(0, 0)
+        self.busy_bar.setTextVisible(False)
+        self.busy_bar.setFixedWidth(150)
+        self.busy_bar.setMinimumHeight(8)
+        self.busy_label.setVisible(False)
+        self.busy_bar.setVisible(False)
+        header.addWidget(self.busy_label)
+        header.addWidget(self.busy_bar)
 
         advanced_button = QPushButton("高级参数")
         self._configure_button(advanced_button)
@@ -1436,6 +1450,7 @@ class MainWindow(QMainWindow):
             ),
             self._navigation_preview_finished,
             "navigation realtime preview failed",
+            task_label="刷新 BeamNG 预览",
         )
 
     def _finish_navigation_preview_task(self) -> None:
@@ -1516,12 +1531,13 @@ class MainWindow(QMainWindow):
             lambda: services.run_region_navigation_closed_loop(request),
             self._pipeline_finished,
             "home region model test failed",
+            task_label="开始测试",
         )
 
     def run_episode(self) -> None:
         request = self._current_request()
         self.log(f"开始运行：backend={request.backend}, agent={request.agent}, planner={request.planner or 'none'}")
-        self._run_task(lambda: services.run_episode_from_request(request), self._episode_finished, "episode failed")
+        self._run_task(lambda: services.run_episode_from_request(request), self._episode_finished, "episode failed", task_label="运行 episode")
 
     def inspect_dataset(self) -> None:
         self.log("检查数据集...")
@@ -1533,6 +1549,7 @@ class MainWindow(QMainWindow):
             ),
             self._dataset_inspected,
             "dataset inspect failed",
+            task_label="检查数据集",
         )
 
     def preview_dataset(self) -> None:
@@ -1546,6 +1563,7 @@ class MainWindow(QMainWindow):
             ),
             self._preview_ready,
             "dataset preview failed",
+            task_label="预览数据集",
         )
 
     def save_world_model_config(self) -> None:
@@ -1586,6 +1604,7 @@ class MainWindow(QMainWindow):
             ),
             self._training_finished,
             "training failed",
+            task_label="训练 tiny world model",
         )
 
     def export_stablewm_hdf5(self) -> None:
@@ -1602,6 +1621,7 @@ class MainWindow(QMainWindow):
             ),
             self._hdf5_exported,
             "stablewm export failed",
+            task_label="导出 StableWM HDF5",
         )
 
     def train_lewm_cost_model(self) -> None:
@@ -1612,6 +1632,7 @@ class MainWindow(QMainWindow):
             lambda: services.train_lewm_cost_model(hdf5_path, output),
             self._training_finished,
             "lewm training failed",
+            task_label="训练 LE-WM cost model",
         )
 
     def run_orfd_lewm_pipeline(self) -> None:
@@ -1631,7 +1652,7 @@ class MainWindow(QMainWindow):
             beamng_scenario=self.scenario_combo.currentData() or self.scenario_combo.currentText(),
         )
         self.log("启动数据集训练流程：ORFD -> HDF5 -> LE-WM cost -> dataset replay")
-        self._run_task(lambda: services.run_orfd_lewm_pipeline(request), self._pipeline_finished, "pipeline failed")
+        self._run_task(lambda: services.run_orfd_lewm_pipeline(request), self._pipeline_finished, "pipeline failed", task_label="运行数据集训练流程")
 
     def export_beamng_terrain_draft(self) -> None:
         self.log("导出 ORFD 局部 BeamNG 地形草案...")
@@ -1646,6 +1667,7 @@ class MainWindow(QMainWindow):
             ),
             self._terrain_exported,
             "terrain export failed",
+            task_label="导出 BeamNG 地形草案",
         )
 
     def check_beamng(self) -> None:
@@ -1668,7 +1690,7 @@ class MainWindow(QMainWindow):
             record=self.settings.record,
         )
         self.log("启动 BeamNG 可视自动驾驶...")
-        self._run_task(lambda: services.run_visible_beamng_demo(request), self._visible_demo_finished, "visible BeamNG demo failed")
+        self._run_task(lambda: services.run_visible_beamng_demo(request), self._visible_demo_finished, "visible BeamNG demo failed", task_label="运行 BeamNG 演示")
 
     def run_beamng_lewm_closed_loop(self) -> None:
         request = services.BeamNGMapLeWMClosedLoopRequest(
@@ -1685,6 +1707,7 @@ class MainWindow(QMainWindow):
             lambda: services.run_beamng_map_lewm_closed_loop(request),
             self._pipeline_finished,
             "beamng lewm closed loop failed",
+            task_label="运行 BeamNG LE-WM 闭环",
         )
 
     def run_region_navigation_loop(self) -> None:
@@ -1710,6 +1733,7 @@ class MainWindow(QMainWindow):
             lambda: services.run_region_navigation_closed_loop(request),
             self._pipeline_finished,
             "region navigation loop failed",
+            task_label="运行区域导航",
         )
 
     def train_region_self_supervised_world_model(self) -> None:
@@ -1738,6 +1762,7 @@ class MainWindow(QMainWindow):
             lambda: services.run_region_self_supervised_world_model(request),
             self._pipeline_finished,
             "region self-supervised world model failed",
+            task_label="区域自监督训练 world model",
         )
 
     def load_selected_episode(self, item: QListWidgetItem) -> None:
@@ -1908,13 +1933,23 @@ class MainWindow(QMainWindow):
             load_assets=self.settings.load_assets,
         )
 
-    def _run_task(self, fn: Callable[[], Any], on_success: Callable[[Any], None], failure_label: str) -> None:
+    def _run_task(
+        self,
+        fn: Callable[[], Any],
+        on_success: Callable[[Any], None],
+        failure_label: str,
+        *,
+        task_label: str = "",
+    ) -> None:
         thread = QThread(self)
         worker = TaskWorker(fn)
         worker.moveToThread(thread)
+        self._set_busy(True, task_label or _task_label_from_failure(failure_label))
         thread.started.connect(worker.run)
         worker.finished.connect(on_success)
         worker.failed.connect(lambda message: self._task_failed(failure_label, message))
+        worker.finished.connect(lambda _: self._set_busy(False))
+        worker.failed.connect(lambda _: self._set_busy(False))
         worker.finished.connect(thread.quit)
         worker.failed.connect(thread.quit)
         thread.finished.connect(worker.deleteLater)
@@ -1923,6 +1958,23 @@ class MainWindow(QMainWindow):
         self.threads.append(thread)
         self.workers.append(worker)
         thread.start()
+
+    def _set_busy(self, active: bool, label: str = "") -> None:
+        if active:
+            self._busy_depth += 1
+            self.busy_label.setText(f"正在执行：{label}" if label else "正在执行")
+            self.busy_bar.setRange(0, 0)
+            self.busy_label.setVisible(True)
+            self.busy_bar.setVisible(True)
+            QApplication.setOverrideCursor(Qt.CursorShape.BusyCursor)
+            return
+        self._busy_depth = max(0, self._busy_depth - 1)
+        if self._busy_depth > 0:
+            return
+        self.busy_label.setVisible(False)
+        self.busy_bar.setVisible(False)
+        while QApplication.overrideCursor() is not None:
+            QApplication.restoreOverrideCursor()
 
     def _task_failed(self, failure_label: str, message: str) -> None:
         self.log(f"{failure_label}: {message}")
@@ -2220,6 +2272,16 @@ def _same_path_text(left: str | Path, right: str | Path) -> bool:
         return str(left) == str(right)
 
 
+def _task_label_from_failure(failure_label: str) -> str:
+    text = str(failure_label or "").strip()
+    lowered = text.lower()
+    if lowered.endswith(" failed"):
+        return text[:-7].strip() or text
+    if text.endswith("失败"):
+        return text[:-2].strip() or text
+    return text or "任务"
+
+
 def _is_finite(value: Any) -> bool:
     try:
         return math.isfinite(float(value))
@@ -2345,6 +2407,20 @@ QPushButton:disabled {
 }
 #fieldLabel {
     color: #a7b7c4;
+}
+#busyLabel {
+    color: #8fdcc7;
+    font-weight: 600;
+}
+QProgressBar#busyBar {
+    background: #0a1219;
+    border: 1px solid #294457;
+    border-radius: 4px;
+    max-height: 8px;
+}
+QProgressBar#busyBar::chunk {
+    background: #20b58f;
+    border-radius: 3px;
 }
 #metricCard, #todoCard, #previewPane {
     background: #0d161e;
