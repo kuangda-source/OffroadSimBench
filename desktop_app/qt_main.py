@@ -970,6 +970,7 @@ class MainWindow(QMainWindow):
         self.algorithm_combo = self._combo()
         self.demo_preset_combo = self._combo()
         self.demo_preset_combo.addItem("Johnson Valley LE-WM navigation", "johnson_valley_lewm_navigation")
+        self.training_preset_combo = self._combo()
         self.world_model_config_combo = self._combo()
         self.world_model_config_edit_combo = self._combo()
         self.beamng_model_config_combo = self._combo()
@@ -1194,6 +1195,8 @@ class MainWindow(QMainWindow):
         training_controls = self._group(
             "Model and algorithm training",
             [
+                self._field("Training preset", self.training_preset_combo),
+                self._action_button("Start training/export", self.run_training_preset, primary=True),
                 self._field("World model config", self.world_model_config_edit_combo),
                 self._field("Config name", self.model_config_name_edit),
                 self._field("Model path", self._with_button(self.home_model_combo, model_browse)),
@@ -1212,6 +1215,23 @@ class MainWindow(QMainWindow):
         output_layout.addWidget(self.model_summary, 1)
         training_layout.addWidget(output_box, 2)
         tabs.addTab(training_tab, "模型训练")
+
+        runs_tab = QWidget()
+        runs_layout = QHBoxLayout(runs_tab)
+        runs_layout.setContentsMargins(0, 0, 0, 0)
+        runs_layout.setSpacing(PAGE_SPACING)
+        run_list_box, run_list_layout = self._new_group("Training runs")
+        self.training_run_list = QListWidget()
+        self.training_run_list.itemClicked.connect(self._load_selected_training_run)
+        run_list_layout.addWidget(self.training_run_list, 1)
+        runs_layout.addWidget(run_list_box, 1)
+        run_summary_box, run_summary_layout = self._new_group("Run details")
+        self.training_run_summary = QTextEdit()
+        self.training_run_summary.setReadOnly(True)
+        self.training_run_summary.setPlaceholderText("Training run: NaN")
+        run_summary_layout.addWidget(self.training_run_summary, 1)
+        runs_layout.addWidget(run_summary_box, 2)
+        tabs.addTab(runs_tab, "Training results")
 
         processing_tab = QWidget()
         processing_layout = QVBoxLayout(processing_tab)
@@ -1373,6 +1393,8 @@ class MainWindow(QMainWindow):
             self.catalog.get("world_model_configs", []),
             default_id=services.DEFAULT_WORLD_MODEL_CONFIG_ID,
         )
+        self._fill_training_preset_combo()
+        self._fill_training_run_list()
         self._fill_episode_list()
         self._refresh_planner_summary()
         beamng = _find_named(self.catalog["backends"], "beamng")
@@ -1565,6 +1587,29 @@ class MainWindow(QMainWindow):
             "dataset preview failed",
             task_label="预览数据集",
         )
+
+    def run_training_preset(self) -> None:
+        data = self.training_preset_combo.currentData()
+        preset = dict(data) if isinstance(data, dict) else {}
+        preset_id = str(preset.get("id") or "")
+        if not preset_id:
+            self.model_summary.setText(_compact_json({"status": services.NAN_TEXT, "message": "No training preset selected."}))
+            return
+        if preset.get("available") is False:
+            payload = {"status": preset.get("status", services.UNFINISHED_TEXT), "training_preset": preset}
+            self.model_summary.setText(_compact_json(payload))
+            self.log(f"Training preset is not available yet: {preset.get('label', preset_id)}")
+            return
+        if preset_id == "stablewm_hdf5":
+            self.export_stablewm_hdf5()
+            return
+        if preset_id == "lewm_cost_model":
+            self.train_lewm_cost_model()
+            return
+        if preset_id == "tiny_world_model":
+            self.train_tiny_model()
+            return
+        self.model_summary.setText(_compact_json({"status": services.UNFINISHED_TEXT, "training_preset": preset}))
 
     def save_world_model_config(self) -> None:
         label = self.model_config_name_edit.text().strip()
@@ -1796,6 +1841,8 @@ class MainWindow(QMainWindow):
             path = metrics_source.get("episode_path")
             self.trajectory.set_trace(services.load_episode_trace(path) if path else [])
         self.model_summary.setText(_compact_json(payload))
+        if hasattr(self, "training_run_summary"):
+            self.training_run_summary.setText(_compact_json(payload))
         self.log("流程完成")
         self.refresh_catalogs()
 
@@ -1828,13 +1875,19 @@ class MainWindow(QMainWindow):
         if payload.get("output_dir"):
             self.home_model_combo.setCurrentText(str(payload.get("output_dir", "")))
         self.model_summary.setText(_compact_json(payload))
+        if hasattr(self, "training_run_summary"):
+            self.training_run_summary.setText(_compact_json(payload))
         self.log(f"模型训练完成: {payload.get('model_path', payload.get('checkpoint_path', services.NAN_TEXT))}")
         self.refresh_catalogs()
 
     def _hdf5_exported(self, payload: dict[str, Any]) -> None:
         self.stablewm_hdf5_edit.setText(str(payload.get("output_hdf5", "")))
         self.dataset_summary.setText(_compact_json(payload))
+        if hasattr(self, "training_run_summary"):
+            self.training_run_summary.setText(_compact_json(payload))
         self.log(f"HDF5 导出完成: {payload.get('output_hdf5', services.NAN_TEXT)}")
+
+        self.refresh_catalogs()
 
     def _visible_demo_finished(self, payload: dict[str, Any]) -> None:
         self.beamng_summary.setText(_compact_json(payload))
@@ -1872,6 +1925,51 @@ class MainWindow(QMainWindow):
         }
         for key, value in values.items():
             self.metric_cards[key].set_value(value)
+
+    def _fill_training_preset_combo(self) -> None:
+        current = self.training_preset_combo.currentData()
+        current_id = current.get("id") if isinstance(current, dict) else "lewm_cost_model"
+        self.training_preset_combo.blockSignals(True)
+        self.training_preset_combo.clear()
+        selected_index = -1
+        for row in self.catalog.get("training_presets", []):
+            preset_id = str(row.get("id") or "")
+            if not preset_id:
+                continue
+            label = str(row.get("label") or preset_id)
+            if row.get("available") is False:
+                label = f"{label} ({row.get('status', services.UNFINISHED_TEXT)})"
+            self.training_preset_combo.addItem(label, dict(row))
+            if preset_id == current_id:
+                selected_index = self.training_preset_combo.count() - 1
+        if self.training_preset_combo.count():
+            self.training_preset_combo.setCurrentIndex(max(0, selected_index))
+        self.training_preset_combo.blockSignals(False)
+
+    def _fill_training_run_list(self) -> None:
+        if not hasattr(self, "training_run_list"):
+            return
+        self.training_run_list.clear()
+        for run in self.catalog.get("training_runs", [])[:100]:
+            label = str(run.get("preset_label") or run.get("preset_id") or services.NAN_TEXT)
+            status = str(run.get("status") or services.NAN_TEXT)
+            artifact = str(run.get("artifact_path") or run.get("relative_path") or "")
+            item = QListWidgetItem(f"{label} | {status} | {artifact}")
+            item.setData(Qt.ItemDataRole.UserRole, dict(run))
+            self.training_run_list.addItem(item)
+
+    def _load_selected_training_run(self, item: QListWidgetItem | None) -> None:
+        if item is None or not hasattr(self, "training_run_summary"):
+            return
+        data = item.data(Qt.ItemDataRole.UserRole)
+        run = dict(data) if isinstance(data, dict) else {}
+        self.training_run_summary.setText(_compact_json(run))
+        artifact_path = str(run.get("artifact_path") or "")
+        artifact_type = str(run.get("artifact_type") or "")
+        if artifact_path and artifact_type in {"checkpoint", "world_model"}:
+            self._select_path_combo_value(self.home_model_combo, artifact_path)
+        elif artifact_path and artifact_type == "hdf5":
+            self.stablewm_hdf5_edit.setText(artifact_path)
 
     def _fill_episode_list(self) -> None:
         self.episode_list.clear()

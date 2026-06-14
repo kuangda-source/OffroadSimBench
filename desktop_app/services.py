@@ -42,6 +42,7 @@ DEFAULT_LEWM_CHECKPOINT_PATH = (
 )
 WORLD_MODEL_CONFIGS_PATH = CONFIG_ROOT / "world_model_configs.json"
 DEFAULT_WORLD_MODEL_CONFIG_ID = "johnson_valley_lewm_validated"
+TRAINING_RUN_FILENAME = "training_run.json"
 NAN_TEXT = "NaN"
 UNFINISHED_TEXT = "未完成"
 
@@ -214,8 +215,124 @@ def catalog_snapshot() -> dict[str, list[dict[str, Any]]]:
         "navigation_tasks": navigation_task_entries(),
         "model_checkpoints": model_checkpoint_entries(),
         "world_model_configs": world_model_config_entries(),
+        "training_presets": training_preset_entries(),
+        "training_runs": training_run_entries(),
         "episodes": episode_summaries(),
     }
+
+
+def training_preset_entries() -> list[dict[str, Any]]:
+    return [
+        {
+            "id": "stablewm_hdf5",
+            "label": "ORFD / dataset -> StableWM HDF5",
+            "kind": "export",
+            "available": True,
+            "status": "available",
+            "description": "Export image sequences and actions into the HDF5 layout used by StableWM/LE-WM training.",
+        },
+        {
+            "id": "lewm_cost_model",
+            "label": "Train LE-WM cost model",
+            "kind": "training",
+            "available": True,
+            "status": "available",
+            "description": "Train the local lightweight LE-WM-compatible cost checkpoint from a StableWM HDF5 file.",
+        },
+        {
+            "id": "tiny_world_model",
+            "label": "Train tiny world model",
+            "kind": "training",
+            "available": True,
+            "status": "available",
+            "description": "Fit the built-in tiny learned dynamics model for quick dataset sanity checks.",
+        },
+        {
+            "id": "lewm_full_self_supervised",
+            "label": "LE-WM full self-supervised training",
+            "kind": "training",
+            "available": False,
+            "status": UNFINISHED_TEXT,
+            "description": "Reserved adapter for the full visual latent LE-WM training stack.",
+        },
+        {
+            "id": "tdmpc2_adapter",
+            "label": "TD-MPC2 adapter",
+            "kind": "training",
+            "available": False,
+            "status": UNFINISHED_TEXT,
+            "description": "Reserved adapter slot for TD-MPC2-style model-based control experiments.",
+        },
+        {
+            "id": "dreamerv3_adapter",
+            "label": "DreamerV3 adapter",
+            "kind": "training",
+            "available": False,
+            "status": UNFINISHED_TEXT,
+            "description": "Reserved adapter slot for DreamerV3-style world model training.",
+        },
+    ]
+
+
+def write_training_run_record(
+    run_dir: str | Path,
+    *,
+    preset_id: str,
+    status: str,
+    dataset_root: str = "",
+    adapter: str = "",
+    sequence_id: str = "",
+    artifact_path: str = "",
+    artifact_type: str = "",
+    metrics: dict[str, Any] | None = None,
+    parameters: dict[str, Any] | None = None,
+    summary: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    target_dir = Path(run_dir)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    record_path = target_dir / TRAINING_RUN_FILENAME
+    preset = next((row for row in training_preset_entries() if row["id"] == preset_id), {})
+    payload: dict[str, Any] = {
+        "run_id": _safe_name(target_dir.name or preset_id),
+        "preset_id": preset_id,
+        "preset_label": str(preset.get("label") or preset_id),
+        "status": status,
+        "dataset_root": dataset_root,
+        "adapter": adapter,
+        "sequence_id": sequence_id,
+        "artifact_path": str(Path(artifact_path).resolve()) if artifact_path else "",
+        "artifact_type": artifact_type,
+        "metrics": dict(metrics or {}),
+        "parameters": dict(parameters or {}),
+        "summary": dict(summary or {}),
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+    }
+    record_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
+    payload["path"] = str(record_path.resolve())
+    payload["relative_path"] = _relative_to_root(record_path)
+    return payload
+
+
+def training_run_entries(root: str | Path | None = None) -> list[dict[str, Any]]:
+    output_root = Path(root or ROOT / "outputs")
+    if not output_root.exists():
+        return []
+    rows: list[dict[str, Any]] = []
+    for path in output_root.glob(f"**/{TRAINING_RUN_FILENAME}"):
+        try:
+            data = _read_json(path)
+            stat = path.stat()
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        row = dict(data)
+        row["path"] = str(path.resolve())
+        row["relative_path"] = _relative_to_root(path)
+        row["mtime"] = stat.st_mtime
+        row["label"] = str(row.get("preset_label") or row.get("preset_id") or path.parent.name)
+        rows.append(row)
+    return sorted(rows, key=lambda row: (-float(row.get("mtime", 0.0)), str(row.get("label", ""))))
 
 
 def navigation_task_entries(root: str | Path | None = None) -> list[dict[str, Any]]:
@@ -445,11 +562,25 @@ def train_tiny_world_model(
         }
     )
     metadata_path = model.save(output_dir)
+    record = write_training_run_record(
+        output_dir,
+        preset_id="tiny_world_model",
+        status="completed",
+        dataset_root=str(Path(dataset_root).resolve()),
+        adapter=resolved_adapter.name,
+        sequence_id=", ".join(sequence_ids),
+        artifact_path=str(Path(output_dir).resolve()),
+        artifact_type="world_model",
+        metrics=model.metadata,
+        parameters={"ridge": ridge},
+        summary={"model_type": model.model_type, "model_path": str(metadata_path)},
+    )
     return {
         "model_type": model.model_type,
         "model_path": str(metadata_path),
         "output_dir": str(Path(output_dir).resolve()),
         "metrics": model.metadata,
+        "training_run_path": record["path"],
     }
 
 
@@ -477,7 +608,22 @@ def export_lewm_hdf5(
         command.extend(["--adapter", adapter])
     if sequence_id:
         command.extend(["--sequence-id", sequence_id])
-    return _run_json_command(command)
+    payload = _run_json_command(command)
+    artifact_path = str(payload.get("output_hdf5") or output_hdf5)
+    record = write_training_run_record(
+        Path(artifact_path).with_suffix(""),
+        preset_id="stablewm_hdf5",
+        status="completed",
+        dataset_root=str(Path(dataset_root).resolve()),
+        adapter=adapter,
+        sequence_id=sequence_id,
+        artifact_path=str(Path(artifact_path).resolve()),
+        artifact_type="hdf5",
+        metrics=dict(payload),
+        parameters={"image_size": image_size},
+    )
+    payload["training_run_path"] = record["path"]
+    return payload
 
 
 def export_episodes_hdf5(episode_root: str, output_hdf5: str, *, actions_from_state: bool = False) -> dict[str, Any]:
@@ -501,7 +647,7 @@ def train_lewm_cost_model(input_hdf5: str, output_dir: str) -> dict[str, Any]:
         raise ValueError("Input HDF5 path is required.")
     if not output_dir:
         raise ValueError("Output model directory is required.")
-    return _run_json_command(
+    payload = _run_json_command(
         [
             sys.executable,
             str(ROOT / "scripts" / "train_lewm_cost_model.py"),
@@ -510,6 +656,18 @@ def train_lewm_cost_model(input_hdf5: str, output_dir: str) -> dict[str, Any]:
             output_dir,
         ]
     )
+    artifact_path = str(payload.get("checkpoint_path") or payload.get("model_path") or output_dir)
+    record = write_training_run_record(
+        payload.get("output_dir") or output_dir,
+        preset_id="lewm_cost_model",
+        status="completed",
+        artifact_path=str(Path(artifact_path).resolve()),
+        artifact_type="checkpoint",
+        metrics=dict(payload),
+        parameters={"input_hdf5": input_hdf5},
+    )
+    payload["training_run_path"] = record["path"]
+    return payload
 
 
 def make_algorithm_adapter(name: str) -> Any:

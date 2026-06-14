@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import math
 import threading
 from unittest.mock import Mock, patch
@@ -21,6 +22,48 @@ def test_desktop_catalog_snapshot_exposes_runtime_choices() -> None:
     assert "navigation_tasks" in catalog
     assert "model_checkpoints" in catalog
     assert "world_model_configs" in catalog
+    assert "training_presets" in catalog
+    assert "training_runs" in catalog
+
+
+def test_training_preset_entries_include_available_and_future_models() -> None:
+    presets = {row["id"]: row for row in services.training_preset_entries()}
+
+    assert presets["stablewm_hdf5"]["available"] is True
+    assert presets["lewm_cost_model"]["available"] is True
+    assert presets["tiny_world_model"]["available"] is True
+    assert presets["lewm_full_self_supervised"]["available"] is False
+    assert presets["lewm_full_self_supervised"]["status"] == services.UNFINISHED_TEXT
+    assert presets["tdmpc2_adapter"]["available"] is False
+    assert presets["dreamerv3_adapter"]["available"] is False
+
+
+def test_training_run_record_is_discoverable(tmp_path) -> None:
+    run_dir = tmp_path / "outputs" / "demo_train"
+    record = services.write_training_run_record(
+        run_dir,
+        preset_id="tiny_world_model",
+        status="completed",
+        dataset_root="dataset",
+        adapter="orfd",
+        sequence_id="training/seq_0001",
+        artifact_path=str(run_dir / "model.json"),
+        artifact_type="world_model",
+        metrics={"loss": 0.25},
+        parameters={"ridge": 1e-4},
+    )
+
+    record_path = run_dir / services.TRAINING_RUN_FILENAME
+    runs = services.training_run_entries(tmp_path)
+
+    assert record["path"] == str(record_path.resolve())
+    assert record_path.exists()
+    assert runs[0]["preset_id"] == "tiny_world_model"
+    assert runs[0]["dataset_root"] == "dataset"
+    assert runs[0]["sequence_id"] == "training/seq_0001"
+    assert runs[0]["artifact_type"] == "world_model"
+    assert runs[0]["metrics"]["loss"] == 0.25
+    assert runs[0]["path"] == str(record_path.resolve())
 
 
 def test_world_model_config_save_and_list(tmp_path) -> None:
@@ -149,6 +192,66 @@ def test_desktop_preview_and_terrain_draft_export(tmp_path) -> None:
     assert terrain["beamng_import_ready"] is False
     assert (tmp_path / "terrain" / "heightmap.png").exists()
     assert (tmp_path / "terrain" / "terrain_mesh.obj").exists()
+
+
+def test_train_tiny_world_model_writes_training_run_record(tmp_path) -> None:
+    dataset_root = create_mock_orfd_dataset(tmp_path / "orfd", frame_count=3)
+    output_dir = tmp_path / "tiny_model"
+
+    payload = services.train_tiny_world_model(
+        str(dataset_root),
+        str(output_dir),
+        adapter="orfd",
+        sequence_id="training/seq_0001",
+    )
+
+    record_path = output_dir / services.TRAINING_RUN_FILENAME
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+
+    assert payload["training_run_path"] == str(record_path.resolve())
+    assert record["preset_id"] == "tiny_world_model"
+    assert record["artifact_path"] == str(output_dir.resolve())
+    assert record["sequence_id"] == "training/seq_0001"
+
+
+def test_export_lewm_hdf5_writes_training_run_record(tmp_path) -> None:
+    output_hdf5 = tmp_path / "stablewm" / "orfd.h5"
+    with patch("desktop_app.services._run_json_command", return_value={"output_hdf5": str(output_hdf5), "frame_count": 3}):
+        payload = services.export_lewm_hdf5(
+            "dataset",
+            str(output_hdf5),
+            adapter="orfd",
+            sequence_id="training/seq_0001",
+            image_size=32,
+        )
+
+    record_path = output_hdf5.with_suffix("") / services.TRAINING_RUN_FILENAME
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+
+    assert payload["training_run_path"] == str(record_path.resolve())
+    assert record["preset_id"] == "stablewm_hdf5"
+    assert record["artifact_path"] == str(output_hdf5.resolve())
+    assert record["artifact_type"] == "hdf5"
+    assert record["parameters"]["image_size"] == 32
+
+
+def test_train_lewm_cost_model_writes_training_run_record(tmp_path) -> None:
+    output_dir = tmp_path / "lewm_cost"
+    checkpoint = output_dir / "lewm_cost_object.ckpt"
+    with patch(
+        "desktop_app.services._run_json_command",
+        return_value={"output_dir": str(output_dir), "checkpoint_path": str(checkpoint), "loss": 0.1},
+    ):
+        payload = services.train_lewm_cost_model("input.h5", str(output_dir))
+
+    record_path = output_dir / services.TRAINING_RUN_FILENAME
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+
+    assert payload["training_run_path"] == str(record_path.resolve())
+    assert record["preset_id"] == "lewm_cost_model"
+    assert record["artifact_path"] == str(checkpoint.resolve())
+    assert record["artifact_type"] == "checkpoint"
+    assert record["parameters"]["input_hdf5"] == "input.h5"
 
 
 def test_save_manual_navigation_task_writes_valid_task(tmp_path) -> None:

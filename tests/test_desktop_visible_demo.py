@@ -193,6 +193,64 @@ def test_gui_overview_is_guided_demo_launcher() -> None:
     window.close()
 
 
+def test_gui_dataset_training_page_exposes_training_studio_controls() -> None:
+    _ensure_app()
+    window = MainWindow()
+
+    dataset_page = window.page_stack.widget(1)
+    labels = [label.text() for label in dataset_page.findChildren(QLabel)]
+    buttons = [button.text() for button in dataset_page.findChildren(QPushButton)]
+
+    assert "Training preset" in labels
+    assert "Start training/export" in buttons
+    assert hasattr(window, "training_run_list")
+    assert hasattr(window, "training_run_summary")
+    window.close()
+
+
+def test_gui_training_preset_dispatches_existing_actions(monkeypatch) -> None:
+    _ensure_app()
+    window = MainWindow()
+    calls: list[str] = []
+
+    monkeypatch.setattr(window, "export_stablewm_hdf5", lambda: calls.append("stablewm_hdf5"))
+    monkeypatch.setattr(window, "train_lewm_cost_model", lambda: calls.append("lewm_cost_model"))
+    monkeypatch.setattr(window, "train_tiny_model", lambda: calls.append("tiny_world_model"))
+
+    for preset_id in ["stablewm_hdf5", "lewm_cost_model", "tiny_world_model"]:
+        for index in range(window.training_preset_combo.count()):
+            data = window.training_preset_combo.itemData(index)
+            if data["id"] == preset_id:
+                window.training_preset_combo.setCurrentIndex(index)
+                break
+        window.run_training_preset()
+
+    assert calls == ["stablewm_hdf5", "lewm_cost_model", "tiny_world_model"]
+    window.close()
+
+
+def test_gui_training_run_list_loads_selected_summary() -> None:
+    _ensure_app()
+    window = MainWindow()
+    window.catalog["training_runs"] = [
+        {
+            "run_id": "demo_train",
+            "preset_label": "Train tiny world model",
+            "status": "completed",
+            "artifact_path": "outputs/demo/model",
+            "metrics": {"loss": 0.25},
+        }
+    ]
+
+    window._fill_training_run_list()
+    item = window.training_run_list.item(0)
+    window._load_selected_training_run(item)
+
+    assert "demo_train" in window.training_run_summary.toPlainText()
+    assert "loss" in window.training_run_summary.toPlainText()
+    window.close()
+
+
 def test_gui_world_model_page_saves_config_for_home(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(services, "WORLD_MODEL_CONFIGS_PATH", tmp_path / "world_model_configs.json")
     _ensure_app()
