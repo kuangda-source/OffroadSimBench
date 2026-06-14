@@ -335,6 +335,22 @@ def training_run_entries(root: str | Path | None = None) -> list[dict[str, Any]]
     return sorted(rows, key=lambda row: (-float(row.get("mtime", 0.0)), str(row.get("label", ""))))
 
 
+def _training_run_record_for_artifact(artifact_path: str | Path) -> dict[str, Any]:
+    path = Path(artifact_path)
+    candidates = [path.with_suffix("") / TRAINING_RUN_FILENAME, path.parent / TRAINING_RUN_FILENAME]
+    for candidate in candidates:
+        try:
+            data = _read_json(candidate)
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(data, dict) and data:
+            row = dict(data)
+            row["path"] = str(candidate.resolve())
+            row["relative_path"] = _relative_to_root(candidate)
+            return row
+    return {}
+
+
 def navigation_task_entries(root: str | Path | None = None) -> list[dict[str, Any]]:
     task_root = Path(root or CONFIG_ROOT / "tasks")
     if not task_root.exists():
@@ -657,14 +673,22 @@ def train_lewm_cost_model(input_hdf5: str, output_dir: str) -> dict[str, Any]:
         ]
     )
     artifact_path = str(payload.get("checkpoint_path") or payload.get("model_path") or output_dir)
+    source_record = _training_run_record_for_artifact(input_hdf5)
+    summary: dict[str, Any] = {}
+    if source_record:
+        summary["source_training_run_path"] = source_record.get("path", "")
     record = write_training_run_record(
         payload.get("output_dir") or output_dir,
         preset_id="lewm_cost_model",
         status="completed",
+        dataset_root=str(source_record.get("dataset_root") or "") if source_record else "",
+        adapter=str(source_record.get("adapter") or "") if source_record else "",
+        sequence_id=str(source_record.get("sequence_id") or "") if source_record else "",
         artifact_path=str(Path(artifact_path).resolve()),
         artifact_type="checkpoint",
         metrics=dict(payload),
         parameters={"input_hdf5": input_hdf5},
+        summary=summary,
     )
     payload["training_run_path"] = record["path"]
     return payload

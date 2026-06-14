@@ -254,6 +254,35 @@ def test_train_lewm_cost_model_writes_training_run_record(tmp_path) -> None:
     assert record["parameters"]["input_hdf5"] == "input.h5"
 
 
+def test_train_lewm_cost_model_copies_source_hdf5_record(tmp_path) -> None:
+    hdf5_path = tmp_path / "stablewm" / "orfd_small.h5"
+    services.write_training_run_record(
+        hdf5_path.with_suffix(""),
+        preset_id="stablewm_hdf5",
+        status="completed",
+        dataset_root="dataset_root",
+        adapter="orfd",
+        sequence_id="training/seq_0001",
+        artifact_path=str(hdf5_path),
+        artifact_type="hdf5",
+        metrics={"total_frames": 6},
+    )
+    output_dir = tmp_path / "lewm_cost"
+    checkpoint = output_dir / "lewm_cost_object.ckpt"
+    with patch(
+        "desktop_app.services._run_json_command",
+        return_value={"output_dir": str(output_dir), "checkpoint_path": str(checkpoint)},
+    ):
+        services.train_lewm_cost_model(str(hdf5_path), str(output_dir))
+
+    record = json.loads((output_dir / services.TRAINING_RUN_FILENAME).read_text(encoding="utf-8"))
+
+    assert record["dataset_root"] == "dataset_root"
+    assert record["adapter"] == "orfd"
+    assert record["sequence_id"] == "training/seq_0001"
+    assert record["summary"]["source_training_run_path"].endswith("training_run.json")
+
+
 def test_save_manual_navigation_task_writes_valid_task(tmp_path) -> None:
     output = tmp_path / "manual_region.yaml"
 
