@@ -11,7 +11,7 @@ from PySide6.QtCore import QPointF, Qt
 from PySide6.QtWidgets import QApplication, QDialog, QLabel, QPushButton
 
 from desktop_app import services
-from desktop_app.qt_main import MainWindow, NavigationTaskCanvas, NavigationTaskDialog
+from desktop_app.qt_main import MainWindow, NavigationTaskCanvas, NavigationTaskDialog, STYLESHEET, TrainingCurveWidget
 
 
 def _ensure_app() -> QApplication:
@@ -208,6 +208,22 @@ def test_gui_dataset_training_page_exposes_training_studio_controls() -> None:
     window.close()
 
 
+def test_gui_dataset_preview_has_titles_and_readable_tabs() -> None:
+    _ensure_app()
+    window = MainWindow()
+
+    dataset_page = window.page_stack.widget(1)
+    labels = [label.text() for label in dataset_page.findChildren(QLabel)]
+
+    assert "RGB preview" in labels
+    assert "Depth / Label preview" in labels
+    assert "Frame metadata" in labels
+    assert "QTabBar::tab" in STYLESHEET
+    assert "QTabBar::tab:selected" in STYLESHEET
+    assert "#dce8f1" in STYLESHEET
+    window.close()
+
+
 def test_gui_training_preset_dispatches_existing_actions(monkeypatch) -> None:
     _ensure_app()
     window = MainWindow()
@@ -239,6 +255,7 @@ def test_gui_training_run_list_loads_selected_summary() -> None:
             "status": "completed",
             "artifact_path": "outputs/demo/model",
             "metrics": {"loss": 0.25},
+            "history": {"loss": [0.8, 0.25]},
         }
     ]
 
@@ -248,7 +265,18 @@ def test_gui_training_run_list_loads_selected_summary() -> None:
 
     assert "demo_train" in window.training_run_summary.toPlainText()
     assert "loss" in window.training_run_summary.toPlainText()
+    assert window.training_curve.history["loss"] == [0.8, 0.25]
     window.close()
+
+
+def test_training_curve_widget_accepts_metric_history() -> None:
+    _ensure_app()
+    curve = TrainingCurveWidget()
+
+    curve.set_history({"loss": [0.8, 0.4, 0.2], "train_rmse": [0.1]})
+
+    assert curve.history["loss"] == [0.8, 0.4, 0.2]
+    assert curve.primary_metric == "loss"
 
 
 def test_gui_world_model_page_saves_config_for_home(tmp_path, monkeypatch) -> None:

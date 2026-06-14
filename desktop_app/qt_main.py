@@ -171,6 +171,70 @@ class MetricCard(QFrame):
         self.value_label.setText(services.display_value(value))
 
 
+class TrainingCurveWidget(QWidget):
+    def __init__(self) -> None:
+        super().__init__()
+        self.history: dict[str, list[float]] = {}
+        self.primary_metric = ""
+        self.setMinimumHeight(220)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+    def set_history(self, history: dict[str, list[float]]) -> None:
+        self.history = {
+            str(key): [float(value) for value in values if math.isfinite(float(value))]
+            for key, values in history.items()
+            if values
+        }
+        priority = ["loss", "final_loss", "train_rmse", "train_mse", "metadata.mean_goal_distance", "total_frames"]
+        self.primary_metric = next((key for key in priority if key in self.history), next(iter(self.history), ""))
+        self.update()
+
+    def paintEvent(self, event: Any) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.fillRect(self.rect(), QColor("#0d161e"))
+        rect = self.rect().adjusted(18, 20, -18, -28)
+        painter.setPen(QPen(QColor("#263846"), 1))
+        painter.drawRect(rect)
+        for index in range(1, 4):
+            y = rect.top() + rect.height() * index / 4
+            painter.drawLine(rect.left(), int(y), rect.right(), int(y))
+
+        if not self.primary_metric:
+            painter.setPen(QPen(QColor("#8da1af"), 1))
+            painter.setFont(QFont("Segoe UI", 11))
+            painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, "Training metrics: NaN")
+            return
+
+        values = self.history[self.primary_metric]
+        low = min(values)
+        high = max(values)
+        if math.isclose(low, high):
+            low -= 1.0
+            high += 1.0
+
+        def project(index: int, value: float) -> tuple[float, float]:
+            x = rect.left() + (index / max(len(values) - 1, 1)) * rect.width()
+            y = rect.bottom() - ((value - low) / (high - low)) * rect.height()
+            return x, y
+
+        painter.setPen(QPen(QColor("#43d9ad"), 2))
+        points = [project(index, value) for index, value in enumerate(values)]
+        if len(points) == 1:
+            x, y = points[0]
+            painter.setBrush(QColor("#43d9ad"))
+            painter.drawEllipse(QRectF(x - 4, y - 4, 8, 8))
+        else:
+            for start, end in zip(points, points[1:], strict=False):
+                painter.drawLine(int(start[0]), int(start[1]), int(end[0]), int(end[1]))
+
+        painter.setPen(QPen(QColor("#dce8f1"), 1))
+        painter.setFont(QFont("Segoe UI", 10))
+        painter.drawText(18, 16, f"{self.primary_metric}: {services.display_value(values[-1])}")
+        painter.setPen(QPen(QColor("#8da1af"), 1))
+        painter.drawText(rect.left(), self.height() - 8, f"points={len(values)}")
+
+
 class TrajectoryCanvas(QWidget):
     def __init__(self) -> None:
         super().__init__()
@@ -1175,12 +1239,13 @@ class MainWindow(QMainWindow):
         image_row = self._row_layout(spacing=CARD_SPACING)
         self.rgb_preview = self._preview_label("RGB: NaN")
         self.depth_preview = self._preview_label("Depth/Label: NaN")
-        image_row.addWidget(self.rgb_preview, 1)
-        image_row.addWidget(self.depth_preview, 1)
+        image_row.addWidget(self._preview_panel("RGB preview", self.rgb_preview), 1)
+        image_row.addWidget(self._preview_panel("Depth / Label preview", self.depth_preview), 1)
         preview_layout.addLayout(image_row, 2)
         self.dataset_summary = QTextEdit()
         self.dataset_summary.setReadOnly(True)
         self.dataset_summary.setPlaceholderText("数据集检查结果：NaN")
+        preview_layout.addWidget(self._section_label("Frame metadata"))
         preview_layout.addWidget(self.dataset_summary, 1)
         data_layout.addWidget(preview_box, 2)
         tabs.addTab(data_tab, "数据集")
@@ -1226,9 +1291,13 @@ class MainWindow(QMainWindow):
         run_list_layout.addWidget(self.training_run_list, 1)
         runs_layout.addWidget(run_list_box, 1)
         run_summary_box, run_summary_layout = self._new_group("Run details")
+        self.training_curve = TrainingCurveWidget()
+        run_summary_layout.addWidget(self._section_label("Metric curve"))
+        run_summary_layout.addWidget(self.training_curve)
         self.training_run_summary = QTextEdit()
         self.training_run_summary.setReadOnly(True)
         self.training_run_summary.setPlaceholderText("Training run: NaN")
+        run_summary_layout.addWidget(self._section_label("Raw training_run.json"))
         run_summary_layout.addWidget(self.training_run_summary, 1)
         runs_layout.addWidget(run_summary_box, 2)
         tabs.addTab(runs_tab, "Training results")
@@ -1964,6 +2033,8 @@ class MainWindow(QMainWindow):
         data = item.data(Qt.ItemDataRole.UserRole)
         run = dict(data) if isinstance(data, dict) else {}
         self.training_run_summary.setText(_compact_json(run))
+        if hasattr(self, "training_curve"):
+            self.training_curve.set_history(services.training_metric_history(run))
         artifact_path = str(run.get("artifact_path") or "")
         artifact_type = str(run.get("artifact_type") or "")
         if artifact_path and artifact_type in {"checkpoint", "world_model"}:
@@ -2317,6 +2388,21 @@ class MainWindow(QMainWindow):
         button.clicked.connect(slot)
         return button
 
+    def _section_label(self, text: str) -> QLabel:
+        label = QLabel(text)
+        label.setObjectName("sectionLabel")
+        label.setFixedHeight(20)
+        return label
+
+    def _preview_panel(self, title: str, preview: QLabel) -> QWidget:
+        frame = QWidget()
+        layout = QVBoxLayout(frame)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        layout.addWidget(self._section_label(title))
+        layout.addWidget(preview, 1)
+        return frame
+
     def _preview_label(self, placeholder: str) -> QLabel:
         label = QLabel(placeholder)
         label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -2505,6 +2591,33 @@ QPushButton:disabled {
 }
 #fieldLabel {
     color: #a7b7c4;
+}
+#sectionLabel {
+    color: #dce8f1;
+    font-weight: 700;
+}
+QTabWidget::pane {
+    border-top: 1px solid #2c4252;
+    top: -1px;
+}
+QTabBar::tab {
+    background: #15222d;
+    color: #dce8f1;
+    border: 1px solid #2c4252;
+    border-bottom-color: #2c4252;
+    padding: 8px 14px;
+    margin-right: 4px;
+    min-width: 86px;
+}
+QTabBar::tab:hover {
+    background: #1d3140;
+    color: #ffffff;
+}
+QTabBar::tab:selected {
+    background: #dce8f1;
+    color: #061017;
+    border-color: #dce8f1;
+    font-weight: 700;
 }
 #busyLabel {
     color: #8fdcc7;

@@ -285,6 +285,7 @@ def write_training_run_record(
     artifact_path: str = "",
     artifact_type: str = "",
     metrics: dict[str, Any] | None = None,
+    history: dict[str, Any] | None = None,
     parameters: dict[str, Any] | None = None,
     summary: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -303,6 +304,7 @@ def write_training_run_record(
         "artifact_path": str(Path(artifact_path).resolve()) if artifact_path else "",
         "artifact_type": artifact_type,
         "metrics": dict(metrics or {}),
+        "history": _normalize_metric_history(history or {}),
         "parameters": dict(parameters or {}),
         "summary": dict(summary or {}),
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
@@ -333,6 +335,44 @@ def training_run_entries(root: str | Path | None = None) -> list[dict[str, Any]]
         row["label"] = str(row.get("preset_label") or row.get("preset_id") or path.parent.name)
         rows.append(row)
     return sorted(rows, key=lambda row: (-float(row.get("mtime", 0.0)), str(row.get("label", ""))))
+
+
+def training_metric_history(record: dict[str, Any]) -> dict[str, list[float]]:
+    history = _normalize_metric_history(record.get("history") if isinstance(record.get("history"), dict) else {})
+    metrics = record.get("metrics")
+    if isinstance(metrics, dict):
+        for key, value in _numeric_metric_items(metrics):
+            history.setdefault(key, [value])
+    return history
+
+
+def _normalize_metric_history(raw: dict[str, Any]) -> dict[str, list[float]]:
+    history: dict[str, list[float]] = {}
+    for key, value in raw.items():
+        metric_name = str(key)
+        if isinstance(value, (list, tuple)):
+            values = [_float_or_nan(item) for item in value]
+        else:
+            values = [_float_or_nan(value)]
+        finite_values = [float(item) for item in values if math.isfinite(item)]
+        if finite_values:
+            history[metric_name] = finite_values
+    return history
+
+
+def _numeric_metric_items(metrics: dict[str, Any], prefix: str = "") -> list[tuple[str, float]]:
+    rows: list[tuple[str, float]] = []
+    for key, value in metrics.items():
+        name = f"{prefix}.{key}" if prefix else str(key)
+        if isinstance(value, dict):
+            rows.extend(_numeric_metric_items(value, name))
+            continue
+        if isinstance(value, bool):
+            continue
+        number = _float_or_nan(value)
+        if math.isfinite(number):
+            rows.append((name, float(number)))
+    return rows
 
 
 def _training_run_record_for_artifact(artifact_path: str | Path) -> dict[str, Any]:
@@ -588,6 +628,11 @@ def train_tiny_world_model(
         artifact_path=str(Path(output_dir).resolve()),
         artifact_type="world_model",
         metrics=model.metadata,
+        history={
+            "train_rmse": [model.metadata.get("train_rmse")],
+            "train_mse": [model.metadata.get("train_mse")],
+            "sample_count": [model.metadata.get("sample_count")],
+        },
         parameters={"ridge": ridge},
         summary={"model_type": model.model_type, "model_path": str(metadata_path)},
     )
@@ -636,6 +681,7 @@ def export_lewm_hdf5(
         artifact_path=str(Path(artifact_path).resolve()),
         artifact_type="hdf5",
         metrics=dict(payload),
+        history={"total_frames": [payload.get("total_frames") or payload.get("frame_count")]},
         parameters={"image_size": image_size},
     )
     payload["training_run_path"] = record["path"]
@@ -687,6 +733,7 @@ def train_lewm_cost_model(input_hdf5: str, output_dir: str) -> dict[str, Any]:
         artifact_path=str(Path(artifact_path).resolve()),
         artifact_type="checkpoint",
         metrics=dict(payload),
+        history=payload.get("history") if isinstance(payload.get("history"), dict) else {},
         parameters={"input_hdf5": input_hdf5},
         summary=summary,
     )

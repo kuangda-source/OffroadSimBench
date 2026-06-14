@@ -66,6 +66,28 @@ def test_training_run_record_is_discoverable(tmp_path) -> None:
     assert runs[0]["path"] == str(record_path.resolve())
 
 
+def test_training_run_record_preserves_history_for_curves(tmp_path) -> None:
+    run_dir = tmp_path / "outputs" / "curve_train"
+
+    services.write_training_run_record(
+        run_dir,
+        preset_id="lewm_cost_model",
+        status="completed",
+        artifact_path=str(run_dir / "model.ckpt"),
+        artifact_type="checkpoint",
+        metrics={"final_loss": 0.2, "train_rmse": 0.1},
+        history={"loss": [0.8, 0.45, 0.2]},
+    )
+
+    run = services.training_run_entries(tmp_path)[0]
+    history = services.training_metric_history(run)
+
+    assert run["history"]["loss"] == [0.8, 0.45, 0.2]
+    assert history["loss"] == [0.8, 0.45, 0.2]
+    assert history["final_loss"] == [0.2]
+    assert history["train_rmse"] == [0.1]
+
+
 def test_world_model_config_save_and_list(tmp_path) -> None:
     config_path = tmp_path / "world_model_configs.json"
 
