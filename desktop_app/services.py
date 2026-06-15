@@ -43,6 +43,8 @@ DEFAULT_LEWM_CHECKPOINT_PATH = (
 WORLD_MODEL_CONFIGS_PATH = CONFIG_ROOT / "world_model_configs.json"
 DEFAULT_WORLD_MODEL_CONFIG_ID = "johnson_valley_lewm_validated"
 TRAINING_RUN_FILENAME = "training_run.json"
+TRAINER_MANIFEST_FILENAMES = ("trainer.yaml", "trainer.yml")
+TRAINER_MANIFEST_DIRS = (CONFIG_ROOT / "trainers", ROOT / "trainers")
 NAN_TEXT = "NaN"
 UNFINISHED_TEXT = "未完成"
 
@@ -222,7 +224,7 @@ def catalog_snapshot() -> dict[str, list[dict[str, Any]]]:
 
 
 def training_preset_entries() -> list[dict[str, Any]]:
-    return [
+    rows = [
         {
             "id": "stablewm_hdf5",
             "label": "ORFD / dataset -> StableWM HDF5",
@@ -272,6 +274,142 @@ def training_preset_entries() -> list[dict[str, Any]]:
             "description": "Reserved adapter slot for DreamerV3-style world model training.",
         },
     ]
+    manifest_ids = {row["id"] for row in rows}
+    for row in trainer_manifest_entries():
+        if row["id"] in manifest_ids:
+            continue
+        rows.append(
+            {
+                "id": row["id"],
+                "label": row["label"],
+                "kind": "training",
+                "available": True,
+                "status": "available",
+                "description": row.get("description", "Run an external trainer described by trainer.yaml."),
+                "manifest_path": row["manifest_path"],
+                "parameters": dict(row.get("parameters", {})),
+                "input": dict(row.get("input", {})),
+                "outputs": dict(row.get("outputs", {})),
+            }
+        )
+    return rows
+
+
+def trainer_manifest_entries(root: str | Path | None = None) -> list[dict[str, Any]]:
+    """Discover external trainer manifests.
+
+    A trainer manifest lets users plug in an arbitrary local algorithm script
+    without changing the GUI or services code.
+    """
+
+    paths: list[Path] = []
+    if root is None:
+        for directory in TRAINER_MANIFEST_DIRS:
+            paths.extend(_trainer_manifest_paths(directory))
+    else:
+        paths.extend(_trainer_manifest_paths(Path(root)))
+
+    rows: list[dict[str, Any]] = []
+    seen: set[Path] = set()
+    for path in paths:
+        resolved = path.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        try:
+            rows.append(load_trainer_manifest(resolved))
+        except Exception:
+            continue
+    return sorted(rows, key=lambda row: str(row.get("label") or row.get("id") or ""))
+
+
+def load_trainer_manifest(path: str | Path) -> dict[str, Any]:
+    manifest_path = Path(path).resolve()
+    data = load_yaml_file(manifest_path)
+    trainer_id = _safe_name(str(data.get("trainer_id") or data.get("id") or manifest_path.parent.name))
+    if not trainer_id:
+        raise ValueError(f"Trainer manifest has no trainer_id: {manifest_path}")
+    entrypoint = str(data.get("entrypoint") or "").strip()
+    if not entrypoint:
+        raise ValueError(f"Trainer manifest has no entrypoint: {manifest_path}")
+    return {
+        "id": trainer_id,
+        "label": str(data.get("display_name") or data.get("label") or trainer_id),
+        "trainer_id": trainer_id,
+        "runtime": str(data.get("runtime") or "python"),
+        "entrypoint": entrypoint,
+        "description": str(data.get("description") or ""),
+        "arguments": list(data.get("arguments") or []),
+        "parameters": dict(data.get("parameters") or {}),
+        "input": dict(data.get("input") or {}),
+        "outputs": dict(data.get("outputs") or {}),
+        "manifest_path": str(manifest_path),
+        "manifest_dir": str(manifest_path.parent),
+    }
+
+
+def run_trainer_manifest_job(
+    manifest_path: str | Path,
+    *,
+    dataset_root: str,
+    output_dir: str,
+    parameters: dict[str, Any] | None = None,
+    adapter: str = "",
+    sequence_id: str = "",
+) -> dict[str, Any]:
+    manifest = load_trainer_manifest(manifest_path)
+    target_dir = Path(output_dir or ROOT / "outputs" / "training_runs" / f"{manifest['id']}_{_timestamp()}")
+    target_dir.mkdir(parents=True, exist_ok=True)
+    resolved_parameters = _trainer_parameters(manifest.get("parameters", {}), parameters or {})
+    command = _trainer_command(manifest, dataset_root, target_dir, resolved_parameters, adapter, sequence_id)
+    completed = subprocess.run(command, cwd=ROOT, text=True, capture_output=True, check=False)
+    (target_dir / "stdout.log").write_text(completed.stdout or "", encoding="utf-8")
+    (target_dir / "stderr.log").write_text(completed.stderr or "", encoding="utf-8")
+    if completed.returncode != 0:
+        write_training_run_record(
+            target_dir,
+            preset_id=manifest["id"],
+            status="failed",
+            dataset_root=dataset_root,
+            adapter=adapter,
+            sequence_id=sequence_id,
+            artifact_path=str(target_dir.resolve()),
+            artifact_type=str(manifest.get("outputs", {}).get("artifact_type") or "artifact"),
+            parameters=resolved_parameters,
+            summary={"command": command, "stderr": completed.stderr.strip()},
+        )
+        raise RuntimeError((completed.stderr or completed.stdout or "trainer command failed").strip())
+
+    payload = _json_from_command_output(completed.stdout, command)
+    outputs = manifest.get("outputs", {}) if isinstance(manifest.get("outputs"), dict) else {}
+    artifact_path = str(
+        payload.get("checkpoint_path")
+        or payload.get("model_path")
+        or payload.get("artifact_path")
+        or payload.get("output_dir")
+        or target_dir
+    )
+    artifact_type = str(payload.get("artifact_type") or outputs.get("artifact_type") or "artifact")
+    metrics = payload.get("metrics") if isinstance(payload.get("metrics"), dict) else _numeric_payload(payload)
+    history = payload.get("history") if isinstance(payload.get("history"), dict) else {}
+    record = write_training_run_record(
+        target_dir,
+        preset_id=manifest["id"],
+        status="completed",
+        dataset_root=dataset_root,
+        adapter=adapter,
+        sequence_id=sequence_id,
+        artifact_path=artifact_path,
+        artifact_type=artifact_type,
+        metrics=metrics,
+        history=history,
+        parameters=resolved_parameters,
+        summary={"trainer_manifest_path": str(Path(manifest_path).resolve()), "command": command},
+    )
+    payload["output_dir"] = str(target_dir.resolve())
+    payload["training_run_path"] = record["path"]
+    payload["command"] = command
+    return payload
 
 
 def write_training_run_record(
@@ -1828,16 +1966,117 @@ def _read_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _run_json_command(command: list[str]) -> dict[str, Any]:
-    completed = subprocess.run(command, cwd=ROOT, text=True, capture_output=True, check=False)
-    if completed.returncode != 0:
-        raise RuntimeError((completed.stderr or completed.stdout or "command failed").strip())
-    output = completed.stdout.strip()
+def _trainer_manifest_paths(root: Path) -> list[Path]:
+    if root.is_file():
+        return [root] if root.suffix.lower() in {".yaml", ".yml"} else []
+    if not root.exists():
+        return []
+    paths: list[Path] = []
+    paths.extend(path for path in root.glob("*.yaml") if path.is_file())
+    paths.extend(path for path in root.glob("*.yml") if path.is_file())
+    for name in TRAINER_MANIFEST_FILENAMES:
+        direct = root / name
+        if direct.is_file():
+            paths.append(direct)
+        paths.extend(path for path in root.glob(f"*/{name}") if path.is_file())
+    return paths
+
+
+def _trainer_parameters(schema: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:
+    values: dict[str, Any] = {}
+    for name, raw_spec in schema.items():
+        spec = raw_spec if isinstance(raw_spec, dict) else {}
+        if "default" in spec:
+            values[str(name)] = _coerce_trainer_value(spec.get("default"), str(spec.get("type") or "str"))
+    for name, value in overrides.items():
+        spec = schema.get(name) if isinstance(schema.get(name), dict) else {}
+        values[str(name)] = _coerce_trainer_value(value, str(spec.get("type") or "str"))
+    return values
+
+
+def _coerce_trainer_value(value: Any, value_type: str) -> Any:
+    normalized = value_type.lower()
+    if normalized in {"int", "integer"}:
+        return int(value)
+    if normalized in {"float", "number"}:
+        return float(value)
+    if normalized in {"bool", "boolean"}:
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+    return value
+
+
+def _trainer_command(
+    manifest: dict[str, Any],
+    dataset_root: str,
+    output_dir: Path,
+    parameters: dict[str, Any],
+    adapter: str,
+    sequence_id: str,
+) -> list[str]:
+    entrypoint = _resolve_trainer_entrypoint(manifest)
+    runtime = str(manifest.get("runtime") or "python").lower()
+    command = [sys.executable, str(entrypoint)] if runtime == "python" else [str(entrypoint)]
+    context = {
+        "dataset_root": dataset_root,
+        "output_dir": str(output_dir.resolve()),
+        "adapter": adapter,
+        "sequence_id": sequence_id,
+        "manifest_dir": str(Path(str(manifest["manifest_dir"])).resolve()),
+        "params": _AttrDict(parameters),
+    }
+    for value in manifest.get("arguments", []):
+        rendered = str(value).format_map(_AttrDict(context))
+        command.append(rendered)
+    return command
+
+
+def _resolve_trainer_entrypoint(manifest: dict[str, Any]) -> Path:
+    entrypoint = Path(str(manifest.get("entrypoint") or ""))
+    if entrypoint.is_absolute():
+        return entrypoint
+    return (Path(str(manifest["manifest_dir"])) / entrypoint).resolve()
+
+
+def _json_from_command_output(output: str, command: list[str]) -> dict[str, Any]:
     json_start = output.find("{")
     if json_start < 0:
         raise RuntimeError(f"Command did not emit JSON: {' '.join(command)}")
     payload, _ = json.JSONDecoder().raw_decode(output[json_start:])
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"Command emitted non-object JSON: {' '.join(command)}")
     return payload
+
+
+def _numeric_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in payload.items()
+        if isinstance(value, (int, float)) and math.isfinite(float(value))
+    }
+
+
+def _timestamp() -> str:
+    return time.strftime("%Y%m%dT%H%M%S")
+
+
+class _AttrDict(dict[str, Any]):
+    def __getattr__(self, name: str) -> Any:
+        try:
+            value = self[name]
+        except KeyError as exc:
+            raise AttributeError(name) from exc
+        if isinstance(value, dict):
+            return _AttrDict(value)
+        return value
+
+
+def _run_json_command(command: list[str]) -> dict[str, Any]:
+    completed = subprocess.run(command, cwd=ROOT, text=True, capture_output=True, check=False)
+    if completed.returncode != 0:
+        raise RuntimeError((completed.stderr or completed.stdout or "command failed").strip())
+    return _json_from_command_output(completed.stdout.strip(), command)
 
 
 def _float_or_nan(value: Any) -> float:

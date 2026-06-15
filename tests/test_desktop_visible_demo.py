@@ -245,6 +245,46 @@ def test_gui_training_preset_dispatches_existing_actions(monkeypatch) -> None:
     window.close()
 
 
+def test_gui_training_preset_dispatches_manifest_trainer(monkeypatch, tmp_path) -> None:
+    _ensure_app()
+    manifest = tmp_path / "trainer.yaml"
+    manifest.write_text("trainer_id: echo_trainer\nentrypoint: echo_trainer.py\n", encoding="utf-8")
+    window = MainWindow()
+    window.dataset_root_edit.setText("dataset_root")
+    window.adapter_edit.setText("manifest_dataset")
+    window.sequence_combo.setCurrentText("clip_001")
+    window.model_path_edit.setText(str(tmp_path / "run"))
+    window.trainer_params_edit.setPlainText('{"epochs": 4}')
+    window.catalog["training_presets"] = [
+        {
+            "id": "echo_trainer",
+            "label": "Echo Trainer",
+            "available": True,
+            "manifest_path": str(manifest),
+            "parameters": {"epochs": {"type": "int", "default": 3}},
+        }
+    ]
+    window._fill_training_preset_combo()
+    captured: dict[str, object] = {}
+
+    def fake_run_trainer_manifest_job(*args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return {"output_dir": str(tmp_path / "run"), "training_run_path": str(tmp_path / "run" / "training_run.json")}
+
+    monkeypatch.setattr(services, "run_trainer_manifest_job", fake_run_trainer_manifest_job)
+    monkeypatch.setattr(window, "_run_task", lambda task, callback, label, **kwargs: callback(task()))
+
+    window.run_training_preset()
+
+    assert captured["args"][0] == str(manifest)
+    assert captured["kwargs"]["dataset_root"] == "dataset_root"
+    assert captured["kwargs"]["adapter"] == "manifest_dataset"
+    assert captured["kwargs"]["sequence_id"] == "clip_001"
+    assert captured["kwargs"]["parameters"] == {"epochs": 4}
+    window.close()
+
+
 def test_gui_training_run_list_loads_selected_summary() -> None:
     _ensure_app()
     window = MainWindow()

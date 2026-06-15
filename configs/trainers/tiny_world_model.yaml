@@ -1,0 +1,21 @@
+trainer_id: tiny_world_model_script
+display_name: Tiny world model script
+runtime: python
+entrypoint: ../../scripts/train_world_model.py
+description: Train the built-in tiny dynamics model through the generic trainer manifest interface.
+input:
+  dataset_format: any_registered_adapter
+parameters:
+  ridge:
+    type: float
+    default: 0.0001
+arguments:
+  - "{dataset_root}"
+  - "--adapter"
+  - "{adapter}"
+  - "--output"
+  - "{output_dir}"
+  - "--ridge"
+  - "{params.ridge}"
+outputs:
+  artifact_type: world_model

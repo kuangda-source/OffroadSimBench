@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Iterable
 
-from offroad_sim.datasets.adapters import DatasetAdapter, ORFDAdapter, OffroadSimV1Adapter
+from offroad_sim.datasets.adapters import DatasetAdapter, ManifestDatasetAdapter, ORFDAdapter, OffroadSimV1Adapter
 
 
 class DatasetRegistry:
@@ -45,5 +45,6 @@ class DatasetRegistry:
 def default_dataset_registry() -> DatasetRegistry:
     registry = DatasetRegistry()
     registry.register(OffroadSimV1Adapter())
+    registry.register(ManifestDatasetAdapter())
     registry.register(ORFDAdapter())
     return registry

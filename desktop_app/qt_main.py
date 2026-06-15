@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 import sys
 from collections.abc import Callable
@@ -1038,6 +1039,10 @@ class MainWindow(QMainWindow):
         self.world_model_config_combo = self._combo()
         self.world_model_config_edit_combo = self._combo()
         self.beamng_model_config_combo = self._combo()
+        self.trainer_params_edit = QTextEdit()
+        self.trainer_params_edit.setPlaceholderText('{"epochs": 10, "batch_size": 16}')
+        self.trainer_params_edit.setFixedHeight(96)
+        self._trainer_params_autofill = ""
         self.model_config_name_edit = QLineEdit()
         self.model_config_name_edit.setPlaceholderText("Johnson Valley LE-WM validated")
 
@@ -1059,6 +1064,7 @@ class MainWindow(QMainWindow):
         self.world_model_config_combo.currentIndexChanged.connect(self._sync_home_world_model_config)
         self.world_model_config_edit_combo.currentIndexChanged.connect(self._sync_edit_world_model_config)
         self.beamng_model_config_combo.currentIndexChanged.connect(self._sync_beamng_world_model_config)
+        self.training_preset_combo.currentIndexChanged.connect(lambda _: self._sync_training_preset_params(force=True))
         for edit in (
             self.dataset_root_edit,
             self.adapter_edit,
@@ -1261,6 +1267,7 @@ class MainWindow(QMainWindow):
             "Model and algorithm training",
             [
                 self._field("Training preset", self.training_preset_combo),
+                self._field("Training parameters", self.trainer_params_edit),
                 self._action_button("Start training/export", self.run_training_preset, primary=True),
                 self._field("World model config", self.world_model_config_edit_combo),
                 self._field("Config name", self.model_config_name_edit),
@@ -1669,6 +1676,9 @@ class MainWindow(QMainWindow):
             self.model_summary.setText(_compact_json(payload))
             self.log(f"Training preset is not available yet: {preset.get('label', preset_id)}")
             return
+        if preset.get("manifest_path"):
+            self.run_manifest_trainer(preset)
+            return
         if preset_id == "stablewm_hdf5":
             self.export_stablewm_hdf5()
             return
@@ -1679,6 +1689,30 @@ class MainWindow(QMainWindow):
             self.train_tiny_model()
             return
         self.model_summary.setText(_compact_json({"status": services.UNFINISHED_TEXT, "training_preset": preset}))
+
+    def run_manifest_trainer(self, preset: dict[str, Any]) -> None:
+        try:
+            parameters = self._trainer_parameters_from_text()
+        except ValueError as exc:
+            payload = {"status": "invalid_parameters", "message": str(exc)}
+            self.model_summary.setText(_compact_json(payload))
+            self.log(f"Training parameters are invalid: {exc}")
+            return
+        output = self.model_path_edit.text().strip() or self._path_combo_value(self.home_model_combo).strip()
+        self.log(f"Starting trainer manifest: {preset.get('label', preset.get('id', services.NAN_TEXT))}")
+        self._run_task(
+            lambda: services.run_trainer_manifest_job(
+                str(preset["manifest_path"]),
+                dataset_root=self.dataset_root_edit.text().strip(),
+                output_dir=output,
+                parameters=parameters,
+                adapter=self.adapter_edit.text().strip(),
+                sequence_id=self.sequence_combo.currentText().strip(),
+            ),
+            self._training_finished,
+            "trainer manifest failed",
+            task_label=f"Train {preset.get('label', preset.get('id', 'model'))}",
+        )
 
     def save_world_model_config(self) -> None:
         label = self.model_config_name_edit.text().strip()
@@ -2014,6 +2048,39 @@ class MainWindow(QMainWindow):
         if self.training_preset_combo.count():
             self.training_preset_combo.setCurrentIndex(max(0, selected_index))
         self.training_preset_combo.blockSignals(False)
+        self._sync_training_preset_params()
+
+    def _sync_training_preset_params(self, *, force: bool = False) -> None:
+        if not hasattr(self, "trainer_params_edit"):
+            return
+        data = self.training_preset_combo.currentData()
+        preset = dict(data) if isinstance(data, dict) else {}
+        defaults = self._trainer_parameter_defaults(preset.get("parameters") if isinstance(preset.get("parameters"), dict) else {})
+        text = json.dumps(defaults, indent=2, ensure_ascii=False) if defaults else "{}"
+        current = self.trainer_params_edit.toPlainText().strip()
+        if not force and current and current != self._trainer_params_autofill:
+            return
+        self._trainer_params_autofill = text
+        self.trainer_params_edit.setPlainText(text)
+
+    def _trainer_parameter_defaults(self, schema: dict[str, Any]) -> dict[str, Any]:
+        defaults: dict[str, Any] = {}
+        for key, spec in schema.items():
+            if isinstance(spec, dict) and "default" in spec:
+                defaults[str(key)] = spec.get("default")
+        return defaults
+
+    def _trainer_parameters_from_text(self) -> dict[str, Any]:
+        text = self.trainer_params_edit.toPlainText().strip() if hasattr(self, "trainer_params_edit") else ""
+        if not text:
+            return {}
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Expected JSON object: {exc}") from exc
+        if not isinstance(payload, dict):
+            raise ValueError("Expected JSON object.")
+        return payload
 
     def _fill_training_run_list(self) -> None:
         if not hasattr(self, "training_run_list"):
