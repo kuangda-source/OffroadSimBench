@@ -454,8 +454,8 @@ def test_gui_exposes_region_self_supervised_training(monkeypatch) -> None:
     assert "区域自监督训练 world model" in button_texts
     assert captured["request"].task_path == "configs/tasks/beamng_johnson_valley_nav_test.yaml"
     assert captured["request"].world_model_type == "tiny_learned"
-    assert captured["request"].evaluation_agent == "model_mpc"
-    assert captured["request"].evaluation_route_mode == "task_route"
+    assert captured["request"].evaluation_agent == "world_model_direct"
+    assert captured["request"].evaluation_route_mode == "route_free"
     assert captured["request"].collect_steps >= 1000
     assert captured["request"].eval_steps >= 1000
     assert captured["request"].close_beamng is False

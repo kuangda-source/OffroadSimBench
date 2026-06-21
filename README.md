@@ -356,10 +356,15 @@ python scripts\run_beamng_lewm_closed_loop.py --collect-steps 160 --eval-steps 1
 Run the region self-supervised world-model scaffold:
 
 ```powershell
-python scripts\run_region_self_supervised_world_model.py configs\tasks\beamng_johnson_valley_nav_test.yaml --evaluation-agent model_mpc --evaluation-route-mode task_route --collect-steps 1000 --eval-steps 1200
+python scripts\run_region_self_supervised_world_model.py configs\tasks\beamng_johnson_valley_nav_test.yaml --evaluation-agent world_model_direct --evaluation-route-mode route_free --collect-steps 1000 --eval-steps 1200
 ```
 
-Strict `route_free` mode is available for research runs, but the current Johnson Valley task still needs a global traversability/path prior to reach the goal reliably. See `docs\reports\2026-05-29_region_self_supervised_blocker.md`.
+The GUI uses this route-free mode for its region self-supervised action: it
+collects exploration data, trains `tiny_learned`, then evaluates direct
+start-to-goal control without injecting the task route. The current Johnson
+Valley task can still need better exploration coverage and planning priors to
+reach difficult goals reliably; see
+`docs\reports\2026-05-29_region_self_supervised_blocker.md`.
 
 Run a region/start/goal navigation loop. The collection stage uses
 `expert_route`; the evaluation stage removes that route and keeps only
