@@ -202,7 +202,10 @@ def test_gui_dataset_training_page_exposes_training_studio_controls() -> None:
     buttons = [button.text() for button in dataset_page.findChildren(QPushButton)]
 
     assert "Training preset" in labels
+    assert "Training config summary" in labels
+    assert "Latest metric curve" in labels
     assert "Start training/export" in buttons
+    assert hasattr(window, "training_preset_summary")
     assert hasattr(window, "training_run_list")
     assert hasattr(window, "training_run_summary")
     window.close()
@@ -220,7 +223,37 @@ def test_gui_dataset_preview_has_titles_and_readable_tabs() -> None:
     assert "Frame metadata" in labels
     assert "QTabBar::tab" in STYLESHEET
     assert "QTabBar::tab:selected" in STYLESHEET
-    assert "#dce8f1" in STYLESHEET
+    assert "#f5f5f7" in STYLESHEET
+    assert "#ffffff" in STYLESHEET
+    assert "#1d1d1f" in STYLESHEET
+    assert "#007aff" in STYLESHEET
+    window.close()
+
+
+def test_gui_training_preset_summary_updates_for_manifest_trainer(tmp_path) -> None:
+    _ensure_app()
+    manifest = tmp_path / "trainer.yaml"
+    manifest.write_text("trainer_id: echo_trainer\nentrypoint: echo_trainer.py\n", encoding="utf-8")
+    window = MainWindow()
+    window.catalog["training_presets"] = [
+        {
+            "id": "echo_trainer",
+            "label": "Echo Trainer",
+            "kind": "training",
+            "available": True,
+            "description": "Train an external echo model.",
+            "manifest_path": str(manifest),
+            "parameters": {"epochs": {"type": "int", "default": 3}},
+        }
+    ]
+
+    window._fill_training_preset_combo()
+
+    summary = window.training_preset_summary.toPlainText()
+    assert "Echo Trainer" in summary
+    assert "Train an external echo model." in summary
+    assert str(manifest) in summary
+    assert '"epochs": 3' in window.trainer_params_edit.toPlainText()
     window.close()
 
 

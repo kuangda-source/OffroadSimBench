@@ -193,16 +193,16 @@ class TrainingCurveWidget(QWidget):
     def paintEvent(self, event: Any) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.fillRect(self.rect(), QColor("#0d161e"))
+        painter.fillRect(self.rect(), QColor("#ffffff"))
         rect = self.rect().adjusted(18, 20, -18, -28)
-        painter.setPen(QPen(QColor("#263846"), 1))
+        painter.setPen(QPen(QColor("#d2d2d7"), 1))
         painter.drawRect(rect)
         for index in range(1, 4):
             y = rect.top() + rect.height() * index / 4
             painter.drawLine(rect.left(), int(y), rect.right(), int(y))
 
         if not self.primary_metric:
-            painter.setPen(QPen(QColor("#8da1af"), 1))
+            painter.setPen(QPen(QColor("#6e6e73"), 1))
             painter.setFont(QFont("Segoe UI", 11))
             painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, "Training metrics: NaN")
             return
@@ -219,20 +219,20 @@ class TrainingCurveWidget(QWidget):
             y = rect.bottom() - ((value - low) / (high - low)) * rect.height()
             return x, y
 
-        painter.setPen(QPen(QColor("#43d9ad"), 2))
+        painter.setPen(QPen(QColor("#007aff"), 2))
         points = [project(index, value) for index, value in enumerate(values)]
         if len(points) == 1:
             x, y = points[0]
-            painter.setBrush(QColor("#43d9ad"))
+            painter.setBrush(QColor("#007aff"))
             painter.drawEllipse(QRectF(x - 4, y - 4, 8, 8))
         else:
             for start, end in zip(points, points[1:], strict=False):
                 painter.drawLine(int(start[0]), int(start[1]), int(end[0]), int(end[1]))
 
-        painter.setPen(QPen(QColor("#dce8f1"), 1))
+        painter.setPen(QPen(QColor("#1d1d1f"), 1))
         painter.setFont(QFont("Segoe UI", 10))
         painter.drawText(18, 16, f"{self.primary_metric}: {services.display_value(values[-1])}")
-        painter.setPen(QPen(QColor("#8da1af"), 1))
+        painter.setPen(QPen(QColor("#6e6e73"), 1))
         painter.drawText(rect.left(), self.height() - 8, f"points={len(values)}")
 
 
@@ -1036,6 +1036,10 @@ class MainWindow(QMainWindow):
         self.demo_preset_combo = self._combo()
         self.demo_preset_combo.addItem("Johnson Valley LE-WM navigation", "johnson_valley_lewm_navigation")
         self.training_preset_combo = self._combo()
+        self.training_preset_summary = QTextEdit()
+        self.training_preset_summary.setReadOnly(True)
+        self.training_preset_summary.setFixedHeight(126)
+        self.training_preset_summary.setPlaceholderText("Training config: NaN")
         self.world_model_config_combo = self._combo()
         self.world_model_config_edit_combo = self._combo()
         self.beamng_model_config_combo = self._combo()
@@ -1064,7 +1068,7 @@ class MainWindow(QMainWindow):
         self.world_model_config_combo.currentIndexChanged.connect(self._sync_home_world_model_config)
         self.world_model_config_edit_combo.currentIndexChanged.connect(self._sync_edit_world_model_config)
         self.beamng_model_config_combo.currentIndexChanged.connect(self._sync_beamng_world_model_config)
-        self.training_preset_combo.currentIndexChanged.connect(lambda _: self._sync_training_preset_params(force=True))
+        self.training_preset_combo.currentIndexChanged.connect(lambda _: self._sync_training_preset_selection(force=True))
         for edit in (
             self.dataset_root_edit,
             self.adapter_edit,
@@ -1267,6 +1271,8 @@ class MainWindow(QMainWindow):
             "Model and algorithm training",
             [
                 self._field("Training preset", self.training_preset_combo),
+                self._section_label("Training config summary"),
+                self.training_preset_summary,
                 self._field("Training parameters", self.trainer_params_edit),
                 self._action_button("Start training/export", self.run_training_preset, primary=True),
                 self._field("World model config", self.world_model_config_edit_combo),
@@ -1284,6 +1290,10 @@ class MainWindow(QMainWindow):
         self.model_summary = QTextEdit()
         self.model_summary.setReadOnly(True)
         self.model_summary.setPlaceholderText("模型训练/推理结果：NaN")
+        self.latest_training_curve = TrainingCurveWidget()
+        output_layout.addWidget(self._section_label("Latest metric curve"))
+        output_layout.addWidget(self.latest_training_curve)
+        output_layout.addWidget(self._section_label("Training output"))
         output_layout.addWidget(self.model_summary, 1)
         training_layout.addWidget(output_box, 2)
         tabs.addTab(training_tab, "模型训练")
@@ -1946,6 +1956,10 @@ class MainWindow(QMainWindow):
         self.model_summary.setText(_compact_json(payload))
         if hasattr(self, "training_run_summary"):
             self.training_run_summary.setText(_compact_json(payload))
+        if hasattr(self, "latest_training_curve"):
+            history = payload.get("history") if isinstance(payload.get("history"), dict) else {}
+            metrics = payload.get("metrics") if isinstance(payload.get("metrics"), dict) else {}
+            self.latest_training_curve.set_history(services.training_metric_history({"history": history, "metrics": metrics}))
         self.log("流程完成")
         self.refresh_catalogs()
 
@@ -1980,6 +1994,10 @@ class MainWindow(QMainWindow):
         self.model_summary.setText(_compact_json(payload))
         if hasattr(self, "training_run_summary"):
             self.training_run_summary.setText(_compact_json(payload))
+        if hasattr(self, "latest_training_curve"):
+            history = payload.get("history") if isinstance(payload.get("history"), dict) else {}
+            metrics = payload.get("metrics") if isinstance(payload.get("metrics"), dict) else {}
+            self.latest_training_curve.set_history(services.training_metric_history({"history": history, "metrics": metrics}))
         self.log(f"模型训练完成: {payload.get('model_path', payload.get('checkpoint_path', services.NAN_TEXT))}")
         self.refresh_catalogs()
 
@@ -2048,7 +2066,36 @@ class MainWindow(QMainWindow):
         if self.training_preset_combo.count():
             self.training_preset_combo.setCurrentIndex(max(0, selected_index))
         self.training_preset_combo.blockSignals(False)
-        self._sync_training_preset_params()
+        self._sync_training_preset_selection()
+
+    def _sync_training_preset_selection(self, *, force: bool = False) -> None:
+        self._sync_training_preset_summary()
+        self._sync_training_preset_params(force=force)
+
+    def _sync_training_preset_summary(self) -> None:
+        if not hasattr(self, "training_preset_summary"):
+            return
+        data = self.training_preset_combo.currentData()
+        preset = dict(data) if isinstance(data, dict) else {}
+        if not preset:
+            self.training_preset_summary.setPlainText("Training config: NaN")
+            return
+        lines = [
+            f"Name: {preset.get('label') or preset.get('id') or services.NAN_TEXT}",
+            f"Kind: {preset.get('kind') or services.NAN_TEXT}",
+            f"Status: {preset.get('status') or ('available' if preset.get('available', True) else services.UNFINISHED_TEXT)}",
+        ]
+        description = str(preset.get("description") or "").strip()
+        if description:
+            lines.append(f"Description: {description}")
+        manifest_path = str(preset.get("manifest_path") or "").strip()
+        if manifest_path:
+            lines.append(f"Trainer manifest: {manifest_path}")
+        outputs = preset.get("outputs") if isinstance(preset.get("outputs"), dict) else {}
+        artifact_type = outputs.get("artifact_type")
+        if artifact_type:
+            lines.append(f"Artifact: {artifact_type}")
+        self.training_preset_summary.setPlainText("\n".join(lines))
 
     def _sync_training_preset_params(self, *, force: bool = False) -> None:
         if not hasattr(self, "trainer_params_edit"):
@@ -2102,6 +2149,8 @@ class MainWindow(QMainWindow):
         self.training_run_summary.setText(_compact_json(run))
         if hasattr(self, "training_curve"):
             self.training_curve.set_history(services.training_metric_history(run))
+        if hasattr(self, "latest_training_curve"):
+            self.latest_training_curve.set_history(services.training_metric_history(run))
         artifact_path = str(run.get("artifact_path") or "")
         artifact_type = str(run.get("artifact_type") or "")
         if artifact_path and artifact_type in {"checkpoint", "world_model"}:
@@ -2564,182 +2613,193 @@ def run() -> int:
 
 STYLESHEET = """
 QWidget {
-    background: #0b1117;
-    color: #e9eff4;
+    background: #f5f5f7;
+    color: #1d1d1f;
     font-family: "Segoe UI", "Microsoft YaHei";
     font-size: 13px;
 }
 #sidebar {
-    background: #0f1820;
-    border-right: 1px solid #233340;
+    background: #ffffff;
+    border-right: 1px solid #d2d2d7;
 }
 #appTitle {
     font-size: 22px;
     font-weight: 700;
-    color: #f3f7fa;
+    color: #1d1d1f;
 }
 #pageTitle {
     font-size: 24px;
     font-weight: 700;
-    color: #f3f7fa;
+    color: #1d1d1f;
 }
 #mutedText, .mutedText {
-    color: #8da1af;
+    color: #6e6e73;
 }
 #navButton {
     text-align: left;
     padding: 0 12px;
-    border-radius: 6px;
+    border-radius: 8px;
     background: transparent;
     border: 1px solid transparent;
+    color: #1d1d1f;
 }
 #navButton:hover {
-    background: #152631;
-    border-color: #315064;
+    background: #f2f2f7;
+    border-color: #e5e5ea;
 }
 #navButton:checked {
-    background: #14352f;
-    border-color: #3bd1a6;
-    color: #6ee8c5;
+    background: #eaf4ff;
+    border-color: #007aff;
+    color: #0066cc;
 }
 QGroupBox {
-    border: 1px solid #263946;
-    border-radius: 7px;
+    border: 1px solid #d2d2d7;
+    border-radius: 8px;
     margin-top: 14px;
     padding-top: 4px;
-    background: #101922;
+    background: #ffffff;
 }
 QGroupBox::title {
     subcontrol-origin: margin;
     left: 12px;
     padding: 0 6px;
-    color: #a6b7c3;
+    color: #6e6e73;
+    background: #ffffff;
 }
-QLineEdit, QComboBox, QSpinBox {
-    background: #0a1219;
-    border: 1px solid #2a3e4d;
-    border-radius: 6px;
+QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {
+    background: #ffffff;
+    border: 1px solid #d2d2d7;
+    border-radius: 8px;
     padding: 6px 8px;
-    selection-background-color: #1ba783;
+    selection-background-color: #007aff;
+    selection-color: #ffffff;
+    color: #1d1d1f;
 }
 QPushButton {
-    background: #162635;
-    border: 1px solid #315064;
-    border-radius: 6px;
+    background: #ffffff;
+    border: 1px solid #c7c7cc;
+    border-radius: 8px;
     padding: 6px 12px;
+    color: #1d1d1f;
 }
 QPushButton:hover {
-    background: #203748;
+    background: #f2f2f7;
+    border-color: #a8a8ad;
 }
 QPushButton#modeButton {
     min-height: 24px;
 }
 QPushButton#modeButton:checked {
-    background: #20b58f;
-    border-color: #58e0bd;
-    color: #06130f;
+    background: #007aff;
+    border-color: #007aff;
+    color: #ffffff;
     font-weight: 700;
 }
 QPushButton#modeButton:checked:hover {
-    background: #2cc6a0;
+    background: #0a84ff;
 }
 QPushButton:disabled {
-    color: #667582;
-    background: #141c24;
+    color: #a1a1a6;
+    background: #f2f2f7;
+    border-color: #e5e5ea;
 }
 #primaryButton {
-    background: #20b58f;
-    color: #06130f;
+    background: #007aff;
+    color: #ffffff;
     font-weight: 700;
-    border-color: #58e0bd;
+    border-color: #007aff;
 }
 #primaryButton:hover {
-    background: #2cc6a0;
+    background: #0a84ff;
 }
 #fieldLabel {
-    color: #a7b7c4;
+    color: #6e6e73;
 }
 #sectionLabel {
-    color: #dce8f1;
+    color: #1d1d1f;
     font-weight: 700;
 }
 QTabWidget::pane {
-    border-top: 1px solid #2c4252;
+    border-top: 1px solid #d2d2d7;
     top: -1px;
 }
 QTabBar::tab {
-    background: #15222d;
-    color: #dce8f1;
-    border: 1px solid #2c4252;
-    border-bottom-color: #2c4252;
+    background: #ffffff;
+    color: #3a3a3c;
+    border: 1px solid #d2d2d7;
+    border-bottom-color: #d2d2d7;
+    border-top-left-radius: 8px;
+    border-top-right-radius: 8px;
     padding: 8px 14px;
     margin-right: 4px;
     min-width: 86px;
 }
 QTabBar::tab:hover {
-    background: #1d3140;
-    color: #ffffff;
+    background: #f2f2f7;
+    color: #1d1d1f;
 }
 QTabBar::tab:selected {
-    background: #dce8f1;
-    color: #061017;
-    border-color: #dce8f1;
+    background: #007aff;
+    color: #ffffff;
+    border-color: #007aff;
     font-weight: 700;
 }
 #busyLabel {
-    color: #8fdcc7;
+    color: #0066cc;
     font-weight: 600;
 }
 QProgressBar#busyBar {
-    background: #0a1219;
-    border: 1px solid #294457;
+    background: #e5e5ea;
+    border: 1px solid #d2d2d7;
     border-radius: 4px;
     max-height: 8px;
 }
 QProgressBar#busyBar::chunk {
-    background: #20b58f;
+    background: #007aff;
     border-radius: 3px;
 }
 #metricCard, #todoCard, #previewPane {
-    background: #0d161e;
-    border: 1px solid #253846;
-    border-radius: 7px;
+    background: #ffffff;
+    border: 1px solid #d2d2d7;
+    border-radius: 8px;
 }
 #metricTitle {
-    color: #91a7b6;
+    color: #6e6e73;
 }
 #metricValue {
     font-size: 24px;
     font-weight: 700;
-    color: #f4f7fa;
+    color: #1d1d1f;
 }
 #todoStatus {
-    color: #f6c85f;
+    color: #b26a00;
     font-weight: 700;
 }
 QTextEdit, QListWidget, QTableWidget {
-    background: #0a1219;
-    border: 1px solid #253846;
-    border-radius: 7px;
+    background: #ffffff;
+    border: 1px solid #d2d2d7;
+    border-radius: 8px;
     padding: 8px;
-    selection-background-color: #1ba783;
+    selection-background-color: #007aff;
+    selection-color: #ffffff;
+    color: #1d1d1f;
 }
 QListWidget::item {
     min-height: 28px;
     padding: 4px 6px;
 }
 QListWidget::item:selected {
-    background: #14352f;
-    color: #6ee8c5;
+    background: #eaf4ff;
+    color: #0066cc;
 }
 QHeaderView::section {
-    background: #172633;
-    color: #c7d4df;
+    background: #f2f2f7;
+    color: #3a3a3c;
     border: 0;
     padding: 7px;
 }
 QSplitter::handle {
-    background: #0b1117;
+    background: #f5f5f7;
 }
 QSplitter::handle:horizontal {
     width: 10px;
@@ -2748,11 +2808,11 @@ QSplitter::handle:vertical {
     height: 10px;
 }
 QScrollBar:vertical, QScrollBar:horizontal {
-    background: #0b1117;
+    background: #f5f5f7;
     border: 0;
 }
 QScrollBar::handle:vertical, QScrollBar::handle:horizontal {
-    background: #334857;
+    background: #c7c7cc;
     border-radius: 4px;
     min-height: 28px;
     min-width: 28px;
