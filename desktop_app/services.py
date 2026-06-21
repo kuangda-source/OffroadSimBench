@@ -157,6 +157,7 @@ class RegionSelfSupervisedWorldModelRequest:
     output_dir: str = ""
     collect_steps: int = 240
     collect_rollouts: int = 1
+    min_collection_goal_progress_ratio: float = 0.0
     eval_steps: int = 1000
     seed: int = 7
     planner: str = "navigation_mpc"
@@ -1418,6 +1419,72 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
         sequences.append(_episode_trace_to_dataset_sequence(episode_path, task))
     collection_acceptance = min(collection_acceptances, key=lambda row: _finite_or_inf(row.get("min_goal_distance")))
     collection_distance = float(sum(collection_distances)) if collection_distances else math.nan
+    quality_gate = _collection_quality_gate(task, collection_acceptance, min_progress_ratio=request.min_collection_goal_progress_ratio)
+    if not quality_gate["passed"]:
+        training_run = write_training_run_record(
+            output_dir,
+            preset_id="region_self_supervised_world_model",
+            status="collection_insufficient",
+            dataset_root=episode_paths[0],
+            adapter="beamng_episode",
+            sequence_id=task.task_id,
+            artifact_path="",
+            artifact_type="world_model",
+            metrics={
+                "collection_goal_reached": bool(collection_acceptance.get("goal_reached")),
+                "collection_min_goal_distance": collection_acceptance.get("min_goal_distance"),
+                "collection_final_goal_distance": collection_acceptance.get("final_goal_distance"),
+                "collection_distance_traveled": collection_distance,
+                "collection_rollout_count": rollout_count,
+                "collection_collision_count": collection_acceptance.get("collision_count"),
+                "collection_progress_ratio": quality_gate.get("progress_ratio"),
+                "required_collection_progress_ratio": quality_gate.get("required_progress_ratio"),
+            },
+            history={
+                "collection_min_goal_distance": [collection_acceptance.get("min_goal_distance")],
+                "collection_progress_ratio": [quality_gate.get("progress_ratio")],
+            },
+            parameters={
+                "world_model_type": request.world_model_type,
+                "planner": request.planner,
+                "planner_horizon": request.planner_horizon,
+                "planner_samples": request.planner_samples,
+                "planner_iterations": request.planner_iterations,
+                "evaluation_agent": request.evaluation_agent,
+                "evaluation_route_mode": "route_free" if evaluation_route_free else "task_route",
+                "collect_rollouts": rollout_count,
+                "min_collection_goal_progress_ratio": float(request.min_collection_goal_progress_ratio),
+            },
+            summary={
+                "task_path": str(Path(request.task_path).resolve()),
+                "quality_gate": quality_gate,
+                "collection_acceptance": collection_acceptance,
+                "collection_acceptances": collection_acceptances,
+            },
+        )
+        payload = {
+            "status": "collection_insufficient",
+            "task": task.to_dict(),
+            "output_dir": str(output_dir.resolve()),
+            "model_dir": "",
+            "collection": collections[0],
+            "collections": collections,
+            "training": {"status": "skipped", "reason": quality_gate["reason"]},
+            "evaluation": {},
+            "acceptance": {},
+            "quality_gate": quality_gate,
+            "region_navigation": {
+                "collection_agent": "region_explorer",
+                "evaluation_agent": request.evaluation_agent,
+                "route_free": evaluation_route_free,
+                "evaluation_route_mode": "route_free" if evaluation_route_free else "task_route",
+            },
+            "training_run_path": training_run["path"],
+        }
+        summary_path = output_dir / "region_self_supervised_summary.json"
+        summary_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+        payload["summary_path"] = str(summary_path.resolve())
+        return payload
 
     model = TinyLearnedWorldModel.fit(sequences)
     model.metadata.update(
@@ -1490,11 +1557,14 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
             "collection_distance_traveled": collection_distance,
             "collection_rollout_count": rollout_count,
             "collection_collision_count": collection_acceptance.get("collision_count"),
+            "collection_progress_ratio": quality_gate.get("progress_ratio"),
+            "required_collection_progress_ratio": quality_gate.get("required_progress_ratio"),
         },
         history={
             "train_rmse": [model.metadata.get("train_rmse")],
             "train_mse": [model.metadata.get("train_mse")],
             "collection_min_goal_distance": [collection_acceptance.get("min_goal_distance")],
+            "collection_progress_ratio": [quality_gate.get("progress_ratio")],
             "evaluation_min_goal_distance": [acceptance.get("min_goal_distance")],
         },
         parameters={
@@ -1506,9 +1576,11 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
             "evaluation_agent": request.evaluation_agent,
             "evaluation_route_mode": "route_free" if evaluation_route_free else "task_route",
             "collect_rollouts": rollout_count,
+            "min_collection_goal_progress_ratio": float(request.min_collection_goal_progress_ratio),
         },
         summary={
             "task_path": str(Path(request.task_path).resolve()),
+            "quality_gate": quality_gate,
             "collection_acceptance": collection_acceptance,
             "collection_acceptances": collection_acceptances,
             "acceptance": acceptance,
@@ -1524,6 +1596,7 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
         "training": training,
         "evaluation": evaluation,
         "acceptance": acceptance,
+        "quality_gate": quality_gate,
         "region_navigation": {
             **region_navigation,
             "collection_agent": "region_explorer",
@@ -2002,6 +2075,33 @@ def _navigation_acceptance(evaluation: dict[str, Any], task: NavigationRegionTas
         "mean_abs_steer": float(sum(abs(value) for value in steers) / len(steers)) if steers else math.nan,
         "collision_count": collision_count,
         "max_collision_count": task.max_collision_count,
+    }
+
+
+def _collection_quality_gate(
+    task: NavigationRegionTask,
+    collection_acceptance: dict[str, Any],
+    *,
+    min_progress_ratio: float,
+) -> dict[str, Any]:
+    required = max(0.0, float(min_progress_ratio))
+    start_distance = math.hypot(task.start_pos[0] - task.goal_pos[0], task.start_pos[1] - task.goal_pos[1])
+    min_distance = _float_or_nan(collection_acceptance.get("min_goal_distance"))
+    if not math.isfinite(min_distance) or start_distance <= 1e-9:
+        progress_ratio = 0.0
+    else:
+        progress_ratio = max(0.0, min(1.0, (start_distance - min_distance) / start_distance))
+    goal_reached = bool(collection_acceptance.get("goal_reached"))
+    passed = required <= 0.0 or goal_reached or progress_ratio >= required
+    reason = "passed" if passed else "collection_goal_progress_below_threshold"
+    return {
+        "passed": bool(passed),
+        "reason": reason,
+        "progress_ratio": float(progress_ratio),
+        "required_progress_ratio": float(required),
+        "start_goal_distance": float(start_distance),
+        "collection_min_goal_distance": min_distance,
+        "collection_goal_reached": goal_reached,
     }
 
 

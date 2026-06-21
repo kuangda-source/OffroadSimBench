@@ -182,3 +182,48 @@ def test_region_self_supervised_world_model_trains_from_multiple_collection_roll
     assert training_record["metrics"]["collection_rollout_count"] == 2
     assert training_record["metrics"]["collection_distance_traveled"] == 49.0
     assert training_record["metrics"]["collection_min_goal_distance"] <= 10.0
+
+
+def test_region_self_supervised_world_model_stops_when_collection_makes_no_goal_progress(tmp_path: Path) -> None:
+    task_path = tmp_path / "task.yaml"
+    _write_task(task_path)
+    collection_episode = _save_episode(
+        tmp_path / "collection",
+        [(2.0, 2.0, 0.0, 0.5), (3.0, 2.0, 0.0, 0.8), (4.0, 2.0, 0.0, 0.8)],
+    )
+    seen_agents: list[str] = []
+
+    def fake_run_episode(**kwargs):
+        seen_agents.append(kwargs["agent_name"])
+
+        class Result:
+            def to_dict(self):
+                return {
+                    "episode_id": "collect",
+                    "episode_path": str(collection_episode),
+                    "metrics": {"horizontal_distance_traveled": 2.0, "collision_count": 0, "drive_mode": "manual"},
+                }
+
+        return Result()
+
+    with patch("desktop_app.services.run_episode", side_effect=fake_run_episode):
+        payload = services.run_region_self_supervised_world_model(
+            services.RegionSelfSupervisedWorldModelRequest(
+                task_path=str(task_path),
+                output_dir=str(tmp_path / "out"),
+                collect_steps=20,
+                collect_rollouts=1,
+                min_collection_goal_progress_ratio=0.5,
+                eval_steps=20,
+                close_beamng=True,
+            )
+        )
+
+    assert seen_agents == ["region_explorer"]
+    assert payload["status"] == "collection_insufficient"
+    assert payload["quality_gate"]["passed"] is False
+    assert payload["training"]["status"] == "skipped"
+    training_record = json.loads(Path(payload["training_run_path"]).read_text(encoding="utf-8"))
+    assert training_record["status"] == "collection_insufficient"
+    assert training_record["metrics"]["collection_progress_ratio"] < 0.5
+    assert training_record["summary"]["quality_gate"]["reason"] == "collection_goal_progress_below_threshold"
