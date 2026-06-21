@@ -195,7 +195,7 @@ sequences:
       label: labels/{frame_id}.png
 ```
 
-外部模型或算法训练可以通过 `configs/trainers/*/trainer.yaml` 或 `configs/trainers/*.yaml` 接入。训练器 manifest 声明 entrypoint、参数 schema 和命令参数模板；GUI 会把它显示为训练预设，并把参数 JSON、stdout/stderr、metrics/history 和 `training_run.json` 一起记录下来：
+外部模型或算法训练可以通过 `configs/trainers/*/trainer.yaml` 或 `configs/trainers/*.yaml` 接入，也可以在 GUI 的训练页点击 `Import trainer manifest` 导入。训练器 manifest 声明 entrypoint、参数 schema 和命令参数模板；GUI 会把它显示为训练预设，并把参数 JSON、stdout/stderr、metrics/history 和 `training_run.json` 一起记录下来：
 
 ```yaml
 trainer_id: my_world_model
@@ -254,7 +254,7 @@ sequences:
       label: labels/{frame_id}.png
 ```
 
-External model or algorithm training can be added through `configs/trainers/*/trainer.yaml` or `configs/trainers/*.yaml`. A trainer manifest declares the entrypoint, parameter schema, and command template; the GUI exposes it as a training preset and records the parameter JSON, stdout/stderr, metrics/history, and `training_run.json`:
+External model or algorithm training can be added through `configs/trainers/*/trainer.yaml` or `configs/trainers/*.yaml`, or imported from the GUI with `Import trainer manifest`. A trainer manifest declares the entrypoint, parameter schema, and command template; the GUI exposes it as a training preset and records the parameter JSON, stdout/stderr, metrics/history, and `training_run.json`:
 
 ```yaml
 trainer_id: my_world_model

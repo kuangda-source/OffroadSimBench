@@ -348,6 +348,29 @@ def load_trainer_manifest(path: str | Path) -> dict[str, Any]:
     }
 
 
+def import_trainer_manifest(source_path: str | Path, destination_root: str | Path | None = None) -> dict[str, Any]:
+    """Install an external trainer manifest into the project trainer catalog."""
+
+    source = Path(source_path).resolve()
+    if not source.is_file():
+        raise FileNotFoundError(f"Trainer manifest not found: {source}")
+    source_row = load_trainer_manifest(source)
+    data = load_yaml_file(source)
+    entrypoint = Path(str(data.get("entrypoint") or ""))
+    if not entrypoint.is_absolute():
+        data["entrypoint"] = str((source.parent / entrypoint).resolve())
+    data["imported_from"] = str(source)
+    destination = Path(destination_root or CONFIG_ROOT / "trainers")
+    destination.mkdir(parents=True, exist_ok=True)
+    target = destination / f"{_safe_name(source_row['id'])}.yaml"
+    try:
+        import yaml
+    except ModuleNotFoundError as exc:
+        raise RuntimeError("PyYAML is required to import trainer manifests.") from exc
+    target.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True), encoding="utf-8")
+    return load_trainer_manifest(target)
+
+
 def run_trainer_manifest_job(
     manifest_path: str | Path,
     *,

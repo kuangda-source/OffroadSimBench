@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from desktop_app import services
+from offroad_sim.utils.yaml_io import load_yaml_file
 
 
 def _write_echo_trainer(root: Path) -> Path:
@@ -81,6 +82,24 @@ def test_trainer_manifest_entries_accept_named_yaml_files(tmp_path) -> None:
 
     assert entries[0]["id"] == "echo_trainer"
     assert entries[0]["manifest_path"] == str(named.resolve())
+
+
+def test_import_trainer_manifest_copies_external_manifest(tmp_path, monkeypatch) -> None:
+    source_dir = tmp_path / "external"
+    source_dir.mkdir()
+    source = _write_echo_trainer(source_dir)
+    destination_root = tmp_path / "trainers"
+
+    row = services.import_trainer_manifest(source, destination_root=destination_root)
+
+    copied_path = Path(row["manifest_path"])
+    assert copied_path.parent == destination_root
+    assert copied_path.name == "echo_trainer.yaml"
+    copied = load_yaml_file(copied_path)
+    assert copied["entrypoint"] == str((source_dir / "echo_trainer.py").resolve())
+    assert copied["imported_from"] == str(source.resolve())
+    entries = services.trainer_manifest_entries(destination_root)
+    assert entries[0]["id"] == "echo_trainer"
 
 
 def test_run_trainer_manifest_job_executes_command_and_records(tmp_path) -> None:

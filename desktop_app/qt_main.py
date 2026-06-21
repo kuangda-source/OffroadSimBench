@@ -1267,10 +1267,14 @@ class MainWindow(QMainWindow):
         model_browse = QPushButton("选择")
         self._configure_button(model_browse)
         model_browse.clicked.connect(lambda: self._browse_path_combo(self.home_model_combo))
+        trainer_import = QPushButton("导入训练器 manifest")
+        self._configure_button(trainer_import)
+        trainer_import.clicked.connect(self.import_trainer_manifest)
         training_controls = self._group(
             "Model and algorithm training",
             [
                 self._field("Training preset", self.training_preset_combo),
+                trainer_import,
                 self._section_label("Training config summary"),
                 self.training_preset_summary,
                 self._field("Training parameters", self.trainer_params_edit),
@@ -1700,6 +1704,26 @@ class MainWindow(QMainWindow):
             return
         self.model_summary.setText(_compact_json({"status": services.UNFINISHED_TEXT, "training_preset": preset}))
 
+    def import_trainer_manifest(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Import trainer manifest",
+            str(services.CONFIG_ROOT / "trainers"),
+            "YAML files (*.yaml *.yml)",
+        )
+        if not path:
+            return
+        try:
+            row = services.import_trainer_manifest(path)
+        except Exception as exc:
+            self.model_summary.setText(_compact_json({"status": "import_failed", "message": str(exc)}))
+            self.log(f"Trainer manifest import failed: {exc}")
+            return
+        self.model_summary.setText(_compact_json({"status": "imported", "trainer": row}))
+        self.log(f"Trainer manifest imported: {row.get('label', row.get('id', services.NAN_TEXT))}")
+        self.refresh_catalogs()
+        self._select_training_preset(str(row.get("id") or ""))
+
     def run_manifest_trainer(self, preset: dict[str, Any]) -> None:
         try:
             parameters = self._trainer_parameters_from_text()
@@ -2067,6 +2091,15 @@ class MainWindow(QMainWindow):
             self.training_preset_combo.setCurrentIndex(max(0, selected_index))
         self.training_preset_combo.blockSignals(False)
         self._sync_training_preset_selection()
+
+    def _select_training_preset(self, preset_id: str) -> None:
+        if not preset_id:
+            return
+        for index in range(self.training_preset_combo.count()):
+            data = self.training_preset_combo.itemData(index)
+            if isinstance(data, dict) and str(data.get("id") or "") == preset_id:
+                self.training_preset_combo.setCurrentIndex(index)
+                return
 
     def _sync_training_preset_selection(self, *, force: bool = False) -> None:
         self._sync_training_preset_summary()

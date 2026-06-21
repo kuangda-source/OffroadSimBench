@@ -257,6 +257,36 @@ def test_gui_training_preset_summary_updates_for_manifest_trainer(tmp_path) -> N
     window.close()
 
 
+def test_gui_imports_trainer_manifest(monkeypatch, tmp_path) -> None:
+    _ensure_app()
+    manifest = tmp_path / "trainer.yaml"
+    manifest.write_text("trainer_id: echo_trainer\nentrypoint: echo_trainer.py\n", encoding="utf-8")
+    window = MainWindow()
+    imported = {
+        "id": "echo_trainer",
+        "label": "Echo Trainer",
+        "kind": "training",
+        "available": True,
+        "description": "Imported trainer.",
+        "manifest_path": str(manifest),
+        "parameters": {},
+    }
+
+    monkeypatch.setattr("desktop_app.qt_main.QFileDialog.getOpenFileName", lambda *args, **kwargs: (str(manifest), ""))
+    monkeypatch.setattr(services, "import_trainer_manifest", lambda path: imported)
+    def fake_refresh_catalogs() -> None:
+        window.catalog["training_presets"] = [imported]
+        window._fill_training_preset_combo()
+
+    monkeypatch.setattr(window, "refresh_catalogs", fake_refresh_catalogs)
+
+    window.import_trainer_manifest()
+
+    assert window.training_preset_combo.currentData()["id"] == "echo_trainer"
+    assert "Imported trainer." in window.training_preset_summary.toPlainText()
+    window.close()
+
+
 def test_gui_training_preset_dispatches_existing_actions(monkeypatch) -> None:
     _ensure_app()
     window = MainWindow()
