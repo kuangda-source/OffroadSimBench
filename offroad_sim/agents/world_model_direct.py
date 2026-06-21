@@ -8,7 +8,7 @@ from typing import Any
 
 from offroad_sim.agents.base import OffroadAgent
 from offroad_sim.agents.basic import RuleBasedGoalAgent
-from offroad_sim.agents.model_mpc import _action_dict
+from offroad_sim.agents.model_mpc import _action_dict, _goal_radius_from_info
 from offroad_sim.core import Action, Observation
 from offroad_sim.planning import make_planner
 from offroad_sim.planning.navigation_mpc import NavigationMPCPlanner
@@ -47,6 +47,19 @@ class WorldModelDirectAgent(OffroadAgent):
         self._last_goal_distance = None
 
     def act(self, obs: Observation) -> Action:
+        terminal_stop = self._terminal_stop_action(obs)
+        if terminal_stop is not None:
+            self._last_diagnostics = {
+                "agent": "world_model_direct",
+                "planner": self.planner_name,
+                "world_model": self.world_model_name,
+                "world_model_path": self.world_model_path,
+                "target_goal": [float(obs.goal[0]), float(obs.goal[1])],
+                "route_used": False,
+                "goal_stop": True,
+                "executed_action": _action_dict(terminal_stop),
+            }
+            return terminal_stop
         reference_action = self.reference_agent.act(obs)
         planning = self.planner.plan(obs, self.world_model, reference_action=reference_action)
         stabilized = _stabilize_action(planning.first_action, reference_action, obs)
@@ -63,6 +76,7 @@ class WorldModelDirectAgent(OffroadAgent):
             "reference_action": _action_dict(reference_action),
             "executed_action": _action_dict(action),
             "stuck_recovery": stuck_recovery,
+            "goal_stop": False,
         }
         return action
 
@@ -92,6 +106,18 @@ class WorldModelDirectAgent(OffroadAgent):
             ),
             True,
         )
+
+    def _terminal_stop_action(self, obs: Observation) -> Action | None:
+        radius = _goal_radius_from_info(obs.info)
+        if radius <= 0.0:
+            return None
+        state = obs.vehicle_state
+        distance = math.hypot(float(state.x) - float(obs.goal[0]), float(state.y) - float(obs.goal[1]))
+        if distance > radius:
+            return None
+        self._stuck_steps = 0
+        self._last_goal_distance = distance
+        return Action(steer=0.0, throttle=0.0, brake=1.0)
 
 
 def _stabilize_action(action: Action, reference_action: Action, obs: Observation) -> Action:

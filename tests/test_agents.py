@@ -96,6 +96,24 @@ def test_world_model_direct_agent_ignores_expert_route_info() -> None:
     assert diagnostics["route_used"] is False
 
 
+def test_world_model_direct_agent_brakes_inside_navigation_goal_radius() -> None:
+    agent = make_agent("world_model_direct", planner_config={"horizon": 4, "num_samples": 16, "seed": 4})
+    observation = Observation(
+        timestamp=0.0,
+        vehicle_state=VehicleState(x=19.5, y=0.0, yaw=0.0, speed=2.0),
+        goal=(20.0, 0.0),
+        info={"navigation_region": {"goal_radius": 2.0}},
+    )
+
+    action = agent.act(observation)
+    diagnostics = agent.diagnostics()
+
+    assert action.steer == 0.0
+    assert action.throttle == 0.0
+    assert action.brake == 1.0
+    assert diagnostics["goal_stop"] is True
+
+
 def test_world_model_direct_agent_keeps_low_speed_progress() -> None:
     observation = Observation(
         timestamp=0.0,

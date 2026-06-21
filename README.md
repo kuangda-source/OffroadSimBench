@@ -229,7 +229,7 @@ OffroadSimBench is a local off-road autonomous-driving simulation, dataset repla
 - Switchable planners: `navigation_mpc`, `world_model_cem`, and `le_wm_cem`.
 - BeamNG runtime detection, connection smoke tests, scenario reset/step, visible autonomous-driving demo, and episode recording.
 - stable-worldmodel HDF5 export, LE-WM-compatible cost checkpoint training, and `AutoCostModel + CEMSolver` planning.
-- Region self-supervised BeamNG collection and training scaffold: `region_explorer`, `world_model_direct`, and `scripts\run_region_self_supervised_world_model.py`.
+- Region self-supervised BeamNG collection and training scaffold: `region_explorer`, `world_model_direct`, terminal goal braking, acceptance metrics, and `scripts\run_region_self_supervised_world_model.py`.
 - PySide6 desktop GUI with a guided demo overview, Dataset and Training workbench, BeamNG Simulation workbench, ORFD image preview, HDF5 export, LE-WM cost-model training, visible BeamNG autodrive, local terrain draft export, episode trajectory preview, and logs.
 
 ### Dataset And Training Workbench
@@ -239,6 +239,8 @@ The desktop GUI `Dataset and Training` page is now a standalone training-visuali
 Training configs combine a dataset root, adapter, sequence, training preset, output path, and JSON parameters into one reusable GUI selection. Built-in configs include `ORFD StableWM HDF5 export` and `ORFD tiny world model`; users can edit the current fields and click `Save training config` to persist a new entry in `configs/training_configs.json`.
 
 Training records support a `history` field for loss, RMSE, frame count, or other curve data. The GUI plots the primary available metric in the training results tab, and falls back to single-point metrics or NaN when no real history exists.
+
+BeamNG region self-supervised runs also write a `training_run.json` with the trained model path plus acceptance metrics such as `goal_success`, `min_goal_distance`, `final_goal_distance`, and `collision_count`, so the Training Results tab can index the simulator-trained model instead of leaving it as an opaque folder.
 
 External datasets can use `dataset_manifest.yaml` with the `manifest_dataset` adapter, or be imported from the GUI with `导入 dataset manifest`. Importing installs the manifest under `configs/datasets/<dataset_id>/` and rewrites relative sequence roots to absolute paths so the dataset remains reusable from the catalog. The manifest declares sequence roots, a pose CSV, and sensor/label asset templates, and the platform converts them into the unified `DatasetSequence` contract:
 

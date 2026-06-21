@@ -1448,6 +1448,33 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
         evaluation = _run_region_beamng_episode(**evaluation_kwargs)
     acceptance = _navigation_acceptance(evaluation, task)
     region_navigation = evaluation.get("region_navigation", {}) if isinstance(evaluation.get("region_navigation"), dict) else {}
+    training_run = write_training_run_record(
+        output_dir,
+        preset_id="region_self_supervised_world_model",
+        status="completed",
+        dataset_root=str(Path(episode_path).resolve()),
+        adapter="beamng_episode",
+        sequence_id=task.task_id,
+        artifact_path=str(model_dir.resolve()),
+        artifact_type="world_model",
+        metrics={
+            "goal_success": bool(acceptance.get("goal_success")),
+            "goal_reached": bool(acceptance.get("goal_reached")),
+            "min_goal_distance": acceptance.get("min_goal_distance"),
+            "final_goal_distance": acceptance.get("final_goal_distance"),
+            "collision_count": acceptance.get("collision_count"),
+        },
+        parameters={
+            "world_model_type": request.world_model_type,
+            "planner": request.planner,
+            "planner_horizon": request.planner_horizon,
+            "planner_samples": request.planner_samples,
+            "planner_iterations": request.planner_iterations,
+            "evaluation_agent": request.evaluation_agent,
+            "evaluation_route_mode": "route_free" if evaluation_route_free else "task_route",
+        },
+        summary={"task_path": str(Path(request.task_path).resolve()), "acceptance": acceptance},
+    )
     payload: dict[str, Any] = {
         "status": "completed",
         "task": task.to_dict(),
@@ -1464,6 +1491,7 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
             "route_free": evaluation_route_free,
             "evaluation_route_mode": "route_free" if evaluation_route_free else "task_route",
         },
+        "training_run_path": training_run["path"],
     }
     summary_path = output_dir / "region_self_supervised_summary.json"
     summary_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")

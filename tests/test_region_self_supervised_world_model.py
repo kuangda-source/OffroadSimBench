@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -119,3 +120,8 @@ def test_region_self_supervised_world_model_trains_and_evaluates_without_route(t
     assert payload["region_navigation"]["evaluation_agent"] == "world_model_direct"
     assert payload["acceptance"]["goal_success"] is True
     assert payload["acceptance"]["route_waypoint_count"] == 0
+    training_record = json.loads(Path(payload["training_run_path"]).read_text(encoding="utf-8"))
+    assert training_record["preset_id"] == "region_self_supervised_world_model"
+    assert training_record["artifact_path"] == payload["model_dir"]
+    assert training_record["metrics"]["goal_success"] is True
+    assert training_record["metrics"]["min_goal_distance"] <= 5.0
