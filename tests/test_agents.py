@@ -100,6 +100,29 @@ def test_region_explorer_can_bias_collection_toward_navigation_goal() -> None:
     assert diagnostics["target_in_region"] is True
 
 
+def test_region_explorer_samples_goal_corridor_targets_between_vehicle_and_goal() -> None:
+    agent = make_agent("region_explorer", seed=3, goal_bias_interval=0, goal_corridor_interval=1)
+    observation = Observation(
+        timestamp=0.0,
+        vehicle_state=VehicleState(x=2.0, y=2.0, yaw=0.0, speed=0.5),
+        goal=(22.0, 2.0),
+        info={
+            "navigation_region": {
+                "region": {"polygon": [[0.0, 0.0], [30.0, 0.0], [30.0, 12.0], [0.0, 12.0]]}
+            }
+        },
+    )
+
+    action = agent.act(observation)
+    diagnostics = agent.diagnostics()
+
+    assert action.throttle > 0.0
+    assert diagnostics["target_source"] == "goal_corridor"
+    assert diagnostics["target_in_region"] is True
+    assert 2.0 < diagnostics["target"][0] < 22.0
+    assert abs(diagnostics["target"][1] - 2.0) < 3.0
+
+
 def test_world_model_direct_agent_ignores_expert_route_info() -> None:
     agent = make_agent("world_model_direct", planner_config={"horizon": 4, "num_samples": 16, "seed": 4})
     observation = Observation(

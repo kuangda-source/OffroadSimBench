@@ -158,6 +158,9 @@ class RegionSelfSupervisedWorldModelRequest:
     collect_steps: int = 240
     collect_rollouts: int = 1
     min_collection_goal_progress_ratio: float = 0.0
+    collection_goal_bias_interval: int = 1
+    collection_goal_corridor_interval: int = 1
+    collection_goal_corridor_lateral_m: float = 2.0
     eval_steps: int = 1000
     seed: int = 7
     planner: str = "navigation_mpc"
@@ -1393,6 +1396,11 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
             max_steps=min(max(1, int(request.collect_steps)), task.max_steps),
             seed=int(request.seed) + rollout_index,
             agent_name="region_explorer",
+            agent_options={
+                "goal_bias_interval": max(0, int(request.collection_goal_bias_interval)),
+                "goal_corridor_interval": max(0, int(request.collection_goal_corridor_interval)),
+                "goal_corridor_lateral_m": max(0.0, float(request.collection_goal_corridor_lateral_m)),
+            },
             world_model_type="simple_kinematic",
             world_model_path="",
             planner="",
@@ -1454,6 +1462,9 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
                 "evaluation_route_mode": "route_free" if evaluation_route_free else "task_route",
                 "collect_rollouts": rollout_count,
                 "min_collection_goal_progress_ratio": float(request.min_collection_goal_progress_ratio),
+                "collection_goal_bias_interval": max(0, int(request.collection_goal_bias_interval)),
+                "collection_goal_corridor_interval": max(0, int(request.collection_goal_corridor_interval)),
+                "collection_goal_corridor_lateral_m": max(0.0, float(request.collection_goal_corridor_lateral_m)),
             },
             summary={
                 "task_path": str(Path(request.task_path).resolve()),
@@ -1577,6 +1588,9 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
             "evaluation_route_mode": "route_free" if evaluation_route_free else "task_route",
             "collect_rollouts": rollout_count,
             "min_collection_goal_progress_ratio": float(request.min_collection_goal_progress_ratio),
+            "collection_goal_bias_interval": max(0, int(request.collection_goal_bias_interval)),
+            "collection_goal_corridor_interval": max(0, int(request.collection_goal_corridor_interval)),
+            "collection_goal_corridor_lateral_m": max(0.0, float(request.collection_goal_corridor_lateral_m)),
         },
         summary={
             "task_path": str(Path(request.task_path).resolve()),
@@ -1959,6 +1973,7 @@ def _run_region_beamng_episode(
     post_run_hold_sec: float,
     close_beamng: bool,
     agent_name: str = "route_world_model",
+    agent_options: dict[str, Any] | None = None,
     algorithm_name: str = "",
     algorithm_model_path: str = "",
 ) -> dict[str, Any]:
@@ -1997,6 +2012,8 @@ def _run_region_beamng_episode(
         if planner:
             agent_options_payload["planner_name"] = planner
             agent_options_payload["planner_config"] = planner_config
+    if agent_options:
+        agent_options_payload.update(dict(agent_options))
     result = run_episode(
         backend_name="beamng",
         scenario=scenario,

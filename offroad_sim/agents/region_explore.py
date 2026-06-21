@@ -22,12 +22,16 @@ class RegionExploreAgent(OffroadAgent):
         max_target_steps: int = 80,
         cruise_throttle: float = 0.45,
         goal_bias_interval: int = 4,
+        goal_corridor_interval: int = 2,
+        goal_corridor_lateral_m: float = 2.0,
         **_: Any,
     ) -> None:
         self.rng = np.random.default_rng(seed)
         self.waypoint_radius_m = float(waypoint_radius_m)
         self.max_target_steps = max(1, int(max_target_steps))
         self.goal_bias_interval = max(0, int(goal_bias_interval))
+        self.goal_corridor_interval = max(0, int(goal_corridor_interval))
+        self.goal_corridor_lateral_m = max(0.0, float(goal_corridor_lateral_m))
         self.driver = RuleBasedGoalAgent(cruise_throttle=cruise_throttle)
         self._target: tuple[float, float] | None = None
         self._target_steps = 0
@@ -92,7 +96,33 @@ class RegionExploreAgent(OffroadAgent):
             and _point_in_polygon(goal, polygon)
         ):
             return goal, "goal"
+        corridor_target = self._goal_corridor_target(obs, polygon)
+        if corridor_target is not None:
+            return corridor_target, "goal_corridor"
         return _sample_point_in_polygon(polygon, self.rng), "sampled"
+
+    def _goal_corridor_target(self, obs: Observation, polygon: list[tuple[float, float]]) -> tuple[float, float] | None:
+        if self.goal_corridor_interval <= 0 or self._target_count % self.goal_corridor_interval != 0:
+            return None
+        state = obs.vehicle_state
+        start = (float(state.x), float(state.y))
+        goal = (float(obs.goal[0]), float(obs.goal[1]))
+        dx = goal[0] - start[0]
+        dy = goal[1] - start[1]
+        distance = math.hypot(dx, dy)
+        if distance <= max(self.waypoint_radius_m, 1.0) or not _point_in_polygon(goal, polygon):
+            return None
+        along = float(self.rng.uniform(0.35, 0.8))
+        lateral = float(self.rng.uniform(-self.goal_corridor_lateral_m, self.goal_corridor_lateral_m))
+        ux = dx / distance
+        uy = dy / distance
+        point = (start[0] + dx * along - uy * lateral, start[1] + dy * along + ux * lateral)
+        if _point_in_polygon(point, polygon):
+            return point
+        midpoint = (start[0] + dx * 0.5, start[1] + dy * 0.5)
+        if _point_in_polygon(midpoint, polygon):
+            return midpoint
+        return None
 
 
 def _navigation_polygon(info: dict[str, Any]) -> list[tuple[float, float]]:

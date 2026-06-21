@@ -113,6 +113,8 @@ def test_region_self_supervised_world_model_trains_and_evaluates_without_route(t
     assert seen_agents == ["region_explorer", "world_model_direct"]
     assert "route" not in seen_scenarios[0]["metadata"]["beamng"]
     assert "route" not in seen_scenarios[1]["metadata"]["beamng"]
+    assert seen_agent_options[0]["goal_bias_interval"] == 1
+    assert seen_agent_options[0]["goal_corridor_interval"] == 1
     assert seen_agent_options[1]["world_model_name"] == "tiny_learned"
     assert seen_agent_options[1]["planner_config"] == {"horizon": 6, "num_samples": 32, "iterations": 3}
     assert Path(payload["training"]["model_path"]).exists()
