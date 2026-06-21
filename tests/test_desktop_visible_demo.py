@@ -287,6 +287,39 @@ def test_gui_imports_trainer_manifest(monkeypatch, tmp_path) -> None:
     window.close()
 
 
+def test_gui_imports_dataset_manifest(monkeypatch, tmp_path) -> None:
+    _ensure_app()
+    manifest = tmp_path / "dataset_manifest.yaml"
+    manifest.write_text("adapter: manifest_dataset\ndataset_id: custom_drive\nsequences: []\n", encoding="utf-8")
+    window = MainWindow()
+    imported = {
+        "id": "custom_drive",
+        "label": "Custom Drive",
+        "adapter": "manifest_dataset",
+        "dataset_root": str(tmp_path / "installed" / "custom_drive"),
+        "manifest_path": str(manifest),
+        "sequences": ["clip_001"],
+    }
+
+    monkeypatch.setattr("desktop_app.qt_main.QFileDialog.getOpenFileName", lambda *args, **kwargs: (str(manifest), ""))
+    monkeypatch.setattr(services, "import_dataset_manifest", lambda path: imported)
+
+    def fake_refresh_catalogs() -> None:
+        window.catalog["dataset_manifests"] = [imported]
+        window._fill_dataset_manifest_combo()
+
+    monkeypatch.setattr(window, "refresh_catalogs", fake_refresh_catalogs)
+
+    window.import_dataset_manifest()
+
+    assert window.dataset_catalog_combo.currentData()["id"] == "custom_drive"
+    assert window.dataset_root_edit.text() == imported["dataset_root"]
+    assert window.adapter_edit.text() == "manifest_dataset"
+    assert window.sequence_combo.currentText() == "clip_001"
+    assert "custom_drive" in window.dataset_summary.toPlainText()
+    window.close()
+
+
 def test_gui_training_preset_dispatches_existing_actions(monkeypatch) -> None:
     _ensure_app()
     window = MainWindow()

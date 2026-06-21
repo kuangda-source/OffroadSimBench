@@ -43,6 +43,8 @@ DEFAULT_LEWM_CHECKPOINT_PATH = (
 WORLD_MODEL_CONFIGS_PATH = CONFIG_ROOT / "world_model_configs.json"
 DEFAULT_WORLD_MODEL_CONFIG_ID = "johnson_valley_lewm_validated"
 TRAINING_RUN_FILENAME = "training_run.json"
+DATASET_MANIFEST_FILENAMES = ("dataset_manifest.yaml", "dataset_manifest.yml")
+DATASET_MANIFEST_DIRS = (CONFIG_ROOT / "datasets",)
 TRAINER_MANIFEST_FILENAMES = ("trainer.yaml", "trainer.yml")
 TRAINER_MANIFEST_DIRS = (CONFIG_ROOT / "trainers", ROOT / "trainers")
 NAN_TEXT = "NaN"
@@ -217,10 +219,102 @@ def catalog_snapshot() -> dict[str, list[dict[str, Any]]]:
         "navigation_tasks": navigation_task_entries(),
         "model_checkpoints": model_checkpoint_entries(),
         "world_model_configs": world_model_config_entries(),
+        "dataset_manifests": dataset_manifest_entries(),
         "training_presets": training_preset_entries(),
         "training_runs": training_run_entries(),
         "episodes": episode_summaries(),
     }
+
+
+def dataset_manifest_entries(root: str | Path | None = None) -> list[dict[str, Any]]:
+    """Discover installed manifest datasets."""
+
+    paths: list[Path] = []
+    if root is None:
+        for directory in DATASET_MANIFEST_DIRS:
+            paths.extend(_dataset_manifest_paths(directory))
+    else:
+        paths.extend(_dataset_manifest_paths(Path(root)))
+
+    rows: list[dict[str, Any]] = []
+    seen: set[Path] = set()
+    for path in paths:
+        resolved = path.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        try:
+            rows.append(load_dataset_manifest(resolved))
+        except Exception:
+            continue
+    return sorted(rows, key=lambda row: str(row.get("label") or row.get("id") or ""))
+
+
+def load_dataset_manifest(path: str | Path) -> dict[str, Any]:
+    manifest_path = Path(path).resolve()
+    if manifest_path.is_dir():
+        candidates = _dataset_manifest_paths(manifest_path)
+        if not candidates:
+            raise FileNotFoundError(f"Dataset manifest not found in {manifest_path}")
+        manifest_path = candidates[0].resolve()
+    data = load_yaml_file(manifest_path)
+    adapter = str(data.get("adapter") or "manifest_dataset").strip()
+    if adapter != "manifest_dataset":
+        raise ValueError(f"Dataset manifest adapter must be manifest_dataset: {manifest_path}")
+    dataset_id = _safe_name(str(data.get("dataset_id") or data.get("id") or manifest_path.parent.name))
+    if not dataset_id:
+        raise ValueError(f"Dataset manifest has no dataset_id: {manifest_path}")
+    sequences = data.get("sequences") if isinstance(data.get("sequences"), list) else []
+    sequence_ids = [
+        str(row.get("id") or row.get("sequence_id") or "")
+        for row in sequences
+        if isinstance(row, dict) and str(row.get("id") or row.get("sequence_id") or "")
+    ]
+    return {
+        "id": dataset_id,
+        "label": str(data.get("display_name") or data.get("label") or dataset_id),
+        "adapter": adapter,
+        "dataset_root": str(manifest_path.parent.resolve()),
+        "dataset_type": str(data.get("dataset_type") or "manifest_dataset"),
+        "manifest_path": str(manifest_path),
+        "sequences": sequence_ids,
+        "imported_from": str(data.get("imported_from") or ""),
+    }
+
+
+def import_dataset_manifest(source_path: str | Path, destination_root: str | Path | None = None) -> dict[str, Any]:
+    """Install an external dataset manifest into the project dataset catalog."""
+
+    source = Path(source_path).resolve()
+    if not source.is_file():
+        raise FileNotFoundError(f"Dataset manifest not found: {source}")
+    source_row = load_dataset_manifest(source)
+    data = load_yaml_file(source)
+    data["adapter"] = "manifest_dataset"
+    data["dataset_id"] = source_row["id"]
+    data["imported_from"] = str(source)
+    sequences = data.get("sequences") if isinstance(data.get("sequences"), list) else []
+    rewritten_sequences: list[Any] = []
+    for raw_sequence in sequences:
+        if not isinstance(raw_sequence, dict):
+            rewritten_sequences.append(raw_sequence)
+            continue
+        row = dict(raw_sequence)
+        root_value = str(row.get("root") or ".")
+        root_path = Path(root_value)
+        if not root_path.is_absolute():
+            row["root"] = str((source.parent / root_path).resolve())
+        rewritten_sequences.append(row)
+    data["sequences"] = rewritten_sequences
+    destination = Path(destination_root or CONFIG_ROOT / "datasets") / source_row["id"]
+    destination.mkdir(parents=True, exist_ok=True)
+    target = destination / "dataset_manifest.yaml"
+    try:
+        import yaml
+    except ModuleNotFoundError as exc:
+        raise RuntimeError("PyYAML is required to import dataset manifests.") from exc
+    target.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True), encoding="utf-8")
+    return load_dataset_manifest(target)
 
 
 def training_preset_entries() -> list[dict[str, Any]]:
@@ -1998,6 +2092,20 @@ def _trainer_manifest_paths(root: Path) -> list[Path]:
     paths.extend(path for path in root.glob("*.yaml") if path.is_file())
     paths.extend(path for path in root.glob("*.yml") if path.is_file())
     for name in TRAINER_MANIFEST_FILENAMES:
+        direct = root / name
+        if direct.is_file():
+            paths.append(direct)
+        paths.extend(path for path in root.glob(f"*/{name}") if path.is_file())
+    return paths
+
+
+def _dataset_manifest_paths(root: Path) -> list[Path]:
+    if root.is_file():
+        return [root] if root.name in DATASET_MANIFEST_FILENAMES else []
+    if not root.exists():
+        return []
+    paths: list[Path] = []
+    for name in DATASET_MANIFEST_FILENAMES:
         direct = root / name
         if direct.is_file():
             paths.append(direct)

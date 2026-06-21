@@ -1050,6 +1050,7 @@ class MainWindow(QMainWindow):
         self.model_config_name_edit = QLineEdit()
         self.model_config_name_edit.setPlaceholderText("Johnson Valley LE-WM validated")
 
+        self.dataset_catalog_combo = self._combo()
         self.dataset_root_edit = QLineEdit()
         self.dataset_root_edit.setPlaceholderText(r"datasets\ORFD_Dataset_ICRA2022_ZIP")
         self.sequence_combo = self._combo(editable=True)
@@ -1069,6 +1070,7 @@ class MainWindow(QMainWindow):
         self.world_model_config_edit_combo.currentIndexChanged.connect(self._sync_edit_world_model_config)
         self.beamng_model_config_combo.currentIndexChanged.connect(self._sync_beamng_world_model_config)
         self.training_preset_combo.currentIndexChanged.connect(lambda _: self._sync_training_preset_selection(force=True))
+        self.dataset_catalog_combo.currentIndexChanged.connect(lambda _: self._sync_dataset_manifest_selection())
         for edit in (
             self.dataset_root_edit,
             self.adapter_edit,
@@ -1232,9 +1234,14 @@ class MainWindow(QMainWindow):
         dataset_browse = QPushButton("选择")
         self._configure_button(dataset_browse)
         dataset_browse.clicked.connect(lambda: self._browse_dir(self.dataset_root_edit))
+        dataset_import = QPushButton("导入 dataset manifest")
+        self._configure_button(dataset_import)
+        dataset_import.clicked.connect(self.import_dataset_manifest)
         controls = self._group(
             "Dataset import and preview",
             [
+                self._field("Dataset catalog", self.dataset_catalog_combo),
+                dataset_import,
                 self._field("Dataset root", self._with_button(self.dataset_root_edit, dataset_browse)),
                 self._field("Sequence", self.sequence_combo),
                 self._field("Adapter", self.adapter_edit),
@@ -1483,6 +1490,7 @@ class MainWindow(QMainWindow):
             self.catalog.get("world_model_configs", []),
             default_id=services.DEFAULT_WORLD_MODEL_CONFIG_ID,
         )
+        self._fill_dataset_manifest_combo()
         self._fill_training_preset_combo()
         self._fill_training_run_list()
         self._fill_episode_list()
@@ -1703,6 +1711,26 @@ class MainWindow(QMainWindow):
             self.train_tiny_model()
             return
         self.model_summary.setText(_compact_json({"status": services.UNFINISHED_TEXT, "training_preset": preset}))
+
+    def import_dataset_manifest(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Import dataset manifest",
+            str(services.CONFIG_ROOT / "datasets"),
+            "Dataset manifest (dataset_manifest.yaml dataset_manifest.yml);;YAML files (*.yaml *.yml)",
+        )
+        if not path:
+            return
+        try:
+            row = services.import_dataset_manifest(path)
+        except Exception as exc:
+            self.dataset_summary.setText(_compact_json({"status": "import_failed", "message": str(exc)}))
+            self.log(f"Dataset manifest import failed: {exc}")
+            return
+        self.dataset_summary.setText(_compact_json({"status": "imported", "dataset": row}))
+        self.log(f"Dataset manifest imported: {row.get('label', row.get('id', services.NAN_TEXT))}")
+        self.refresh_catalogs()
+        self._select_dataset_manifest(str(row.get("id") or ""))
 
     def import_trainer_manifest(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -2070,6 +2098,53 @@ class MainWindow(QMainWindow):
         }
         for key, value in values.items():
             self.metric_cards[key].set_value(value)
+
+    def _fill_dataset_manifest_combo(self) -> None:
+        current = self.dataset_catalog_combo.currentData()
+        current_id = current.get("id") if isinstance(current, dict) else ""
+        self.dataset_catalog_combo.blockSignals(True)
+        self.dataset_catalog_combo.clear()
+        self.dataset_catalog_combo.addItem("Manual dataset path", {})
+        selected_index = 0
+        for row in self.catalog.get("dataset_manifests", []):
+            dataset_id = str(row.get("id") or "")
+            if not dataset_id:
+                continue
+            label = str(row.get("label") or dataset_id)
+            adapter = str(row.get("adapter") or "manifest_dataset")
+            self.dataset_catalog_combo.addItem(f"{label} ({adapter})", dict(row))
+            if dataset_id == current_id:
+                selected_index = self.dataset_catalog_combo.count() - 1
+        self.dataset_catalog_combo.setCurrentIndex(selected_index)
+        self.dataset_catalog_combo.blockSignals(False)
+
+    def _select_dataset_manifest(self, dataset_id: str) -> None:
+        if not dataset_id:
+            return
+        for index in range(self.dataset_catalog_combo.count()):
+            data = self.dataset_catalog_combo.itemData(index)
+            if isinstance(data, dict) and str(data.get("id") or "") == dataset_id:
+                self.dataset_catalog_combo.setCurrentIndex(index)
+                self._apply_dataset_manifest_row(data)
+                return
+
+    def _sync_dataset_manifest_selection(self) -> None:
+        data = self.dataset_catalog_combo.currentData()
+        if isinstance(data, dict) and data.get("id"):
+            self._apply_dataset_manifest_row(data)
+
+    def _apply_dataset_manifest_row(self, row: dict[str, Any]) -> None:
+        dataset_root = str(row.get("dataset_root") or "").strip()
+        if dataset_root:
+            self.dataset_root_edit.setText(dataset_root)
+        self.adapter_edit.setText(str(row.get("adapter") or "manifest_dataset"))
+        sequences = row.get("sequences") if isinstance(row.get("sequences"), list) else []
+        self.sequence_combo.clear()
+        for sequence_id in sequences:
+            self.sequence_combo.addItem(str(sequence_id))
+        if sequences:
+            self.sequence_combo.setCurrentIndex(0)
+        self.dataset_summary.setText(_compact_json({"dataset": row}))
 
     def _fill_training_preset_combo(self) -> None:
         current = self.training_preset_combo.currentData()

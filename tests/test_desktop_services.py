@@ -3,12 +3,44 @@ from __future__ import annotations
 import json
 import math
 import threading
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 from offroad_sim.datasets import create_mock_orfd_dataset
 from offroad_sim.tasks import load_navigation_region_task
+from offroad_sim.utils.yaml_io import load_yaml_file
 
 from desktop_app import services
+
+
+def _write_manifest_dataset(root: Path) -> Path:
+    sequence = root / "seq_001"
+    sequence.mkdir(parents=True)
+    (sequence / "poses.csv").write_text(
+        "frame_id,timestamp,x,y,z,yaw,speed\n"
+        "000001,0.0,0.0,0.0,0.0,0.0,1.0\n"
+        "000002,0.1,1.0,0.0,0.0,0.0,1.2\n",
+        encoding="utf-8",
+    )
+    (sequence / "rgb_000001.png").write_bytes(b"fake")
+    (sequence / "rgb_000002.png").write_bytes(b"fake")
+    manifest = root / "dataset_manifest.yaml"
+    manifest.write_text(
+        """
+adapter: manifest_dataset
+dataset_id: custom_drive
+display_name: Custom Drive
+dataset_type: camera_pose
+sequences:
+  - id: clip_001
+    root: seq_001
+    pose_csv: poses.csv
+    assets:
+      front_rgb: rgb_{frame_id}.png
+""",
+        encoding="utf-8",
+    )
+    return manifest
 
 
 def test_desktop_catalog_snapshot_exposes_runtime_choices() -> None:
@@ -22,8 +54,33 @@ def test_desktop_catalog_snapshot_exposes_runtime_choices() -> None:
     assert "navigation_tasks" in catalog
     assert "model_checkpoints" in catalog
     assert "world_model_configs" in catalog
+    assert "dataset_manifests" in catalog
     assert "training_presets" in catalog
     assert "training_runs" in catalog
+
+
+def test_import_dataset_manifest_rewrites_relative_roots_and_registers_dataset(tmp_path) -> None:
+    source_root = tmp_path / "external_dataset"
+    source = _write_manifest_dataset(source_root)
+    destination_root = tmp_path / "configs" / "datasets"
+
+    row = services.import_dataset_manifest(source, destination_root=destination_root)
+
+    installed_root = destination_root / "custom_drive"
+    installed_manifest = installed_root / "dataset_manifest.yaml"
+    copied = load_yaml_file(installed_manifest)
+    assert row["id"] == "custom_drive"
+    assert row["label"] == "Custom Drive"
+    assert row["adapter"] == "manifest_dataset"
+    assert row["dataset_root"] == str(installed_root.resolve())
+    assert copied["imported_from"] == str(source.resolve())
+    assert copied["sequences"][0]["root"] == str((source_root / "seq_001").resolve())
+
+    entries = services.dataset_manifest_entries(destination_root)
+    assert entries[0]["id"] == "custom_drive"
+    inspected = services.inspect_dataset(row["dataset_root"], adapter=row["adapter"], sequence_id="clip_001")
+    assert inspected["dataset_id"] == "custom_drive"
+    assert inspected["frame_count"] == 2
 
 
 def test_training_preset_entries_include_available_and_future_models() -> None:
