@@ -1035,6 +1035,7 @@ class MainWindow(QMainWindow):
         self.algorithm_combo = self._combo()
         self.demo_preset_combo = self._combo()
         self.demo_preset_combo.addItem("Johnson Valley LE-WM navigation", "johnson_valley_lewm_navigation")
+        self.training_config_combo = self._combo()
         self.training_preset_combo = self._combo()
         self.training_preset_summary = QTextEdit()
         self.training_preset_summary.setReadOnly(True)
@@ -1047,6 +1048,8 @@ class MainWindow(QMainWindow):
         self.trainer_params_edit.setPlaceholderText('{"epochs": 10, "batch_size": 16}')
         self.trainer_params_edit.setFixedHeight(96)
         self._trainer_params_autofill = ""
+        self.training_config_name_edit = QLineEdit()
+        self.training_config_name_edit.setPlaceholderText("Custom training config")
         self.model_config_name_edit = QLineEdit()
         self.model_config_name_edit.setPlaceholderText("Johnson Valley LE-WM validated")
 
@@ -1069,6 +1072,7 @@ class MainWindow(QMainWindow):
         self.world_model_config_combo.currentIndexChanged.connect(self._sync_home_world_model_config)
         self.world_model_config_edit_combo.currentIndexChanged.connect(self._sync_edit_world_model_config)
         self.beamng_model_config_combo.currentIndexChanged.connect(self._sync_beamng_world_model_config)
+        self.training_config_combo.currentIndexChanged.connect(lambda _: self._sync_training_config_selection())
         self.training_preset_combo.currentIndexChanged.connect(lambda _: self._sync_training_preset_selection(force=True))
         self.dataset_catalog_combo.currentIndexChanged.connect(lambda _: self._sync_dataset_manifest_selection())
         for edit in (
@@ -1076,6 +1080,7 @@ class MainWindow(QMainWindow):
             self.adapter_edit,
             self.stablewm_hdf5_edit,
             self.model_path_edit,
+            self.training_config_name_edit,
             self.model_config_name_edit,
             self.task_path_edit,
         ):
@@ -1280,6 +1285,9 @@ class MainWindow(QMainWindow):
         training_controls = self._group(
             "Model and algorithm training",
             [
+                self._field("Training config", self.training_config_combo),
+                self._field("Config name", self.training_config_name_edit),
+                self._action_button("Save training config", self.save_training_config),
                 self._field("Training preset", self.training_preset_combo),
                 trainer_import,
                 self._section_label("Training config summary"),
@@ -1492,6 +1500,7 @@ class MainWindow(QMainWindow):
         )
         self._fill_dataset_manifest_combo()
         self._fill_training_preset_combo()
+        self._fill_training_config_combo()
         self._fill_training_run_list()
         self._fill_episode_list()
         self._refresh_planner_summary()
@@ -1798,6 +1807,42 @@ class MainWindow(QMainWindow):
         self.refresh_catalogs()
         self._select_world_model_config(str(row["id"]))
 
+    def save_training_config(self) -> None:
+        label = self.training_config_name_edit.text().strip()
+        selected = self.training_config_combo.currentData()
+        if not label and isinstance(selected, dict):
+            label = str(selected.get("label") or selected.get("id") or "Training Config")
+        if not label:
+            label = "Training Config"
+        preset = self.training_preset_combo.currentData()
+        preset_id = str(preset.get("id") if isinstance(preset, dict) else self.training_preset_combo.currentText())
+        try:
+            parameters = self._trainer_parameters_from_text()
+        except ValueError as exc:
+            self.model_summary.setText(_compact_json({"status": "invalid_parameters", "message": str(exc)}))
+            self.log(f"Training config save failed: {exc}")
+            return
+        output_path = self.stablewm_hdf5_edit.text().strip() if preset_id == "stablewm_hdf5" else self._path_combo_value(self.home_model_combo).strip()
+        try:
+            row = services.save_training_config(
+                config_id=label,
+                label=label,
+                training_preset_id=preset_id,
+                dataset_root=self.dataset_root_edit.text().strip(),
+                adapter=self.adapter_edit.text().strip(),
+                sequence_id=self.sequence_combo.currentText().strip(),
+                output_path=output_path,
+                parameters=parameters,
+            )
+        except Exception as exc:
+            self.model_summary.setText(_compact_json({"status": "save_failed", "message": str(exc)}))
+            self.log(f"Training config save failed: {exc}")
+            return
+        self.model_summary.setText(_compact_json({"status": "saved", "training_config": row}))
+        self.log(f"Training config saved: {row['label']}")
+        self.refresh_catalogs()
+        self._select_training_config(str(row["id"]))
+
     def train_tiny_model(self) -> None:
         root = self.dataset_root_edit.text().strip()
         if not root:
@@ -2098,6 +2143,66 @@ class MainWindow(QMainWindow):
         }
         for key, value in values.items():
             self.metric_cards[key].set_value(value)
+
+    def _fill_training_config_combo(self) -> None:
+        current = self.training_config_combo.currentData()
+        current_id = current.get("id") if isinstance(current, dict) else ""
+        self.training_config_combo.blockSignals(True)
+        self.training_config_combo.clear()
+        self.training_config_combo.addItem("Manual training config", {})
+        selected_index = 0
+        for row in self.catalog.get("training_configs", []):
+            config_id = str(row.get("id") or "")
+            if not config_id:
+                continue
+            label = str(row.get("label") or config_id)
+            preset = str(row.get("training_preset_id") or "")
+            suffix = f" ({preset})" if preset else ""
+            self.training_config_combo.addItem(f"{label}{suffix}", dict(row))
+            if config_id == current_id:
+                selected_index = self.training_config_combo.count() - 1
+        self.training_config_combo.setCurrentIndex(selected_index)
+        self.training_config_combo.blockSignals(False)
+
+    def _select_training_config(self, config_id: str) -> None:
+        if not config_id:
+            return
+        for index in range(self.training_config_combo.count()):
+            data = self.training_config_combo.itemData(index)
+            if isinstance(data, dict) and str(data.get("id") or "") == config_id:
+                self.training_config_combo.setCurrentIndex(index)
+                self._apply_training_config_row(data)
+                return
+
+    def _sync_training_config_selection(self) -> None:
+        data = self.training_config_combo.currentData()
+        if isinstance(data, dict) and data.get("id"):
+            self._apply_training_config_row(data)
+
+    def _apply_training_config_row(self, row: dict[str, Any]) -> None:
+        self.training_config_name_edit.setText(str(row.get("label") or ""))
+        dataset_root = str(row.get("dataset_root") or "").strip()
+        if dataset_root:
+            self.dataset_root_edit.setText(dataset_root)
+        self.adapter_edit.setText(str(row.get("adapter") or ""))
+        sequence_id = str(row.get("sequence_id") or "")
+        if sequence_id:
+            self.sequence_combo.setCurrentText(sequence_id)
+        preset_id = str(row.get("training_preset_id") or "")
+        if preset_id:
+            self._select_training_preset(preset_id)
+        output_path = str(row.get("output_path") or "").strip()
+        if output_path:
+            if preset_id == "stablewm_hdf5":
+                self.stablewm_hdf5_edit.setText(output_path)
+            else:
+                self.home_model_combo.setCurrentText(output_path)
+                self.model_path_edit.setText(output_path)
+        parameters = row.get("parameters") if isinstance(row.get("parameters"), dict) else {}
+        text = json.dumps(parameters, indent=2, ensure_ascii=False) if parameters else "{}"
+        self._trainer_params_autofill = text
+        self.trainer_params_edit.setPlainText(text)
+        self.model_summary.setText(_compact_json({"training_config": row}))
 
     def _fill_dataset_manifest_combo(self) -> None:
         current = self.dataset_catalog_combo.currentData()

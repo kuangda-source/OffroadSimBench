@@ -42,6 +42,7 @@ DEFAULT_LEWM_CHECKPOINT_PATH = (
 )
 WORLD_MODEL_CONFIGS_PATH = CONFIG_ROOT / "world_model_configs.json"
 DEFAULT_WORLD_MODEL_CONFIG_ID = "johnson_valley_lewm_validated"
+TRAINING_CONFIGS_PATH = CONFIG_ROOT / "training_configs.json"
 TRAINING_RUN_FILENAME = "training_run.json"
 DATASET_MANIFEST_FILENAMES = ("dataset_manifest.yaml", "dataset_manifest.yml")
 DATASET_MANIFEST_DIRS = (CONFIG_ROOT / "datasets",)
@@ -220,6 +221,7 @@ def catalog_snapshot() -> dict[str, list[dict[str, Any]]]:
         "model_checkpoints": model_checkpoint_entries(),
         "world_model_configs": world_model_config_entries(),
         "dataset_manifests": dataset_manifest_entries(),
+        "training_configs": training_config_entries(),
         "training_presets": training_preset_entries(),
         "training_runs": training_run_entries(),
         "episodes": episode_summaries(),
@@ -751,6 +753,78 @@ def save_world_model_config(
     )
     config_path = Path(path or WORLD_MODEL_CONFIGS_PATH)
     rows = [item for item in world_model_config_entries(config_path) if item["id"] != row["id"]]
+    rows.append(row)
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(json.dumps({"configs": rows}, indent=2, ensure_ascii=False), encoding="utf-8")
+    return row
+
+
+def training_config_entries(path: str | Path | None = None) -> list[dict[str, Any]]:
+    config_path = Path(path or TRAINING_CONFIGS_PATH)
+    rows: dict[str, dict[str, Any]] = {
+        "orfd_stablewm_hdf5": _training_config_row(
+            {
+                "id": "orfd_stablewm_hdf5",
+                "label": "ORFD StableWM HDF5 export",
+                "training_preset_id": "stablewm_hdf5",
+                "dataset_root": "datasets/ORFD_Dataset_ICRA2022_ZIP",
+                "adapter": "orfd",
+                "sequence_id": "",
+                "output_path": "outputs/stablewm/orfd_gui.h5",
+                "parameters": {},
+            }
+        ),
+        "orfd_tiny_world_model": _training_config_row(
+            {
+                "id": "orfd_tiny_world_model",
+                "label": "ORFD tiny world model",
+                "training_preset_id": "tiny_world_model",
+                "dataset_root": "datasets/ORFD_Dataset_ICRA2022_ZIP",
+                "adapter": "orfd",
+                "sequence_id": "",
+                "output_path": "outputs/models/orfd_tiny_world_model",
+                "parameters": {},
+            }
+        ),
+    }
+    if config_path.exists():
+        payload = _read_json(config_path)
+        raw_rows: Any = payload.get("configs", payload) if isinstance(payload, dict) else payload
+        if isinstance(raw_rows, list):
+            for raw in raw_rows:
+                if not isinstance(raw, dict):
+                    continue
+                row = _training_config_row(raw)
+                rows[row["id"]] = row
+    return sorted(rows.values(), key=lambda row: str(row.get("label") or row.get("id") or ""))
+
+
+def save_training_config(
+    *,
+    config_id: str = "",
+    label: str = "",
+    training_preset_id: str = "",
+    dataset_root: str = "",
+    adapter: str = "",
+    sequence_id: str = "",
+    output_path: str = "",
+    parameters: dict[str, Any] | None = None,
+    path: str | Path | None = None,
+) -> dict[str, Any]:
+    row = _training_config_row(
+        {
+            "id": config_id or label,
+            "label": label or config_id,
+            "training_preset_id": training_preset_id or "tiny_world_model",
+            "dataset_root": dataset_root,
+            "adapter": adapter,
+            "sequence_id": sequence_id,
+            "output_path": output_path,
+            "parameters": parameters or {},
+        }
+    )
+    config_path = Path(path or TRAINING_CONFIGS_PATH)
+    rows = [item for item in training_config_entries(config_path) if item["id"] != row["id"]]
     rows.append(row)
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text(json.dumps({"configs": rows}, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -2074,6 +2148,22 @@ def _world_model_config_row(raw: dict[str, Any]) -> dict[str, Any]:
         "algorithm": str(raw.get("algorithm") or "stablewm_lewm"),
         "world_model": str(raw.get("world_model") or "le_wm"),
         "model_path": str(raw.get("model_path") or ""),
+    }
+
+
+def _training_config_row(raw: dict[str, Any]) -> dict[str, Any]:
+    config_id = _safe_name(str(raw.get("id") or raw.get("label") or "training_config")).lower()
+    label = str(raw.get("label") or config_id)
+    parameters = raw.get("parameters") if isinstance(raw.get("parameters"), dict) else {}
+    return {
+        "id": config_id,
+        "label": label,
+        "training_preset_id": str(raw.get("training_preset_id") or raw.get("preset_id") or "tiny_world_model"),
+        "dataset_root": str(raw.get("dataset_root") or ""),
+        "adapter": str(raw.get("adapter") or ""),
+        "sequence_id": str(raw.get("sequence_id") or ""),
+        "output_path": str(raw.get("output_path") or raw.get("model_path") or raw.get("hdf5_path") or ""),
+        "parameters": dict(parameters),
     }
 
 

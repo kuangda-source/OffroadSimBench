@@ -201,9 +201,11 @@ def test_gui_dataset_training_page_exposes_training_studio_controls() -> None:
     labels = [label.text() for label in dataset_page.findChildren(QLabel)]
     buttons = [button.text() for button in dataset_page.findChildren(QPushButton)]
 
+    assert "Training config" in labels
     assert "Training preset" in labels
     assert "Training config summary" in labels
     assert "Latest metric curve" in labels
+    assert "Save training config" in buttons
     assert "Start training/export" in buttons
     assert hasattr(window, "training_preset_summary")
     assert hasattr(window, "training_run_list")
@@ -317,6 +319,31 @@ def test_gui_imports_dataset_manifest(monkeypatch, tmp_path) -> None:
     assert window.adapter_edit.text() == "manifest_dataset"
     assert window.sequence_combo.currentText() == "clip_001"
     assert "custom_drive" in window.dataset_summary.toPlainText()
+    window.close()
+
+
+def test_gui_saves_and_applies_training_config(monkeypatch, tmp_path) -> None:
+    _ensure_app()
+    monkeypatch.setattr(services, "TRAINING_CONFIGS_PATH", tmp_path / "training_configs.json")
+    window = MainWindow()
+    window.training_config_name_edit.setText("Custom Tiny Train")
+    window.dataset_root_edit.setText("D:/datasets/custom_drive")
+    window.adapter_edit.setText("manifest_dataset")
+    window.sequence_combo.setCurrentText("clip_001")
+    window.home_model_combo.setCurrentText("outputs/models/custom_tiny")
+    window._select_training_preset("tiny_world_model")
+    window.trainer_params_edit.setPlainText('{"epochs": 5}')
+
+    window.save_training_config()
+
+    data = window.training_config_combo.currentData()
+    assert data["id"] == "custom_tiny_train"
+    assert data["training_preset_id"] == "tiny_world_model"
+    assert window.dataset_root_edit.text() == "D:/datasets/custom_drive"
+    assert window.adapter_edit.text() == "manifest_dataset"
+    assert window.sequence_combo.currentText() == "clip_001"
+    assert window.home_model_combo.currentText() == "outputs/models/custom_tiny"
+    assert '"epochs": 5' in window.trainer_params_edit.toPlainText()
     window.close()
 
 

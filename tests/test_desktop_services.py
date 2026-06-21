@@ -55,6 +55,7 @@ def test_desktop_catalog_snapshot_exposes_runtime_choices() -> None:
     assert "model_checkpoints" in catalog
     assert "world_model_configs" in catalog
     assert "dataset_manifests" in catalog
+    assert "training_configs" in catalog
     assert "training_presets" in catalog
     assert "training_runs" in catalog
 
@@ -167,6 +168,38 @@ def test_world_model_config_save_and_list(tmp_path) -> None:
     assert row["algorithm"] == "stablewm_lewm"
     assert row["world_model"] == "le_wm"
     assert row["model_path"] == "outputs/region_navigation/model/lewm_cost_object.ckpt"
+
+
+def test_training_config_save_and_list(tmp_path) -> None:
+    config_path = tmp_path / "training_configs.json"
+
+    defaults = services.training_config_entries(config_path)
+    default_ids = {row["id"] for row in defaults}
+    assert "orfd_stablewm_hdf5" in default_ids
+    assert "orfd_tiny_world_model" in default_ids
+
+    saved = services.save_training_config(
+        config_id="My Custom Train",
+        label="My Custom Train",
+        training_preset_id="echo_trainer",
+        dataset_root="D:/datasets/custom_drive",
+        adapter="manifest_dataset",
+        sequence_id="clip_001",
+        output_path="outputs/models/custom_echo",
+        parameters={"epochs": 4, "batch_size": 8},
+        path=config_path,
+    )
+    rows = services.training_config_entries(config_path)
+    row = next(item for item in rows if item["id"] == "my_custom_train")
+
+    assert saved["id"] == "my_custom_train"
+    assert row["label"] == "My Custom Train"
+    assert row["training_preset_id"] == "echo_trainer"
+    assert row["dataset_root"] == "D:/datasets/custom_drive"
+    assert row["adapter"] == "manifest_dataset"
+    assert row["sequence_id"] == "clip_001"
+    assert row["output_path"] == "outputs/models/custom_echo"
+    assert row["parameters"] == {"epochs": 4, "batch_size": 8}
 
 
 def test_desktop_services_list_navigation_tasks_and_checkpoints(tmp_path) -> None:
