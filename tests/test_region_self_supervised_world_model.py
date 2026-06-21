@@ -229,3 +229,46 @@ def test_region_self_supervised_world_model_stops_when_collection_makes_no_goal_
     assert training_record["status"] == "collection_insufficient"
     assert training_record["metrics"]["collection_progress_ratio"] < 0.5
     assert training_record["summary"]["quality_gate"]["reason"] == "collection_goal_progress_below_threshold"
+
+
+def test_region_world_model_evaluation_loads_existing_model_without_training(tmp_path: Path) -> None:
+    task_path = tmp_path / "task.yaml"
+    _write_task(task_path)
+    evaluation_episode = _save_episode(
+        tmp_path / "evaluation",
+        [(2.0, 2.0, 0.0, 0.5), (20.0, 18.0, 0.4, 2.0), (34.0, 34.0, 0.6, 1.0)],
+    )
+    seen: dict[str, object] = {}
+
+    def fake_run_episode(**kwargs):
+        seen.update(kwargs)
+
+        class Result:
+            def to_dict(self):
+                return {
+                    "episode_id": "eval",
+                    "episode_path": str(evaluation_episode),
+                    "metrics": {"horizontal_distance_traveled": 40.0, "collision_count": 0, "drive_mode": "manual"},
+                }
+
+        return Result()
+
+    with patch("desktop_app.services.run_episode", side_effect=fake_run_episode):
+        payload = services.run_region_world_model_evaluation(
+            services.RegionWorldModelEvaluationRequest(
+                task_path=str(task_path),
+                world_model_type="tiny_learned",
+                world_model_path=str(tmp_path / "model"),
+                output_dir=str(tmp_path / "out"),
+                eval_steps=20,
+                close_beamng=True,
+            )
+        )
+
+    assert seen["agent_name"] == "world_model_direct"
+    assert seen["agent_options"]["world_model_name"] == "tiny_learned"
+    assert seen["agent_options"]["world_model_path"] == str(tmp_path / "model")
+    assert "route" not in seen["scenario"]["metadata"]["beamng"]
+    assert payload["status"] == "completed"
+    assert payload["acceptance"]["goal_success"] is True
+    assert payload["region_navigation"]["evaluation_agent"] == "world_model_direct"

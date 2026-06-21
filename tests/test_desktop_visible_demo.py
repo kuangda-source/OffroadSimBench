@@ -536,6 +536,29 @@ def test_gui_pipeline_finished_reads_closed_loop_evaluation() -> None:
     window.close()
 
 
+def test_gui_pipeline_finished_registers_self_supervised_world_model_config(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(services, "WORLD_MODEL_CONFIGS_PATH", tmp_path / "world_model_configs.json")
+    _ensure_app()
+    window = MainWindow()
+
+    window._pipeline_finished(
+        {
+            "status": "completed",
+            "model_dir": "outputs/region_self_supervised/nav_demo/model",
+            "task": {"task_id": "nav_demo"},
+            "training": {"status": "completed", "model_type": "tiny_learned"},
+            "evaluation": {"metrics": {"steps": 12}, "episode_path": ""},
+        }
+    )
+
+    row = window.world_model_config_combo.currentData()
+    assert row["algorithm"] == "world_model_direct"
+    assert row["world_model"] == "tiny_learned"
+    assert row["model_path"] == "outputs/region_self_supervised/nav_demo/model"
+    assert "nav_demo" in row["id"]
+    window.close()
+
+
 def test_gui_region_navigation_loop_uses_task_path(monkeypatch) -> None:
     _ensure_app()
     window = MainWindow()
@@ -606,6 +629,38 @@ def test_gui_home_start_uses_selected_task_and_checkpoint(tmp_path, monkeypatch)
     assert captured["request"].algorithm_model_path == "outputs/region_navigation/model/lewm_cost_object.ckpt"
     assert captured["request"].planner == "navigation_mpc"
     assert captured["request"].collect_steps >= 900
+    assert captured["request"].eval_steps >= 900
+    assert captured["request"].step_delay_sec == 0.02
+    assert captured["request"].close_beamng is False
+    window.close()
+
+
+def test_gui_home_start_uses_direct_world_model_evaluation_for_tiny_model(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(services, "WORLD_MODEL_CONFIGS_PATH", tmp_path / "world_model_configs.json")
+    services.save_world_model_config(
+        config_id="tiny_direct",
+        label="Tiny Direct",
+        algorithm="world_model_direct",
+        world_model="tiny_learned",
+        model_path="outputs/region_self_supervised/model",
+    )
+    _ensure_app()
+    window = MainWindow()
+    window.settings.max_steps = 9
+    window.home_task_combo.setCurrentText("configs/tasks/beamng_johnson_valley_nav_test.yaml")
+    window._select_world_model_config("tiny_direct")
+    captured: dict[str, services.RegionWorldModelEvaluationRequest] = {}
+
+    monkeypatch.setattr(services, "run_region_world_model_evaluation", lambda request: captured.setdefault("request", request))
+    monkeypatch.setattr(services, "run_region_navigation_closed_loop", lambda request: captured.setdefault("wrong_request", request))
+    monkeypatch.setattr(window, "_run_task", lambda task, callback, label, **kwargs: task())
+
+    window.run_home_region_model_test()
+
+    assert "wrong_request" not in captured
+    assert captured["request"].task_path == "configs/tasks/beamng_johnson_valley_nav_test.yaml"
+    assert captured["request"].world_model_type == "tiny_learned"
+    assert captured["request"].world_model_path == "outputs/region_self_supervised/model"
     assert captured["request"].eval_steps >= 900
     assert captured["request"].step_delay_sec == 0.02
     assert captured["request"].close_beamng is False

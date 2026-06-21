@@ -177,6 +177,27 @@ class RegionSelfSupervisedWorldModelRequest:
 
 
 @dataclass(slots=True)
+class RegionWorldModelEvaluationRequest:
+    task_path: str
+    world_model_type: str = "tiny_learned"
+    world_model_path: str = ""
+    vehicle: str = "configs/vehicles/ugv_medium.yaml"
+    output_dir: str = ""
+    eval_steps: int = 1000
+    seed: int = 7
+    planner: str = "navigation_mpc"
+    planner_horizon: int = 6
+    planner_samples: int = 32
+    planner_iterations: int = 3
+    evaluation_agent: str = "world_model_direct"
+    beamng_gfx: str = "vk"
+    close_beamng: bool = True
+    step_delay_sec: float = 0.0
+    pre_run_hold_sec: float = 0.0
+    post_run_hold_sec: float = 0.0
+
+
+@dataclass(slots=True)
 class ManualNavigationTaskRequest:
     output_path: str
     task_id: str = "manual_region_nav"
@@ -1621,6 +1642,55 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
         "training_run_path": training_run["path"],
     }
     summary_path = output_dir / "region_self_supervised_summary.json"
+    summary_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    payload["summary_path"] = str(summary_path.resolve())
+    return payload
+
+
+def run_region_world_model_evaluation(request: RegionWorldModelEvaluationRequest) -> dict[str, Any]:
+    task = load_navigation_region_task(request.task_path)
+    if not str(request.world_model_path or "").strip():
+        raise ValueError("world_model_path is required for direct region world-model evaluation.")
+    stamp = time.strftime("%Y%m%dT%H%M%S")
+    output_dir = Path(request.output_dir or ROOT / "outputs" / "region_world_model_eval" / _safe_name(task.task_id) / stamp)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    scenario = _route_free_region_scenario(task.to_beamng_scenario(mode="evaluation"))
+    evaluation = _run_region_beamng_episode(
+        scenario=scenario,
+        vehicle=request.vehicle,
+        max_steps=min(max(1, int(request.eval_steps)), task.max_steps),
+        seed=request.seed,
+        agent_name=request.evaluation_agent,
+        world_model_type=request.world_model_type,
+        world_model_path=request.world_model_path,
+        planner=request.planner,
+        planner_horizon=request.planner_horizon,
+        planner_samples=request.planner_samples,
+        planner_iterations=request.planner_iterations,
+        record=True,
+        beamng_gfx=request.beamng_gfx,
+        pre_run_hold_sec=request.pre_run_hold_sec,
+        step_delay_sec=request.step_delay_sec,
+        post_run_hold_sec=request.post_run_hold_sec,
+        close_beamng=request.close_beamng,
+    )
+    acceptance = _navigation_acceptance(evaluation, task)
+    region_navigation = evaluation.get("region_navigation", {}) if isinstance(evaluation.get("region_navigation"), dict) else {}
+    payload: dict[str, Any] = {
+        "status": "completed",
+        "task": task.to_dict(),
+        "output_dir": str(output_dir.resolve()),
+        "model_dir": str(Path(request.world_model_path).resolve()),
+        "evaluation": evaluation,
+        "acceptance": acceptance,
+        "region_navigation": {
+            **region_navigation,
+            "evaluation_agent": request.evaluation_agent,
+            "route_free": True,
+            "evaluation_route_mode": "route_free",
+        },
+    }
+    summary_path = output_dir / "region_world_model_evaluation_summary.json"
     summary_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
     payload["summary_path"] = str(summary_path.resolve())
     return payload

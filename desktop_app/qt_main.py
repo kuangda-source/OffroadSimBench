@@ -1636,6 +1636,37 @@ class MainWindow(QMainWindow):
         if not task_path:
             self.log("开始测试需要先选择 BeamNG region task。")
             return
+        if algorithm == "world_model_direct" or world_model == "tiny_learned":
+            if not model_path:
+                self.log("direct world-model evaluation requires a model path.")
+                return
+            self.task_path_edit.setText(task_path)
+            self.model_path_edit.setText(model_path)
+            self._select_combo_value(self.agent_combo, "world_model_direct")
+            self._select_combo_value(self.world_model_combo, world_model)
+            self._select_combo_value(self.planner_combo, "navigation_mpc")
+            request = services.RegionWorldModelEvaluationRequest(
+                task_path=task_path,
+                world_model_type=world_model,
+                world_model_path=model_path,
+                eval_steps=max(int(self.settings.max_steps), 1000),
+                seed=self.settings.seed,
+                planner="navigation_mpc",
+                planner_horizon=self.settings.planner_horizon,
+                planner_samples=self.settings.planner_samples,
+                planner_iterations=self.settings.planner_iterations,
+                close_beamng=False,
+                step_delay_sec=0.02,
+                post_run_hold_sec=20.0,
+            )
+            self.log(f"direct world-model evaluation: task={task_path}, world_model={world_model}, model={model_path}")
+            self._run_task(
+                lambda: services.run_region_world_model_evaluation(request),
+                self._pipeline_finished,
+                "home direct world model test failed",
+                task_label="direct world-model evaluation",
+            )
+            return
         if algorithm == "stablewm_lewm" and not model_path:
             self.log("开始测试需要先选择模型 checkpoint。")
             return
@@ -2049,6 +2080,7 @@ class MainWindow(QMainWindow):
         self.model_path_edit.setText(str(payload.get("model_dir", "")))
         if payload.get("model_dir"):
             self.home_model_combo.setCurrentText(str(payload.get("model_dir", "")))
+        saved_config_id = self._register_pipeline_world_model_config(payload)
         replay = payload.get("dataset_replay") if isinstance(payload.get("dataset_replay"), dict) else {}
         beamng = payload.get("beamng") if isinstance(payload.get("beamng"), dict) else None
         evaluation = payload.get("evaluation") if isinstance(payload.get("evaluation"), dict) else None
@@ -2062,6 +2094,27 @@ class MainWindow(QMainWindow):
         self._set_training_run_views(payload)
         self.log("流程完成")
         self.refresh_catalogs()
+        if saved_config_id:
+            self._select_world_model_config(saved_config_id)
+
+    def _register_pipeline_world_model_config(self, payload: dict[str, Any]) -> str:
+        if str(payload.get("status") or "") != "completed":
+            return ""
+        model_dir = str(payload.get("model_dir") or "").strip()
+        training = payload.get("training") if isinstance(payload.get("training"), dict) else {}
+        world_model = str(training.get("model_type") or "").strip()
+        if not model_dir or world_model != "tiny_learned" or str(training.get("status") or "completed") != "completed":
+            return ""
+        task = payload.get("task") if isinstance(payload.get("task"), dict) else {}
+        task_id = str(task.get("task_id") or "self_supervised_world_model")
+        row = services.save_world_model_config(
+            config_id=f"{task_id}_self_supervised_world_model",
+            label=f"{task_id} self-supervised world model",
+            algorithm="world_model_direct",
+            world_model=world_model,
+            model_path=model_dir,
+        )
+        return str(row.get("id") or "")
 
     def _dataset_inspected(self, payload: dict[str, Any]) -> None:
         self.dataset_info = payload
