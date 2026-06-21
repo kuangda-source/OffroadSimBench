@@ -125,3 +125,6 @@ def test_region_self_supervised_world_model_trains_and_evaluates_without_route(t
     assert training_record["artifact_path"] == payload["model_dir"]
     assert training_record["metrics"]["goal_success"] is True
     assert training_record["metrics"]["min_goal_distance"] <= 5.0
+    assert training_record["metrics"]["collection_min_goal_distance"] > 30.0
+    assert training_record["metrics"]["collection_distance_traveled"] == 8.0
+    assert training_record["history"]["collection_min_goal_distance"] == [training_record["metrics"]["collection_min_goal_distance"]]

@@ -1400,6 +1400,9 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
     episode_path = collection.get("episode_path")
     if not episode_path:
         raise RuntimeError("Region self-supervised collection did not produce an episode path.")
+    collection_acceptance = _navigation_acceptance(collection, task)
+    collection_metrics = collection.get("metrics", {}) if isinstance(collection.get("metrics"), dict) else {}
+    collection_distance = _float_or_nan(collection_metrics.get("horizontal_distance_traveled"))
 
     sequence = _episode_trace_to_dataset_sequence(episode_path, task)
     model = TinyLearnedWorldModel.fit([sequence])
@@ -1463,6 +1466,19 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
             "min_goal_distance": acceptance.get("min_goal_distance"),
             "final_goal_distance": acceptance.get("final_goal_distance"),
             "collision_count": acceptance.get("collision_count"),
+            "train_rmse": model.metadata.get("train_rmse"),
+            "train_mse": model.metadata.get("train_mse"),
+            "collection_goal_reached": bool(collection_acceptance.get("goal_reached")),
+            "collection_min_goal_distance": collection_acceptance.get("min_goal_distance"),
+            "collection_final_goal_distance": collection_acceptance.get("final_goal_distance"),
+            "collection_distance_traveled": collection_distance,
+            "collection_collision_count": collection_acceptance.get("collision_count"),
+        },
+        history={
+            "train_rmse": [model.metadata.get("train_rmse")],
+            "train_mse": [model.metadata.get("train_mse")],
+            "collection_min_goal_distance": [collection_acceptance.get("min_goal_distance")],
+            "evaluation_min_goal_distance": [acceptance.get("min_goal_distance")],
         },
         parameters={
             "world_model_type": request.world_model_type,
@@ -1473,7 +1489,11 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
             "evaluation_agent": request.evaluation_agent,
             "evaluation_route_mode": "route_free" if evaluation_route_free else "task_route",
         },
-        summary={"task_path": str(Path(request.task_path).resolve()), "acceptance": acceptance},
+        summary={
+            "task_path": str(Path(request.task_path).resolve()),
+            "collection_acceptance": collection_acceptance,
+            "acceptance": acceptance,
+        },
     )
     payload: dict[str, Any] = {
         "status": "completed",
