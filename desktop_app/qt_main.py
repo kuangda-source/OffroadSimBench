@@ -1327,6 +1327,12 @@ class MainWindow(QMainWindow):
         run_list_layout.addWidget(self.training_run_list, 1)
         runs_layout.addWidget(run_list_box, 1)
         run_summary_box, run_summary_layout = self._new_group("Run details")
+        self.training_run_overview = QTextEdit()
+        self.training_run_overview.setReadOnly(True)
+        self.training_run_overview.setMaximumHeight(150)
+        self.training_run_overview.setPlaceholderText("Training run summary: NaN")
+        run_summary_layout.addWidget(self._section_label("Run summary"))
+        run_summary_layout.addWidget(self.training_run_overview)
         self.training_curve = TrainingCurveWidget()
         run_summary_layout.addWidget(self._section_label("Metric curve"))
         run_summary_layout.addWidget(self.training_curve)
@@ -2052,12 +2058,7 @@ class MainWindow(QMainWindow):
             path = metrics_source.get("episode_path")
             self.trajectory.set_trace(services.load_episode_trace(path) if path else [])
         self.model_summary.setText(_compact_json(payload))
-        if hasattr(self, "training_run_summary"):
-            self.training_run_summary.setText(_compact_json(payload))
-        if hasattr(self, "latest_training_curve"):
-            history = payload.get("history") if isinstance(payload.get("history"), dict) else {}
-            metrics = payload.get("metrics") if isinstance(payload.get("metrics"), dict) else {}
-            self.latest_training_curve.set_history(services.training_metric_history({"history": history, "metrics": metrics}))
+        self._set_training_run_views(payload)
         self.log("流程完成")
         self.refresh_catalogs()
 
@@ -2090,20 +2091,14 @@ class MainWindow(QMainWindow):
         if payload.get("output_dir"):
             self.home_model_combo.setCurrentText(str(payload.get("output_dir", "")))
         self.model_summary.setText(_compact_json(payload))
-        if hasattr(self, "training_run_summary"):
-            self.training_run_summary.setText(_compact_json(payload))
-        if hasattr(self, "latest_training_curve"):
-            history = payload.get("history") if isinstance(payload.get("history"), dict) else {}
-            metrics = payload.get("metrics") if isinstance(payload.get("metrics"), dict) else {}
-            self.latest_training_curve.set_history(services.training_metric_history({"history": history, "metrics": metrics}))
+        self._set_training_run_views(payload)
         self.log(f"模型训练完成: {payload.get('model_path', payload.get('checkpoint_path', services.NAN_TEXT))}")
         self.refresh_catalogs()
 
     def _hdf5_exported(self, payload: dict[str, Any]) -> None:
         self.stablewm_hdf5_edit.setText(str(payload.get("output_hdf5", "")))
         self.dataset_summary.setText(_compact_json(payload))
-        if hasattr(self, "training_run_summary"):
-            self.training_run_summary.setText(_compact_json(payload))
+        self._set_training_run_views(payload)
         self.log(f"HDF5 导出完成: {payload.get('output_hdf5', services.NAN_TEXT)}")
 
         self.refresh_catalogs()
@@ -2360,17 +2355,26 @@ class MainWindow(QMainWindow):
             return
         data = item.data(Qt.ItemDataRole.UserRole)
         run = dict(data) if isinstance(data, dict) else {}
-        self.training_run_summary.setText(_compact_json(run))
-        if hasattr(self, "training_curve"):
-            self.training_curve.set_history(services.training_metric_history(run))
-        if hasattr(self, "latest_training_curve"):
-            self.latest_training_curve.set_history(services.training_metric_history(run))
+        self._set_training_run_views(run)
         artifact_path = str(run.get("artifact_path") or "")
         artifact_type = str(run.get("artifact_type") or "")
         if artifact_path and artifact_type in {"checkpoint", "world_model"}:
             self._select_path_combo_value(self.home_model_combo, artifact_path)
         elif artifact_path and artifact_type == "hdf5":
             self.stablewm_hdf5_edit.setText(artifact_path)
+
+    def _set_training_run_views(self, payload: dict[str, Any]) -> dict[str, Any]:
+        run = _training_run_record_from_payload(payload)
+        if hasattr(self, "training_run_overview"):
+            self.training_run_overview.setText(_training_run_overview_text(run))
+        if hasattr(self, "training_run_summary"):
+            self.training_run_summary.setText(_compact_json(run))
+        history = services.training_metric_history(run)
+        if hasattr(self, "training_curve"):
+            self.training_curve.set_history(history)
+        if hasattr(self, "latest_training_curve"):
+            self.latest_training_curve.set_history(history)
+        return run
 
     def _fill_episode_list(self) -> None:
         self.episode_list.clear()
@@ -2815,6 +2819,52 @@ def _compact_json(payload: Any) -> str:
     import json
 
     return json.dumps(payload, indent=2, ensure_ascii=False, default=str)
+
+
+def _training_run_overview_text(run: dict[str, Any]) -> str:
+    run_id = str(run.get("run_id") or services.NAN_TEXT)
+    pretty_run_id = run_id.replace("_", " ").replace("-", " ").title() if run_id and run_id != services.NAN_TEXT else services.NAN_TEXT
+    lines = [
+        f"Run: {pretty_run_id}",
+        f"Preset: {run.get('preset_label') or run.get('preset_id') or services.NAN_TEXT}",
+        f"Status: {run.get('status') or services.NAN_TEXT}",
+    ]
+    artifact = str(run.get("artifact_path") or run.get("relative_path") or "").strip()
+    lines.append(f"artifact: {artifact or services.NAN_TEXT}")
+    metrics = run.get("metrics") if isinstance(run.get("metrics"), dict) else {}
+    history = services.training_metric_history(run)
+    metric_lines: list[str] = []
+    for key in [
+        "loss",
+        "final_loss",
+        "train_rmse",
+        "train_mse",
+        "goal_success",
+        "min_goal_distance",
+        "collection_min_goal_distance",
+        "collection_distance_traveled",
+    ]:
+        if key in metrics:
+            metric_lines.append(f"{key}: {services.display_value(metrics[key])}")
+        elif key in history and history[key]:
+            metric_lines.append(f"{key}: {services.display_value(history[key][-1])}")
+    if metric_lines:
+        lines.extend(metric_lines[:6])
+    else:
+        lines.append(f"metrics: {services.NAN_TEXT}")
+    return "\n".join(lines)
+
+
+def _training_run_record_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    path = str(payload.get("training_run_path") or "").strip()
+    if path:
+        try:
+            record = json.loads(Path(path).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            record = {}
+        if isinstance(record, dict) and record:
+            return record
+    return dict(payload)
 
 
 def run() -> int:

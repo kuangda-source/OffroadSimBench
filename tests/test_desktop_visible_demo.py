@@ -428,7 +428,33 @@ def test_gui_training_run_list_loads_selected_summary() -> None:
 
     assert "demo_train" in window.training_run_summary.toPlainText()
     assert "loss" in window.training_run_summary.toPlainText()
+    assert "Demo Train" in window.training_run_overview.toPlainText()
+    assert "loss: 0.25" in window.training_run_overview.toPlainText()
+    assert "artifact: outputs/demo/model" in window.training_run_overview.toPlainText()
     assert window.training_curve.history["loss"] == [0.8, 0.25]
+    window.close()
+
+
+def test_gui_training_finished_loads_training_run_record_overview(tmp_path) -> None:
+    _ensure_app()
+    run_dir = tmp_path / "run"
+    record = services.write_training_run_record(
+        run_dir,
+        preset_id="tiny_world_model",
+        status="completed",
+        artifact_path=str(run_dir / "model"),
+        artifact_type="world_model",
+        metrics={"loss": 0.1},
+        history={"loss": [0.5, 0.2, 0.1]},
+    )
+    window = MainWindow()
+
+    window._training_finished({"output_dir": str(run_dir / "model"), "training_run_path": record["path"]})
+
+    assert "Train tiny world model" in window.training_run_overview.toPlainText()
+    assert "loss: 0.1" in window.training_run_overview.toPlainText()
+    assert window.latest_training_curve.history["loss"] == [0.5, 0.2, 0.1]
+    assert window.training_curve.history["loss"] == [0.5, 0.2, 0.1]
     window.close()
 
 
