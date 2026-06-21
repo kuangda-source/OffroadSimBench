@@ -128,3 +128,57 @@ def test_region_self_supervised_world_model_trains_and_evaluates_without_route(t
     assert training_record["metrics"]["collection_min_goal_distance"] > 30.0
     assert training_record["metrics"]["collection_distance_traveled"] == 8.0
     assert training_record["history"]["collection_min_goal_distance"] == [training_record["metrics"]["collection_min_goal_distance"]]
+
+
+def test_region_self_supervised_world_model_trains_from_multiple_collection_rollouts(tmp_path: Path) -> None:
+    task_path = tmp_path / "task.yaml"
+    _write_task(task_path)
+    collection_a = _save_episode(
+        tmp_path / "collection_a",
+        [(2.0, 2.0, 0.0, 0.5), (8.0, 4.0, 0.2, 1.2), (15.0, 8.0, 0.35, 1.5)],
+    )
+    collection_b = _save_episode(
+        tmp_path / "collection_b",
+        [(2.0, 2.0, 0.0, 0.5), (12.0, 18.0, 0.4, 1.5), (28.0, 30.0, 0.55, 1.8)],
+    )
+    evaluation_episode = _save_episode(
+        tmp_path / "evaluation",
+        [(2.0, 2.0, 0.0, 0.5), (22.0, 22.0, 0.4, 2.0), (35.0, 35.0, 0.6, 1.0)],
+    )
+    episodes = [collection_a, collection_b, evaluation_episode]
+    distances = [14.0, 35.0, 46.0]
+    seen_agents: list[str] = []
+
+    def fake_run_episode(**kwargs):
+        seen_agents.append(kwargs["agent_name"])
+        index = len(seen_agents) - 1
+
+        class Result:
+            def to_dict(self):
+                return {
+                    "episode_id": f"episode_{index}",
+                    "episode_path": str(episodes[index]),
+                    "metrics": {"horizontal_distance_traveled": distances[index], "collision_count": 0, "drive_mode": "manual"},
+                }
+
+        return Result()
+
+    with patch("desktop_app.services.run_episode", side_effect=fake_run_episode):
+        payload = services.run_region_self_supervised_world_model(
+            services.RegionSelfSupervisedWorldModelRequest(
+                task_path=str(task_path),
+                output_dir=str(tmp_path / "out"),
+                collect_steps=20,
+                collect_rollouts=2,
+                eval_steps=20,
+                close_beamng=True,
+            )
+        )
+
+    assert seen_agents == ["region_explorer", "region_explorer", "world_model_direct"]
+    assert payload["training"]["metrics"]["sequence_count"] == 2
+    assert len(payload["collections"]) == 2
+    training_record = json.loads(Path(payload["training_run_path"]).read_text(encoding="utf-8"))
+    assert training_record["metrics"]["collection_rollout_count"] == 2
+    assert training_record["metrics"]["collection_distance_traveled"] == 49.0
+    assert training_record["metrics"]["collection_min_goal_distance"] <= 10.0

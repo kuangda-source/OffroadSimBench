@@ -156,6 +156,7 @@ class RegionSelfSupervisedWorldModelRequest:
     vehicle: str = "configs/vehicles/ugv_medium.yaml"
     output_dir: str = ""
     collect_steps: int = 240
+    collect_rollouts: int = 1
     eval_steps: int = 1000
     seed: int = 7
     planner: str = "navigation_mpc"
@@ -1378,39 +1379,54 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
         else task.to_beamng_scenario(mode="evaluation")
     )
 
-    collection = _run_region_beamng_episode(
-        scenario=collection_scenario,
-        vehicle=request.vehicle,
-        max_steps=min(max(1, int(request.collect_steps)), task.max_steps),
-        seed=request.seed,
-        agent_name="region_explorer",
-        world_model_type="simple_kinematic",
-        world_model_path="",
-        planner="",
-        planner_horizon=request.planner_horizon,
-        planner_samples=request.planner_samples,
-        planner_iterations=request.planner_iterations,
-        record=True,
-        beamng_gfx=request.beamng_gfx,
-        pre_run_hold_sec=request.pre_run_hold_sec,
-        step_delay_sec=request.step_delay_sec,
-        post_run_hold_sec=0.0,
-        close_beamng=True,
-    )
-    episode_path = collection.get("episode_path")
-    if not episode_path:
-        raise RuntimeError("Region self-supervised collection did not produce an episode path.")
-    collection_acceptance = _navigation_acceptance(collection, task)
-    collection_metrics = collection.get("metrics", {}) if isinstance(collection.get("metrics"), dict) else {}
-    collection_distance = _float_or_nan(collection_metrics.get("horizontal_distance_traveled"))
+    collections: list[dict[str, Any]] = []
+    collection_acceptances: list[dict[str, Any]] = []
+    collection_distances: list[float] = []
+    episode_paths: list[str] = []
+    sequences: list[DatasetSequence] = []
+    rollout_count = max(1, int(request.collect_rollouts))
+    for rollout_index in range(rollout_count):
+        collection = _run_region_beamng_episode(
+            scenario=collection_scenario,
+            vehicle=request.vehicle,
+            max_steps=min(max(1, int(request.collect_steps)), task.max_steps),
+            seed=int(request.seed) + rollout_index,
+            agent_name="region_explorer",
+            world_model_type="simple_kinematic",
+            world_model_path="",
+            planner="",
+            planner_horizon=request.planner_horizon,
+            planner_samples=request.planner_samples,
+            planner_iterations=request.planner_iterations,
+            record=True,
+            beamng_gfx=request.beamng_gfx,
+            pre_run_hold_sec=request.pre_run_hold_sec if rollout_index == 0 else 0.0,
+            step_delay_sec=request.step_delay_sec,
+            post_run_hold_sec=0.0,
+            close_beamng=True,
+        )
+        episode_path = collection.get("episode_path")
+        if not episode_path:
+            raise RuntimeError("Region self-supervised collection did not produce an episode path.")
+        collections.append(collection)
+        episode_paths.append(str(Path(episode_path).resolve()))
+        collection_acceptances.append(_navigation_acceptance(collection, task))
+        collection_metrics = collection.get("metrics", {}) if isinstance(collection.get("metrics"), dict) else {}
+        collection_distance = _float_or_nan(collection_metrics.get("horizontal_distance_traveled"))
+        if math.isfinite(collection_distance):
+            collection_distances.append(collection_distance)
+        sequences.append(_episode_trace_to_dataset_sequence(episode_path, task))
+    collection_acceptance = min(collection_acceptances, key=lambda row: _finite_or_inf(row.get("min_goal_distance")))
+    collection_distance = float(sum(collection_distances)) if collection_distances else math.nan
 
-    sequence = _episode_trace_to_dataset_sequence(episode_path, task)
-    model = TinyLearnedWorldModel.fit([sequence])
+    model = TinyLearnedWorldModel.fit(sequences)
     model.metadata.update(
         {
             "training_source": "beamng_region_self_supervised",
             "task_id": task.task_id,
-            "episode_path": str(Path(episode_path).resolve()),
+            "episode_path": episode_paths[0],
+            "episode_paths": episode_paths,
+            "collection_rollout_count": rollout_count,
         }
     )
     model_dir = output_dir / "model"
@@ -1455,7 +1471,7 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
         output_dir,
         preset_id="region_self_supervised_world_model",
         status="completed",
-        dataset_root=str(Path(episode_path).resolve()),
+        dataset_root=episode_paths[0],
         adapter="beamng_episode",
         sequence_id=task.task_id,
         artifact_path=str(model_dir.resolve()),
@@ -1472,6 +1488,7 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
             "collection_min_goal_distance": collection_acceptance.get("min_goal_distance"),
             "collection_final_goal_distance": collection_acceptance.get("final_goal_distance"),
             "collection_distance_traveled": collection_distance,
+            "collection_rollout_count": rollout_count,
             "collection_collision_count": collection_acceptance.get("collision_count"),
         },
         history={
@@ -1488,10 +1505,12 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
             "planner_iterations": request.planner_iterations,
             "evaluation_agent": request.evaluation_agent,
             "evaluation_route_mode": "route_free" if evaluation_route_free else "task_route",
+            "collect_rollouts": rollout_count,
         },
         summary={
             "task_path": str(Path(request.task_path).resolve()),
             "collection_acceptance": collection_acceptance,
+            "collection_acceptances": collection_acceptances,
             "acceptance": acceptance,
         },
     )
@@ -1500,7 +1519,8 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
         "task": task.to_dict(),
         "output_dir": str(output_dir.resolve()),
         "model_dir": str(model_dir.resolve()),
-        "collection": collection,
+        "collection": collections[0],
+        "collections": collections,
         "training": training,
         "evaluation": evaluation,
         "acceptance": acceptance,
@@ -2358,6 +2378,11 @@ def _float_or_nan(value: Any) -> float:
 def _finite_or_default(value: Any, default: float) -> float:
     number = _float_or_nan(value)
     return float(number) if math.isfinite(number) else float(default)
+
+
+def _finite_or_inf(value: Any) -> float:
+    number = _float_or_nan(value)
+    return float(number) if math.isfinite(number) else math.inf
 
 
 def _wrap_angle(angle: float) -> float:

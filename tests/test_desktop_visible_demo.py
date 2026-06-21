@@ -547,6 +547,7 @@ def test_gui_exposes_region_self_supervised_training(monkeypatch) -> None:
     assert captured["request"].evaluation_agent == "world_model_direct"
     assert captured["request"].evaluation_route_mode == "route_free"
     assert captured["request"].collect_steps >= 1000
+    assert captured["request"].collect_rollouts >= 3
     assert captured["request"].eval_steps >= 1000
     assert captured["request"].close_beamng is False
     window.close()

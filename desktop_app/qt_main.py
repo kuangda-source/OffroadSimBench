@@ -2000,6 +2000,7 @@ class MainWindow(QMainWindow):
             task_path=task_path,
             world_model_type="tiny_learned",
             collect_steps=max(int(self.settings.max_steps), 1000),
+            collect_rollouts=3,
             eval_steps=max(int(self.settings.max_steps), 1000),
             seed=self.settings.seed,
             planner=self.planner_combo.currentData() or self.planner_combo.currentText() or "navigation_mpc",
