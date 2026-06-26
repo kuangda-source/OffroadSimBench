@@ -2236,14 +2236,16 @@ def _navigation_acceptance(evaluation: dict[str, Any], task: NavigationRegionTas
     collision_count = int(metrics.get("collision_count", 0) or 0)
     drive_mode = str(metrics.get("drive_mode", "manual")).lower()
     model_controlled = drive_mode != "ai_line"
-    goal_success = math.isfinite(min_distance) and min_distance <= task.goal_radius
+    goal_reached = math.isfinite(min_distance) and min_distance <= task.goal_radius
+    final_goal_reached = math.isfinite(final_distance) and final_distance <= task.goal_radius and bool(in_region)
     throttles = [_float_or_nan(row.get("throttle")) for row in trace]
     throttles = [value for value in throttles if math.isfinite(value)]
     steers = [_float_or_nan(row.get("steer")) for row in trace]
     steers = [value for value in steers if math.isfinite(value)]
     return {
-        "goal_success": bool(goal_success and reached_in_region and model_controlled and collision_count <= task.max_collision_count),
-        "goal_reached": bool(goal_success),
+        "goal_success": bool(final_goal_reached and reached_in_region and model_controlled and collision_count <= task.max_collision_count),
+        "goal_reached": bool(goal_reached),
+        "final_goal_reached": bool(final_goal_reached),
         "final_goal_distance": final_distance,
         "min_goal_distance": min_distance,
         "min_goal_step": min_step,

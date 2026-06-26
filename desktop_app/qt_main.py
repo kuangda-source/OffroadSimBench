@@ -3031,6 +3031,7 @@ def _region_world_model_summary_text(payload: dict[str, Any]) -> str:
     for key in [
         "goal_success",
         "goal_reached",
+        "final_goal_reached",
         "model_controlled",
         "min_goal_distance",
         "final_goal_distance",

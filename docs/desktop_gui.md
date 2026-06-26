@@ -54,6 +54,9 @@ offroad-sim-gui
 - Region self-supervised and direct world-model runs report a compact BeamNG
   acceptance summary with goal success, goal distance, collision count,
   model-controlled status, quality-gate progress, and artifact paths.
+  `goal_reached` means the vehicle entered the goal radius at least once;
+  `goal_success` is stricter and also requires the final recorded pose to remain
+  inside the goal radius and navigation region.
 - Episode list loading from `outputs/episodes`.
 - BEV-style trajectory preview from recorded episode state traces.
 - Metric cards populated from real episode metrics and agent diagnostics.

@@ -782,6 +782,7 @@ def test_gui_pipeline_finished_shows_region_acceptance_summary(tmp_path, monkeyp
             "acceptance": {
                 "goal_success": True,
                 "goal_reached": True,
+                "final_goal_reached": True,
                 "min_goal_distance": 3.2,
                 "final_goal_distance": 4.1,
                 "model_controlled": True,
@@ -800,6 +801,7 @@ def test_gui_pipeline_finished_shows_region_acceptance_summary(tmp_path, monkeyp
     assert "Region world-model evaluation" in text
     assert "goal_success: true" in text
     assert "goal_reached: true" in text
+    assert "final_goal_reached: true" in text
     assert "model_controlled: true" in text
     assert "min_goal_distance: 3.2" in text
     assert "collision_count: 0" in text

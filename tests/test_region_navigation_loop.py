@@ -7,6 +7,7 @@ from desktop_app import services
 from offroad_sim.algorithms import DataPrepResult, TrainResult
 from offroad_sim.core import Action, Observation, VehicleState
 from offroad_sim.replay import EpisodeRecorder
+from offroad_sim.tasks import load_navigation_region_task
 
 
 def _write_task(path: Path) -> None:
@@ -61,6 +62,21 @@ def _save_episode(path: Path, x: float, y: float, *, extra_points: list[tuple[fl
     return recorder.save(path)
 
 
+def test_navigation_acceptance_requires_final_goal_hold(tmp_path: Path) -> None:
+    task_path = tmp_path / "task.yaml"
+    _write_task(task_path)
+    evaluation_episode = _save_episode(tmp_path / "evaluation", 4.5, -240.5, extra_points=[(15.0, -245.0)])
+
+    acceptance = services._navigation_acceptance(
+        {"episode_path": str(evaluation_episode), "metrics": {"collision_count": 0, "drive_mode": "manual"}},
+        load_navigation_region_task(task_path),
+    )
+
+    assert acceptance["goal_reached"] is True
+    assert acceptance["goal_success"] is False
+    assert acceptance["final_goal_distance"] > acceptance["goal_radius"]
+
+
 def test_region_navigation_closed_loop_uses_expert_only_for_collection(tmp_path: Path) -> None:
     task_path = tmp_path / "task.yaml"
     _write_task(task_path)
@@ -112,7 +128,9 @@ def test_region_navigation_closed_loop_uses_expert_only_for_collection(tmp_path:
     assert evaluation_scenario["metadata"]["beamng"]["drive_mode"] == "manual"
     assert payload["region_navigation"]["evaluation_agent"] == "model_mpc"
     assert payload["region_navigation"]["planner"] == "navigation_mpc"
-    assert payload["acceptance"]["goal_success"] is True
+    assert payload["acceptance"]["goal_reached"] is True
+    assert payload["acceptance"]["goal_success"] is False
+    assert payload["acceptance"]["final_goal_reached"] is False
     assert payload["acceptance"]["model_controlled"] is True
     assert payload["acceptance"]["min_goal_distance"] < 1.0
     assert payload["acceptance"]["final_goal_distance"] > 10.0
