@@ -35,6 +35,9 @@ offroad-sim-gui
 - LE-WM-compatible cost-model training from exported HDF5 files.
 - Imported `trainer.yaml` manifests can run external local model trainers and
   record `training_run.json`, metrics, history curves, stdout, and stderr.
+- Existing model checkpoints or lightweight `model.json` files can be imported
+  as saved world-model configs, then reused by the overview launcher and BeamNG
+  simulation page without editing JSON by hand.
 - ORFD frame preview for RGB, depth, and label assets, including official ORFD ZIP releases.
 - ORFD-derived local heightmap/OBJ terrain draft export for BeamNG map prototyping.
 - BeamNG navigation task editing with realtime preview of region, start/goal, route markers, camera height,

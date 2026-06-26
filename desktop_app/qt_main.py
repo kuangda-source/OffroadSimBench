@@ -1282,6 +1282,9 @@ class MainWindow(QMainWindow):
         model_browse = QPushButton("选择")
         self._configure_button(model_browse)
         model_browse.clicked.connect(lambda: self._browse_path_combo(self.home_model_combo))
+        model_import = QPushButton("Import model/checkpoint")
+        self._configure_button(model_import)
+        model_import.clicked.connect(self.import_world_model_config)
         trainer_import = QPushButton("导入训练器 manifest")
         self._configure_button(trainer_import)
         trainer_import.clicked.connect(self.import_trainer_manifest)
@@ -1301,6 +1304,7 @@ class MainWindow(QMainWindow):
                 self._field("World model config", self.world_model_config_edit_combo),
                 self._field("Config name", self.model_config_name_edit),
                 self._field("Model path", self._with_button(self.home_model_combo, model_browse)),
+                model_import,
                 self._field("Algorithm", self.algorithm_combo),
                 self._field("World model", self.world_model_combo),
                 self._action_button("Save world model config", self.save_world_model_config, primary=True),
@@ -1801,6 +1805,26 @@ class MainWindow(QMainWindow):
         self.log(f"Trainer manifest imported: {row.get('label', row.get('id', services.NAN_TEXT))}")
         self.refresh_catalogs()
         self._select_training_preset(str(row.get("id") or ""))
+
+    def import_world_model_config(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Import model/checkpoint",
+            self.model_path_edit.text().strip() or str(services.ROOT),
+            "World model files (*.ckpt *.json *.npz);;All files (*)",
+        )
+        if not path:
+            return
+        try:
+            row = services.import_world_model_config(path)
+        except Exception as exc:
+            self.model_summary.setText(_compact_json({"status": "import_failed", "message": str(exc)}))
+            self.log(f"World model import failed: {exc}")
+            return
+        self.model_summary.setText(_compact_json({"status": "imported", "world_model_config": row}))
+        self.log(f"World model imported: {row.get('label', row.get('id', services.NAN_TEXT))}")
+        self.refresh_catalogs()
+        self._select_world_model_config(str(row.get("id") or ""))
 
     def run_manifest_trainer(self, preset: dict[str, Any]) -> None:
         try:

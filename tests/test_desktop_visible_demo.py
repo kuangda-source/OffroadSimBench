@@ -570,6 +570,28 @@ def test_gui_world_model_page_saves_config_for_home(tmp_path, monkeypatch) -> No
     window.close()
 
 
+def test_gui_imports_world_model_config_for_home(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(services, "WORLD_MODEL_CONFIGS_PATH", tmp_path / "world_model_configs.json")
+    _ensure_app()
+    checkpoint = tmp_path / "external_lewm_object.ckpt"
+    checkpoint.write_bytes(b"checkpoint")
+    window = MainWindow()
+
+    monkeypatch.setattr("desktop_app.qt_main.QFileDialog.getOpenFileName", lambda *args, **kwargs: (str(checkpoint), ""))
+
+    window.import_world_model_config()
+
+    row = window.world_model_config_combo.currentData()
+    buttons = [button.text() for button in window.page_stack.widget(1).findChildren(QPushButton)]
+    assert "Import model/checkpoint" in buttons
+    assert row["id"] == "external_lewm_object"
+    assert row["algorithm"] == "stablewm_lewm"
+    assert row["world_model"] == "le_wm"
+    assert row["model_path"] == str(checkpoint.resolve())
+    assert window.model_path_edit.text() == str(checkpoint.resolve())
+    window.close()
+
+
 def test_gui_visible_demo_uses_minimum_human_visible_steps(monkeypatch) -> None:
     _ensure_app()
     window = MainWindow()

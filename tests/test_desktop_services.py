@@ -170,6 +170,36 @@ def test_world_model_config_save_and_list(tmp_path) -> None:
     assert row["model_path"] == "outputs/region_navigation/model/lewm_cost_object.ckpt"
 
 
+def test_import_world_model_config_infers_tiny_learned_model_json(tmp_path) -> None:
+    config_path = tmp_path / "world_model_configs.json"
+    model_dir = tmp_path / "external_tiny"
+    model_dir.mkdir()
+    model_path = model_dir / "model.json"
+    model_path.write_text('{"model_type": "tiny_learned", "weights": "weights.npz"}', encoding="utf-8")
+
+    row = services.import_world_model_config(model_path, path=config_path)
+
+    rows = services.world_model_config_entries(config_path)
+    saved = next(item for item in rows if item["id"] == "external_tiny")
+    assert row["id"] == "external_tiny"
+    assert saved["algorithm"] == "world_model_direct"
+    assert saved["world_model"] == "tiny_learned"
+    assert saved["model_path"] == str(model_path.resolve())
+
+
+def test_import_world_model_config_defaults_checkpoint_to_lewm(tmp_path) -> None:
+    config_path = tmp_path / "world_model_configs.json"
+    checkpoint = tmp_path / "custom_lewm_object.ckpt"
+    checkpoint.write_bytes(b"checkpoint")
+
+    row = services.import_world_model_config(checkpoint, label="Custom LE-WM", path=config_path)
+
+    assert row["id"] == "Custom_LE-WM"
+    assert row["algorithm"] == "stablewm_lewm"
+    assert row["world_model"] == "le_wm"
+    assert row["model_path"] == str(checkpoint.resolve())
+
+
 def test_training_config_save_and_list(tmp_path) -> None:
     config_path = tmp_path / "training_configs.json"
 

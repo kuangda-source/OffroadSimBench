@@ -785,6 +785,31 @@ def save_world_model_config(
     return row
 
 
+def import_world_model_config(
+    source_path: str | Path,
+    *,
+    label: str = "",
+    algorithm: str = "",
+    world_model: str = "",
+    path: str | Path | None = None,
+) -> dict[str, Any]:
+    source = Path(source_path).resolve()
+    if not source.exists():
+        raise FileNotFoundError(f"World model path not found: {source}")
+    inferred_world_model = _infer_world_model_type(source)
+    resolved_world_model = world_model or inferred_world_model or "le_wm"
+    resolved_algorithm = algorithm or ("world_model_direct" if resolved_world_model == "tiny_learned" else "stablewm_lewm")
+    resolved_label = label or (source.parent.name if source.is_file() and source.name == "model.json" else source.stem if source.is_file() else source.name)
+    return save_world_model_config(
+        config_id=resolved_label,
+        label=resolved_label,
+        algorithm=resolved_algorithm,
+        world_model=resolved_world_model,
+        model_path=str(source),
+        path=path,
+    )
+
+
 def training_config_entries(path: str | Path | None = None) -> list[dict[str, Any]]:
     config_path = Path(path or TRAINING_CONFIGS_PATH)
     rows: dict[str, dict[str, Any]] = {
@@ -2404,6 +2429,21 @@ def _world_model_config_row(raw: dict[str, Any]) -> dict[str, Any]:
         "world_model": str(raw.get("world_model") or "le_wm"),
         "model_path": str(raw.get("model_path") or ""),
     }
+
+
+def _infer_world_model_type(path: Path) -> str:
+    metadata_path = path / "model.json" if path.is_dir() else path
+    if metadata_path.name == "model.json" and metadata_path.exists():
+        try:
+            payload = _read_json(metadata_path)
+        except (OSError, json.JSONDecodeError):
+            payload = {}
+        model_type = str(payload.get("model_type") or "")
+        if model_type in {"tiny_learned", "le_wm", "simple_kinematic"}:
+            return model_type
+    if path.suffix.lower() == ".ckpt":
+        return "le_wm"
+    return ""
 
 
 def _training_config_row(raw: dict[str, Any]) -> dict[str, Any]:
