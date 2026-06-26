@@ -187,6 +187,20 @@ def test_import_world_model_config_infers_tiny_learned_model_json(tmp_path) -> N
     assert saved["model_path"] == str(model_path.resolve())
 
 
+def test_import_world_model_config_accepts_model_directory(tmp_path) -> None:
+    config_path = tmp_path / "world_model_configs.json"
+    model_dir = tmp_path / "external_tiny_dir"
+    model_dir.mkdir()
+    (model_dir / "model.json").write_text('{"model_type": "tiny_learned", "weights": "weights.npz"}', encoding="utf-8")
+
+    row = services.import_world_model_config(model_dir, path=config_path)
+
+    assert row["id"] == "external_tiny_dir"
+    assert row["algorithm"] == "world_model_direct"
+    assert row["world_model"] == "tiny_learned"
+    assert row["model_path"] == str(model_dir.resolve())
+
+
 def test_import_world_model_config_defaults_checkpoint_to_lewm(tmp_path) -> None:
     config_path = tmp_path / "world_model_configs.json"
     checkpoint = tmp_path / "custom_lewm_object.ckpt"

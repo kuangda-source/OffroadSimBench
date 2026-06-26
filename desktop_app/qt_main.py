@@ -1285,6 +1285,9 @@ class MainWindow(QMainWindow):
         model_import = QPushButton("Import model/checkpoint")
         self._configure_button(model_import)
         model_import.clicked.connect(self.import_world_model_config)
+        model_dir_import = QPushButton("Import model folder")
+        self._configure_button(model_dir_import)
+        model_dir_import.clicked.connect(self.import_world_model_directory_config)
         trainer_import = QPushButton("导入训练器 manifest")
         self._configure_button(trainer_import)
         trainer_import.clicked.connect(self.import_trainer_manifest)
@@ -1305,6 +1308,7 @@ class MainWindow(QMainWindow):
                 self._field("Config name", self.model_config_name_edit),
                 self._field("Model path", self._with_button(self.home_model_combo, model_browse)),
                 model_import,
+                model_dir_import,
                 self._field("Algorithm", self.algorithm_combo),
                 self._field("World model", self.world_model_combo),
                 self._action_button("Save world model config", self.save_world_model_config, primary=True),
@@ -1815,6 +1819,19 @@ class MainWindow(QMainWindow):
         )
         if not path:
             return
+        self._import_world_model_path(path)
+
+    def import_world_model_directory_config(self) -> None:
+        path = QFileDialog.getExistingDirectory(
+            self,
+            "Import model folder",
+            self.model_path_edit.text().strip() or str(services.ROOT),
+        )
+        if not path:
+            return
+        self._import_world_model_path(path)
+
+    def _import_world_model_path(self, path: str) -> None:
         try:
             row = services.import_world_model_config(path)
         except Exception as exc:

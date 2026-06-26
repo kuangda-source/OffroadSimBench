@@ -592,6 +592,29 @@ def test_gui_imports_world_model_config_for_home(tmp_path, monkeypatch) -> None:
     window.close()
 
 
+def test_gui_imports_world_model_directory_for_home(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(services, "WORLD_MODEL_CONFIGS_PATH", tmp_path / "world_model_configs.json")
+    _ensure_app()
+    model_dir = tmp_path / "external_tiny_dir"
+    model_dir.mkdir()
+    (model_dir / "model.json").write_text('{"model_type": "tiny_learned", "weights": "weights.npz"}', encoding="utf-8")
+    window = MainWindow()
+
+    monkeypatch.setattr("desktop_app.qt_main.QFileDialog.getExistingDirectory", lambda *args, **kwargs: str(model_dir))
+
+    window.import_world_model_directory_config()
+
+    row = window.world_model_config_combo.currentData()
+    buttons = [button.text() for button in window.page_stack.widget(1).findChildren(QPushButton)]
+    assert "Import model folder" in buttons
+    assert row["id"] == "external_tiny_dir"
+    assert row["algorithm"] == "world_model_direct"
+    assert row["world_model"] == "tiny_learned"
+    assert row["model_path"] == str(model_dir.resolve())
+    assert window.model_path_edit.text() == str(model_dir.resolve())
+    window.close()
+
+
 def test_gui_visible_demo_uses_minimum_human_visible_steps(monkeypatch) -> None:
     _ensure_app()
     window = MainWindow()
