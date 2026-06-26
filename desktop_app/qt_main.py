@@ -2183,6 +2183,9 @@ class MainWindow(QMainWindow):
             self.trajectory.set_trace(services.load_episode_trace(path) if path else [])
         self.model_summary.setText(_compact_json(payload))
         self._set_training_run_views(payload)
+        region_summary = _region_world_model_summary_text(payload)
+        if region_summary and hasattr(self, "beamng_summary"):
+            self.beamng_summary.setText(region_summary)
         self.log("流程完成")
         self.refresh_catalogs()
         if saved_config_id:
@@ -3014,6 +3017,42 @@ def _training_run_overview_text(run: dict[str, Any]) -> str:
         lines.extend(metric_lines[:6])
     else:
         lines.append(f"metrics: {services.NAN_TEXT}")
+    return "\n".join(lines)
+
+
+def _region_world_model_summary_text(payload: dict[str, Any]) -> str:
+    acceptance = payload.get("acceptance") if isinstance(payload.get("acceptance"), dict) else {}
+    region = payload.get("region_navigation") if isinstance(payload.get("region_navigation"), dict) else {}
+    quality = payload.get("quality_gate") if isinstance(payload.get("quality_gate"), dict) else {}
+    if not acceptance and not region:
+        return ""
+
+    lines = ["Region world-model evaluation"]
+    for key in [
+        "goal_success",
+        "goal_reached",
+        "model_controlled",
+        "min_goal_distance",
+        "final_goal_distance",
+        "collision_count",
+        "max_collision_count",
+    ]:
+        if key in acceptance:
+            lines.append(f"{key}: {services.display_value(acceptance[key])}")
+    for key in ["evaluation_agent", "evaluation_route_mode", "route_free", "planner", "algorithm_model_path"]:
+        if key in region:
+            lines.append(f"{key}: {services.display_value(region[key])}")
+    if quality:
+        if "passed" in quality:
+            lines.append(f"quality_gate_passed: {services.display_value(quality['passed'])}")
+        if "progress_ratio" in quality:
+            lines.append(f"quality_progress_ratio: {services.display_value(quality['progress_ratio'])}")
+        if quality.get("reason"):
+            lines.append(f"quality_reason: {quality['reason']}")
+    for key in ["model_dir", "training_run_path", "summary_path"]:
+        value = str(payload.get(key) or "").strip()
+        if value:
+            lines.append(f"{key}: {value}")
     return "\n".join(lines)
 
 

@@ -51,6 +51,9 @@ offroad-sim-gui
 - BeamNG navigation task editing with realtime preview of region, start/goal, route markers, camera height,
   draggable region points, delayed save-only validation warnings, translucent BeamNG region masks, and
   current-vehicle world-coordinate picking from the live BeamNG map.
+- Region self-supervised and direct world-model runs report a compact BeamNG
+  acceptance summary with goal success, goal distance, collision count,
+  model-controlled status, quality-gate progress, and artifact paths.
 - Episode list loading from `outputs/episodes`.
 - BEV-style trajectory preview from recorded episode state traces.
 - Metric cards populated from real episode metrics and agent diagnostics.

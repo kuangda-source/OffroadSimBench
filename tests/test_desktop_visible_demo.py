@@ -765,6 +765,50 @@ def test_gui_pipeline_finished_registers_self_supervised_world_model_config(tmp_
     window.close()
 
 
+def test_gui_pipeline_finished_shows_region_acceptance_summary(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(services, "WORLD_MODEL_CONFIGS_PATH", tmp_path / "world_model_configs.json")
+    _ensure_app()
+    window = MainWindow()
+
+    window._pipeline_finished(
+        {
+            "status": "completed",
+            "model_dir": "outputs/region_self_supervised/nav_demo/model",
+            "training_run_path": "outputs/region_self_supervised/nav_demo/training_run.json",
+            "summary_path": "outputs/region_self_supervised/nav_demo/summary.json",
+            "task": {"task_id": "nav_demo"},
+            "training": {"status": "completed", "model_type": "tiny_learned"},
+            "quality_gate": {"passed": True, "progress_ratio": 0.72, "reason": "passed"},
+            "acceptance": {
+                "goal_success": True,
+                "goal_reached": True,
+                "min_goal_distance": 3.2,
+                "final_goal_distance": 4.1,
+                "model_controlled": True,
+                "collision_count": 0,
+            },
+            "region_navigation": {
+                "evaluation_agent": "world_model_direct",
+                "route_free": True,
+                "evaluation_route_mode": "route_free",
+            },
+            "evaluation": {"metrics": {"steps": 40, "collision_count": 0}, "episode_path": ""},
+        }
+    )
+
+    text = window.beamng_summary.toPlainText()
+    assert "Region world-model evaluation" in text
+    assert "goal_success: true" in text
+    assert "goal_reached: true" in text
+    assert "model_controlled: true" in text
+    assert "min_goal_distance: 3.2" in text
+    assert "collision_count: 0" in text
+    assert "quality_progress_ratio: 0.72" in text
+    assert "model_dir: outputs/region_self_supervised/nav_demo/model" in text
+    assert "training_run_path: outputs/region_self_supervised/nav_demo/training_run.json" in text
+    window.close()
+
+
 def test_gui_region_navigation_loop_uses_task_path(monkeypatch) -> None:
     _ensure_app()
     window = MainWindow()
