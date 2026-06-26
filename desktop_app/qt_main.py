@@ -2187,6 +2187,7 @@ class MainWindow(QMainWindow):
             close_beamng=False,
             step_delay_sec=0.02,
             post_run_hold_sec=20.0,
+            register_world_model_config=True,
         )
         self.log("区域自监督训练：探索采集 -> tiny world model -> 无路线模型控车评估")
         self._run_task(
@@ -2238,12 +2239,18 @@ class MainWindow(QMainWindow):
             self._select_world_model_config(saved_config_id)
 
     def _register_pipeline_world_model_config(self, payload: dict[str, Any]) -> str:
+        existing = payload.get("world_model_config") if isinstance(payload.get("world_model_config"), dict) else {}
+        if existing:
+            return str(existing.get("id") or "")
         if str(payload.get("status") or "") != "completed":
             return ""
         model_dir = str(payload.get("model_dir") or "").strip()
         training = payload.get("training") if isinstance(payload.get("training"), dict) else {}
         world_model = str(training.get("model_type") or "").strip()
         if not model_dir or world_model != "tiny_learned" or str(training.get("status") or "completed") != "completed":
+            return ""
+        acceptance = payload.get("acceptance") if isinstance(payload.get("acceptance"), dict) else {}
+        if not bool(acceptance.get("goal_success")):
             return ""
         task = payload.get("task") if isinstance(payload.get("task"), dict) else {}
         task_id = str(task.get("task_id") or "self_supervised_world_model")
@@ -2253,6 +2260,14 @@ class MainWindow(QMainWindow):
             algorithm="world_model_direct",
             world_model=world_model,
             model_path=model_dir,
+            source_training_run_path=str(payload.get("training_run_path") or ""),
+            validation={
+                "goal_success": bool(acceptance.get("goal_success")),
+                "goal_reached": bool(acceptance.get("goal_reached")),
+                "min_goal_distance": acceptance.get("min_goal_distance"),
+                "final_goal_distance": acceptance.get("final_goal_distance"),
+                "collision_count": acceptance.get("collision_count"),
+            },
         )
         return str(row.get("id") or "")
 

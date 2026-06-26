@@ -104,6 +104,8 @@ def test_region_self_supervised_world_model_trains_and_evaluates_without_route(t
             services.RegionSelfSupervisedWorldModelRequest(
                 task_path=str(task_path),
                 output_dir=str(tmp_path / "out"),
+                register_world_model_config=True,
+                world_model_config_path=str(tmp_path / "world_model_configs.json"),
                 collect_steps=20,
                 eval_steps=20,
                 close_beamng=True,
@@ -130,6 +132,13 @@ def test_region_self_supervised_world_model_trains_and_evaluates_without_route(t
     assert training_record["metrics"]["collection_min_goal_distance"] > 30.0
     assert training_record["metrics"]["collection_distance_traveled"] == 8.0
     assert training_record["history"]["collection_min_goal_distance"] == [training_record["metrics"]["collection_min_goal_distance"]]
+    config = payload["world_model_config"]
+    saved_config = next(row for row in services.world_model_config_entries(tmp_path / "world_model_configs.json") if row["id"] == config["id"])
+    assert config["algorithm"] == "world_model_direct"
+    assert saved_config["world_model"] == "tiny_learned"
+    assert saved_config["model_path"] == payload["model_dir"]
+    assert saved_config["source_training_run_path"] == payload["training_run_path"]
+    assert saved_config["validation"]["goal_success"] is True
 
 
 def test_region_self_supervised_world_model_trains_from_multiple_collection_rollouts(tmp_path: Path) -> None:
@@ -213,6 +222,8 @@ def test_region_self_supervised_world_model_stops_when_collection_makes_no_goal_
             services.RegionSelfSupervisedWorldModelRequest(
                 task_path=str(task_path),
                 output_dir=str(tmp_path / "out"),
+                register_world_model_config=True,
+                world_model_config_path=str(tmp_path / "world_model_configs.json"),
                 collect_steps=20,
                 collect_rollouts=1,
                 min_collection_goal_progress_ratio=0.5,
@@ -229,6 +240,8 @@ def test_region_self_supervised_world_model_stops_when_collection_makes_no_goal_
     assert training_record["status"] == "collection_insufficient"
     assert training_record["metrics"]["collection_progress_ratio"] < 0.5
     assert training_record["summary"]["quality_gate"]["reason"] == "collection_goal_progress_below_threshold"
+    assert payload.get("world_model_config") in ({}, None)
+    assert not (tmp_path / "world_model_configs.json").exists()
 
 
 def test_region_world_model_evaluation_loads_existing_model_without_training(tmp_path: Path) -> None:

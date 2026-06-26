@@ -54,6 +54,9 @@ offroad-sim-gui
 - Region self-supervised and direct world-model runs report a compact BeamNG
   acceptance summary with goal success, goal distance, collision count,
   model-controlled status, quality-gate progress, and artifact paths.
+  Successful self-supervised runs that reach `goal_success` are also promoted
+  to saved world-model configs with validation metadata; failed or
+  collection-insufficient runs stay in Training Results only.
   `goal_reached` means the vehicle entered the goal radius at least once;
   `goal_success` is stricter and also requires the final recorded pose to remain
   inside the goal radius and navigation region.

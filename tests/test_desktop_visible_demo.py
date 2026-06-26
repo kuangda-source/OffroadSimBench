@@ -753,6 +753,7 @@ def test_gui_pipeline_finished_registers_self_supervised_world_model_config(tmp_
             "model_dir": "outputs/region_self_supervised/nav_demo/model",
             "task": {"task_id": "nav_demo"},
             "training": {"status": "completed", "model_type": "tiny_learned"},
+            "acceptance": {"goal_success": True, "goal_reached": True, "min_goal_distance": 2.0, "final_goal_distance": 3.0, "collision_count": 0},
             "evaluation": {"metrics": {"steps": 12}, "episode_path": ""},
         }
     )
@@ -761,6 +762,7 @@ def test_gui_pipeline_finished_registers_self_supervised_world_model_config(tmp_
     assert row["algorithm"] == "world_model_direct"
     assert row["world_model"] == "tiny_learned"
     assert row["model_path"] == "outputs/region_self_supervised/nav_demo/model"
+    assert row["validation"]["goal_success"] is True
     assert "nav_demo" in row["id"]
     window.close()
 

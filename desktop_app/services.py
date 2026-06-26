@@ -174,6 +174,8 @@ class RegionSelfSupervisedWorldModelRequest:
     step_delay_sec: float = 0.0
     pre_run_hold_sec: float = 0.0
     post_run_hold_sec: float = 0.0
+    register_world_model_config: bool = False
+    world_model_config_path: str = ""
 
 
 @dataclass(slots=True)
@@ -823,6 +825,8 @@ def save_world_model_config(
     algorithm: str,
     world_model: str,
     model_path: str,
+    source_training_run_path: str = "",
+    validation: dict[str, Any] | None = None,
     path: str | Path | None = None,
 ) -> dict[str, Any]:
     if not model_path.strip():
@@ -834,6 +838,8 @@ def save_world_model_config(
             "algorithm": algorithm or "stablewm_lewm",
             "world_model": world_model or "le_wm",
             "model_path": model_path,
+            "source_training_run_path": source_training_run_path,
+            "validation": validation or {},
         }
     )
     config_path = Path(path or WORLD_MODEL_CONFIGS_PATH)
@@ -866,6 +872,43 @@ def import_world_model_config(
         world_model=resolved_world_model,
         model_path=str(source),
         path=path,
+    )
+
+
+def _register_region_self_supervised_world_model_config(
+    *,
+    request: RegionSelfSupervisedWorldModelRequest,
+    task_id: str,
+    model_dir: str,
+    model_type: str,
+    training_run_path: str,
+    acceptance: dict[str, Any],
+    quality_gate: dict[str, Any],
+) -> dict[str, Any]:
+    if not request.register_world_model_config:
+        return {}
+    if model_type != "tiny_learned" or not model_dir:
+        return {}
+    if not bool(acceptance.get("goal_success")):
+        return {}
+    validation = {
+        "goal_success": bool(acceptance.get("goal_success")),
+        "goal_reached": bool(acceptance.get("goal_reached")),
+        "min_goal_distance": acceptance.get("min_goal_distance"),
+        "final_goal_distance": acceptance.get("final_goal_distance"),
+        "collision_count": acceptance.get("collision_count"),
+        "quality_gate_passed": bool(quality_gate.get("passed")),
+        "collection_progress_ratio": quality_gate.get("progress_ratio"),
+    }
+    return save_world_model_config(
+        config_id=f"{task_id}_self_supervised_world_model",
+        label=f"{task_id} self-supervised world model",
+        algorithm="world_model_direct",
+        world_model=model_type,
+        model_path=model_dir,
+        source_training_run_path=training_run_path,
+        validation=validation,
+        path=request.world_model_config_path or None,
     )
 
 
@@ -1798,6 +1841,17 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
         },
         "training_run_path": training_run["path"],
     }
+    world_model_config = _register_region_self_supervised_world_model_config(
+        request=request,
+        task_id=task.task_id,
+        model_dir=str(model_dir.resolve()),
+        model_type=model.model_type,
+        training_run_path=str(training_run["path"]),
+        acceptance=acceptance,
+        quality_gate=quality_gate,
+    )
+    if world_model_config:
+        payload["world_model_config"] = world_model_config
     summary_path = output_dir / "region_self_supervised_summary.json"
     summary_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
     payload["summary_path"] = str(summary_path.resolve())
@@ -2556,12 +2610,15 @@ def _algorithm_rows() -> list[dict[str, Any]]:
 def _world_model_config_row(raw: dict[str, Any]) -> dict[str, Any]:
     config_id = _safe_name(str(raw.get("id") or raw.get("label") or "world_model_config"))
     label = str(raw.get("label") or config_id)
+    validation = raw.get("validation") if isinstance(raw.get("validation"), dict) else {}
     return {
         "id": config_id,
         "label": label,
         "algorithm": str(raw.get("algorithm") or "stablewm_lewm"),
         "world_model": str(raw.get("world_model") or "le_wm"),
         "model_path": str(raw.get("model_path") or ""),
+        "source_training_run_path": str(raw.get("source_training_run_path") or ""),
+        "validation": dict(validation),
     }
 
 
