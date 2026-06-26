@@ -139,6 +139,10 @@ def test_region_self_supervised_world_model_trains_and_evaluates_without_route(t
     assert saved_config["model_path"] == payload["model_dir"]
     assert saved_config["source_training_run_path"] == payload["training_run_path"]
     assert saved_config["validation"]["goal_success"] is True
+    refreshed_record = json.loads(Path(payload["training_run_path"]).read_text(encoding="utf-8"))
+    assert refreshed_record["summary"]["world_model_config"]["id"] == config["id"]
+    assert refreshed_record["summary"]["world_model_config"]["model_path"] == payload["model_dir"]
+    assert refreshed_record["summary"]["world_model_config"]["validation"]["goal_success"] is True
 
 
 def test_region_self_supervised_world_model_trains_from_multiple_collection_rollouts(tmp_path: Path) -> None:
@@ -240,6 +244,7 @@ def test_region_self_supervised_world_model_stops_when_collection_makes_no_goal_
     assert training_record["status"] == "collection_insufficient"
     assert training_record["metrics"]["collection_progress_ratio"] < 0.5
     assert training_record["summary"]["quality_gate"]["reason"] == "collection_goal_progress_below_threshold"
+    assert "world_model_config" not in training_record["summary"]
     assert payload.get("world_model_config") in ({}, None)
     assert not (tmp_path / "world_model_configs.json").exists()
 

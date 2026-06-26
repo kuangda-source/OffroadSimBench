@@ -3081,6 +3081,16 @@ def _training_run_overview_text(run: dict[str, Any]) -> str:
     ]
     artifact = str(run.get("artifact_path") or run.get("relative_path") or "").strip()
     lines.append(f"artifact: {artifact or services.NAN_TEXT}")
+    summary = run.get("summary") if isinstance(run.get("summary"), dict) else {}
+    promoted_config = summary.get("world_model_config") if isinstance(summary.get("world_model_config"), dict) else {}
+    if promoted_config:
+        lines.append(f"world_model_config: {promoted_config.get('id') or services.NAN_TEXT}")
+        config_model_path = str(promoted_config.get("model_path") or "").strip()
+        if config_model_path:
+            lines.append(f"config_model_path: {config_model_path}")
+        validation = promoted_config.get("validation") if isinstance(promoted_config.get("validation"), dict) else {}
+        if "goal_success" in validation:
+            lines.append(f"config_goal_success: {services.display_value(validation['goal_success'])}")
     logs = run.get("logs") if isinstance(run.get("logs"), dict) else {}
     for key in ("stdout", "stderr"):
         path = str(logs.get(key) or "").strip()

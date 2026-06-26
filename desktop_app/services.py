@@ -900,7 +900,7 @@ def _register_region_self_supervised_world_model_config(
         "quality_gate_passed": bool(quality_gate.get("passed")),
         "collection_progress_ratio": quality_gate.get("progress_ratio"),
     }
-    return save_world_model_config(
+    config = save_world_model_config(
         config_id=f"{task_id}_self_supervised_world_model",
         label=f"{task_id} self-supervised world model",
         algorithm="world_model_direct",
@@ -910,6 +910,30 @@ def _register_region_self_supervised_world_model_config(
         validation=validation,
         path=request.world_model_config_path or None,
     )
+    _attach_world_model_config_to_training_run(training_run_path, config)
+    return config
+
+
+def _attach_world_model_config_to_training_run(training_run_path: str, config: dict[str, Any]) -> None:
+    path = Path(training_run_path)
+    try:
+        record = _read_json(path)
+    except (OSError, json.JSONDecodeError):
+        return
+    if not isinstance(record, dict) or not record:
+        return
+    summary = record.get("summary") if isinstance(record.get("summary"), dict) else {}
+    summary = dict(summary)
+    summary["world_model_config"] = {
+        "id": str(config.get("id") or ""),
+        "label": str(config.get("label") or ""),
+        "algorithm": str(config.get("algorithm") or ""),
+        "world_model": str(config.get("world_model") or ""),
+        "model_path": str(config.get("model_path") or ""),
+        "validation": dict(config.get("validation") if isinstance(config.get("validation"), dict) else {}),
+    }
+    record["summary"] = summary
+    path.write_text(json.dumps(record, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
 
 
 def training_config_entries(path: str | Path | None = None) -> list[dict[str, Any]]:
