@@ -2964,6 +2964,11 @@ def _training_run_overview_text(run: dict[str, Any]) -> str:
     ]
     artifact = str(run.get("artifact_path") or run.get("relative_path") or "").strip()
     lines.append(f"artifact: {artifact or services.NAN_TEXT}")
+    logs = run.get("logs") if isinstance(run.get("logs"), dict) else {}
+    for key in ("stdout", "stderr"):
+        path = str(logs.get(key) or "").strip()
+        if path:
+            lines.append(f"{key}: {path}")
     metrics = run.get("metrics") if isinstance(run.get("metrics"), dict) else {}
     history = services.training_metric_history(run)
     metric_lines: list[str] = []

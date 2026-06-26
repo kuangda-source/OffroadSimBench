@@ -126,3 +126,5 @@ def test_run_trainer_manifest_job_executes_command_and_records(tmp_path) -> None
     assert record["sequence_id"] == "clip_001"
     assert record["parameters"]["epochs"] == 5
     assert record["history"]["loss"] == [1.0, 0.5, 0.25]
+    assert record["logs"]["stdout"] == str((output_dir / "stdout.log").resolve())
+    assert record["logs"]["stderr"] == str((output_dir / "stderr.log").resolve())

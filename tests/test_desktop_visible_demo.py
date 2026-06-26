@@ -501,6 +501,7 @@ def test_gui_training_run_list_loads_selected_summary() -> None:
             "artifact_path": "outputs/demo/model",
             "metrics": {"loss": 0.25},
             "history": {"loss": [0.8, 0.25]},
+            "logs": {"stdout": "outputs/demo/stdout.log", "stderr": "outputs/demo/stderr.log"},
         }
     ]
 
@@ -513,6 +514,8 @@ def test_gui_training_run_list_loads_selected_summary() -> None:
     assert "Demo Train" in window.training_run_overview.toPlainText()
     assert "loss: 0.25" in window.training_run_overview.toPlainText()
     assert "artifact: outputs/demo/model" in window.training_run_overview.toPlainText()
+    assert "stdout: outputs/demo/stdout.log" in window.training_run_overview.toPlainText()
+    assert "stderr: outputs/demo/stderr.log" in window.training_run_overview.toPlainText()
     assert window.training_curve.history["loss"] == [0.8, 0.25]
     window.close()
 

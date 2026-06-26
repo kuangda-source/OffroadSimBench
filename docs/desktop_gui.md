@@ -35,6 +35,8 @@ offroad-sim-gui
 - LE-WM-compatible cost-model training from exported HDF5 files.
 - Imported `trainer.yaml` manifests can run external local model trainers and
   record `training_run.json`, metrics, history curves, stdout, and stderr.
+- Training run details show the recorded artifact, key metrics, curve history,
+  and stdout/stderr log paths for imported trainers.
 - Existing model checkpoints, lightweight `model.json` files, or model folders
   containing `model.json` can be imported as saved world-model configs, then
   reused by the overview launcher and BeamNG simulation page without editing

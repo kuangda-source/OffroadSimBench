@@ -508,8 +508,10 @@ def run_trainer_manifest_job(
     resolved_parameters = _trainer_parameters(manifest.get("parameters", {}), parameters or {})
     command = _trainer_command(manifest, dataset_root, target_dir, resolved_parameters, adapter, sequence_id)
     completed = subprocess.run(command, cwd=ROOT, text=True, capture_output=True, check=False)
-    (target_dir / "stdout.log").write_text(completed.stdout or "", encoding="utf-8")
-    (target_dir / "stderr.log").write_text(completed.stderr or "", encoding="utf-8")
+    stdout_path = target_dir / "stdout.log"
+    stderr_path = target_dir / "stderr.log"
+    stdout_path.write_text(completed.stdout or "", encoding="utf-8")
+    stderr_path.write_text(completed.stderr or "", encoding="utf-8")
     if completed.returncode != 0:
         write_training_run_record(
             target_dir,
@@ -522,6 +524,7 @@ def run_trainer_manifest_job(
             artifact_type=str(manifest.get("outputs", {}).get("artifact_type") or "artifact"),
             parameters=resolved_parameters,
             summary={"command": command, "stderr": completed.stderr.strip()},
+            logs={"stdout": str(stdout_path), "stderr": str(stderr_path)},
         )
         raise RuntimeError((completed.stderr or completed.stdout or "trainer command failed").strip())
 
@@ -550,6 +553,7 @@ def run_trainer_manifest_job(
         history=history,
         parameters=resolved_parameters,
         summary={"trainer_manifest_path": str(Path(manifest_path).resolve()), "command": command},
+        logs={"stdout": str(stdout_path), "stderr": str(stderr_path)},
     )
     payload["output_dir"] = str(target_dir.resolve())
     payload["training_run_path"] = record["path"]
@@ -571,6 +575,7 @@ def write_training_run_record(
     history: dict[str, Any] | None = None,
     parameters: dict[str, Any] | None = None,
     summary: dict[str, Any] | None = None,
+    logs: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     target_dir = Path(run_dir)
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -590,6 +595,7 @@ def write_training_run_record(
         "history": _normalize_metric_history(history or {}),
         "parameters": dict(parameters or {}),
         "summary": dict(summary or {}),
+        "logs": _normalize_log_paths(logs or {}),
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
     }
     record_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
@@ -641,6 +647,16 @@ def _normalize_metric_history(raw: dict[str, Any]) -> dict[str, list[float]]:
         if finite_values:
             history[metric_name] = finite_values
     return history
+
+
+def _normalize_log_paths(raw: dict[str, Any]) -> dict[str, str]:
+    logs: dict[str, str] = {}
+    for key, value in raw.items():
+        text = str(value or "").strip()
+        if not text:
+            continue
+        logs[str(key)] = str(Path(text).resolve())
+    return logs
 
 
 def _numeric_metric_items(metrics: dict[str, Any], prefix: str = "") -> list[tuple[str, float]]:
