@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import threading
 import time
+from pathlib import Path
 from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -458,6 +459,81 @@ def test_gui_training_config_dispatches_manifest_trainer_with_saved_output(monke
     assert captured["kwargs"]["sequence_id"] == "clip_001"
     assert captured["kwargs"]["output_dir"] == str(output_dir)
     assert captured["kwargs"]["parameters"] == {"epochs": 7}
+    window.close()
+
+
+def test_gui_imports_training_config_bundle(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(services, "TRAINING_CONFIGS_PATH", tmp_path / "training_configs.json")
+    monkeypatch.setattr(services, "DATASET_MANIFEST_DIRS", (tmp_path / "catalog" / "datasets",))
+    monkeypatch.setattr(services, "TRAINER_MANIFEST_DIRS", (tmp_path / "catalog" / "trainers",))
+    dataset_root = tmp_path / "dataset"
+    trainer_root = tmp_path / "trainer"
+    (dataset_root / "seq").mkdir(parents=True)
+    trainer_root.mkdir(parents=True)
+    (dataset_root / "dataset_manifest.yaml").write_text(
+        """
+adapter: manifest_dataset
+dataset_id: gui_dataset
+display_name: GUI Dataset
+sequences:
+  - id: clip_001
+    root: seq
+    assets:
+      front_rgb: rgb_{frame_id}.png
+""",
+        encoding="utf-8",
+    )
+    (trainer_root / "train.py").write_text("print('{}')\n", encoding="utf-8")
+    (trainer_root / "trainer.yaml").write_text(
+        """
+trainer_id: gui_trainer
+display_name: GUI Trainer
+runtime: python
+entrypoint: train.py
+parameters:
+  epochs:
+    type: int
+    default: 1
+arguments:
+  - "{dataset_root}"
+  - "--output"
+  - "{output_dir}"
+outputs:
+  artifact_type: checkpoint
+""",
+        encoding="utf-8",
+    )
+    config = tmp_path / "training_config.yaml"
+    config.write_text(
+        """
+id: gui_bundle
+label: GUI Bundle
+dataset_manifest: dataset/dataset_manifest.yaml
+trainer_manifest: trainer/trainer.yaml
+sequence_id: clip_001
+output_path: outputs/models/gui_bundle
+parameters:
+  epochs: 6
+""",
+        encoding="utf-8",
+    )
+    _ensure_app()
+    window = MainWindow()
+
+    monkeypatch.setattr("desktop_app.qt_main.QFileDialog.getOpenFileName", lambda *args, **kwargs: (str(config), ""))
+
+    window.import_training_config()
+
+    row = window.training_config_combo.currentData()
+    buttons = [button.text() for button in window.page_stack.widget(1).findChildren(QPushButton)]
+    assert "Import training config" in buttons
+    assert row["id"] == "gui_bundle"
+    assert row["training_preset_id"] == "gui_trainer"
+    assert window.training_preset_combo.currentData()["id"] == "gui_trainer"
+    assert Path(window.dataset_root_edit.text()).name == "gui_dataset"
+    assert window.adapter_edit.text() == "manifest_dataset"
+    assert window.sequence_combo.currentText() == "clip_001"
+    assert '"epochs": 6' in window.trainer_params_edit.toPlainText()
     window.close()
 
 

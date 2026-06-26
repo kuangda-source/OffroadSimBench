@@ -24,6 +24,11 @@ offroad-sim-gui
 - Dataset and Training can save reusable training configs that bind a dataset
   root/adapter/sequence, a built-in or imported trainer manifest, JSON training
   parameters, and a dedicated training output path.
+- A complete external training bundle can be imported through
+  `Import training config`. The bundle config may reference a
+  `dataset_manifest.yaml`, a `trainer.yaml`, an output path, and parameter
+  values; the GUI installs the referenced dataset/trainer manifests and selects
+  the saved training config automatically.
 - The BeamNG Simulation workbench owns task selection, region/start/goal
   editing, model-config selection, runtime checks, simulation runs, evaluation,
   and terrain draft export.
@@ -51,6 +56,31 @@ offroad-sim-gui
 - Metric cards populated from real episode metrics and agent diagnostics.
 - Advanced settings dialog for planner samples/iterations, image export size,
   preview frame, terrain grid size, and recording flags.
+
+## External Training Bundle
+
+For a new autonomous-driving dataset or model trainer, the preferred handoff is
+three small files. Put paths relative to `training_config.yaml` so the bundle can
+be moved as one folder:
+
+```yaml
+# training_config.yaml
+id: my_drive_experiment
+label: My Drive Experiment
+dataset_manifest: dataset/dataset_manifest.yaml
+trainer_manifest: trainer/trainer.yaml
+sequence_id: clip_001
+output_path: outputs/models/my_drive_experiment
+parameters:
+  epochs: 10
+  batch_size: 8
+```
+
+`dataset_manifest.yaml` describes the dataset layout through the
+`manifest_dataset` adapter. `trainer.yaml` describes the executable entrypoint,
+command arguments, declared parameters, and artifact type. After importing the
+training config, use `Start training/export`; the run writes `training_run.json`,
+stdout/stderr logs, metrics, and curve history when the trainer emits JSON.
 
 ## Explicit Placeholders
 

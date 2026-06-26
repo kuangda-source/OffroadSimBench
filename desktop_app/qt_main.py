@@ -1291,10 +1291,14 @@ class MainWindow(QMainWindow):
         trainer_import = QPushButton("导入训练器 manifest")
         self._configure_button(trainer_import)
         trainer_import.clicked.connect(self.import_trainer_manifest)
+        training_config_import = QPushButton("Import training config")
+        self._configure_button(training_config_import)
+        training_config_import.clicked.connect(self.import_training_config)
         training_controls = self._group(
             "Model and algorithm training",
             [
                 self._field("Training config", self.training_config_combo),
+                training_config_import,
                 self._field("Config name", self.training_config_name_edit),
                 self._action_button("Save training config", self.save_training_config),
                 self._field("Training preset", self.training_preset_combo),
@@ -1769,6 +1773,26 @@ class MainWindow(QMainWindow):
             self.train_tiny_model()
             return
         self.model_summary.setText(_compact_json({"status": services.UNFINISHED_TEXT, "training_preset": preset}))
+
+    def import_training_config(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Import training config",
+            str(services.CONFIG_ROOT),
+            "Training config (*.yaml *.yml *.json);;All files (*)",
+        )
+        if not path:
+            return
+        try:
+            row = services.import_training_config(path)
+        except Exception as exc:
+            self.model_summary.setText(_compact_json({"status": "import_failed", "message": str(exc)}))
+            self.log(f"Training config import failed: {exc}")
+            return
+        self.model_summary.setText(_compact_json({"status": "imported", "training_config": row}))
+        self.log(f"Training config imported: {row.get('label', row.get('id', services.NAN_TEXT))}")
+        self.refresh_catalogs()
+        self._select_training_config(str(row.get("id") or ""))
 
     def import_dataset_manifest(self) -> None:
         path, _ = QFileDialog.getOpenFileName(

@@ -898,6 +898,60 @@ def save_training_config(
     return row
 
 
+def import_training_config(
+    source_path: str | Path,
+    *,
+    path: str | Path | None = None,
+    dataset_destination_root: str | Path | None = None,
+    trainer_destination_root: str | Path | None = None,
+) -> dict[str, Any]:
+    """Install a reusable training config bundle into the GUI catalog.
+
+    The config may point at a dataset manifest and/or a trainer manifest using
+    paths relative to the config file. Those referenced resources are imported
+    first, then the saved training config points at the installed resources.
+    """
+
+    source = Path(source_path).resolve()
+    if not source.is_file():
+        raise FileNotFoundError(f"Training config not found: {source}")
+    data = _load_mapping_file(source)
+    raw = dict(data.get("training_config") if isinstance(data.get("training_config"), dict) else data)
+
+    dataset_root = str(raw.get("dataset_root") or "").strip()
+    adapter = str(raw.get("adapter") or "").strip()
+    dataset_manifest = str(raw.get("dataset_manifest") or "").strip()
+    if dataset_manifest:
+        dataset_row = import_dataset_manifest(
+            _resolve_relative_path(source.parent, dataset_manifest),
+            destination_root=dataset_destination_root or DATASET_MANIFEST_DIRS[0],
+        )
+        dataset_root = str(dataset_row.get("dataset_root") or dataset_root)
+        adapter = str(dataset_row.get("adapter") or adapter or "manifest_dataset")
+
+    preset_id = str(raw.get("training_preset_id") or raw.get("preset_id") or "").strip()
+    trainer_manifest = str(raw.get("trainer_manifest") or raw.get("algorithm_manifest") or "").strip()
+    if trainer_manifest:
+        trainer_row = import_trainer_manifest(
+            _resolve_relative_path(source.parent, trainer_manifest),
+            destination_root=trainer_destination_root or TRAINER_MANIFEST_DIRS[0],
+        )
+        preset_id = str(trainer_row.get("id") or preset_id)
+
+    row = save_training_config(
+        config_id=str(raw.get("id") or raw.get("config_id") or raw.get("label") or source.stem),
+        label=str(raw.get("label") or raw.get("display_name") or source.stem),
+        training_preset_id=preset_id or "tiny_world_model",
+        dataset_root=dataset_root,
+        adapter=adapter,
+        sequence_id=str(raw.get("sequence_id") or ""),
+        output_path=str(raw.get("output_path") or raw.get("model_path") or raw.get("hdf5_path") or ""),
+        parameters=dict(raw.get("parameters") if isinstance(raw.get("parameters"), dict) else {}),
+        path=path,
+    )
+    return row
+
+
 def beamng_status() -> dict[str, Any]:
     status = default_backend_registry().status("beamng")
     return asdict(status) if is_dataclass(status) else dict(status)
@@ -2482,6 +2536,22 @@ def _read_json(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _load_mapping_file(path: Path) -> dict[str, Any]:
+    if path.suffix.lower() == ".json":
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError(f"Expected JSON object in {path}")
+        return payload
+    return load_yaml_file(path)
+
+
+def _resolve_relative_path(base_dir: Path, value: str) -> Path:
+    path = Path(value)
+    if path.is_absolute():
+        return path
+    return (base_dir / path).resolve()
 
 
 def _trainer_manifest_paths(root: Path) -> list[Path]:

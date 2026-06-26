@@ -246,6 +246,72 @@ def test_training_config_save_and_list(tmp_path) -> None:
     assert row["parameters"] == {"epochs": 4, "batch_size": 8}
 
 
+def test_import_training_config_installs_dataset_and_trainer_manifests(tmp_path) -> None:
+    source_root = tmp_path / "bundle"
+    dataset_root = source_root / "dataset"
+    trainer_root = source_root / "trainer"
+    dataset_root.mkdir(parents=True)
+    trainer_root.mkdir(parents=True)
+    dataset_manifest = _write_manifest_dataset(dataset_root)
+    trainer_script = trainer_root / "train.py"
+    trainer_script.write_text("print('{}')\n", encoding="utf-8")
+    trainer_manifest = trainer_root / "trainer.yaml"
+    trainer_manifest.write_text(
+        """
+trainer_id: bundle_trainer
+display_name: Bundle Trainer
+runtime: python
+entrypoint: train.py
+parameters:
+  epochs:
+    type: int
+    default: 2
+arguments:
+  - "{dataset_root}"
+  - "--output"
+  - "{output_dir}"
+outputs:
+  artifact_type: checkpoint
+""",
+        encoding="utf-8",
+    )
+    training_config = source_root / "training_config.yaml"
+    training_config.write_text(
+        """
+id: bundle_config
+label: Bundle Config
+dataset_manifest: dataset/dataset_manifest.yaml
+trainer_manifest: trainer/trainer.yaml
+sequence_id: clip_001
+output_path: outputs/models/bundle_config
+parameters:
+  epochs: 5
+""",
+        encoding="utf-8",
+    )
+
+    row = services.import_training_config(
+        training_config,
+        path=tmp_path / "training_configs.json",
+        dataset_destination_root=tmp_path / "datasets",
+        trainer_destination_root=tmp_path / "trainers",
+    )
+
+    installed_dataset = load_yaml_file(tmp_path / "datasets" / "custom_drive" / "dataset_manifest.yaml")
+    installed_trainer = load_yaml_file(tmp_path / "trainers" / "bundle_trainer.yaml")
+    configs = services.training_config_entries(tmp_path / "training_configs.json")
+
+    assert row["id"] == "bundle_config"
+    assert row["training_preset_id"] == "bundle_trainer"
+    assert row["dataset_root"] == str((tmp_path / "datasets" / "custom_drive").resolve())
+    assert row["adapter"] == "manifest_dataset"
+    assert row["sequence_id"] == "clip_001"
+    assert row["parameters"] == {"epochs": 5}
+    assert installed_dataset["imported_from"] == str(dataset_manifest.resolve())
+    assert installed_trainer["entrypoint"] == str(trainer_script.resolve())
+    assert any(config["id"] == "bundle_config" for config in configs)
+
+
 def test_desktop_services_list_navigation_tasks_and_checkpoints(tmp_path) -> None:
     task_path = tmp_path / "task.yaml"
     services.save_manual_navigation_task(
