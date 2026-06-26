@@ -1050,6 +1050,8 @@ class MainWindow(QMainWindow):
         self._trainer_params_autofill = ""
         self.training_config_name_edit = QLineEdit()
         self.training_config_name_edit.setPlaceholderText("Custom training config")
+        self.training_output_edit = QLineEdit()
+        self.training_output_edit.setPlaceholderText(r"outputs\models\custom_training_run")
         self.model_config_name_edit = QLineEdit()
         self.model_config_name_edit.setPlaceholderText("Johnson Valley LE-WM validated")
 
@@ -1080,6 +1082,7 @@ class MainWindow(QMainWindow):
             self.adapter_edit,
             self.stablewm_hdf5_edit,
             self.model_path_edit,
+            self.training_output_edit,
             self.training_config_name_edit,
             self.model_config_name_edit,
             self.task_path_edit,
@@ -1293,6 +1296,7 @@ class MainWindow(QMainWindow):
                 self._section_label("Training config summary"),
                 self.training_preset_summary,
                 self._field("Training parameters", self.trainer_params_edit),
+                self._field("Training output", self.training_output_edit),
                 self._action_button("Start training/export", self.run_training_preset, primary=True),
                 self._field("World model config", self.world_model_config_edit_combo),
                 self._field("Config name", self.model_config_name_edit),
@@ -1806,7 +1810,7 @@ class MainWindow(QMainWindow):
             self.model_summary.setText(_compact_json(payload))
             self.log(f"Training parameters are invalid: {exc}")
             return
-        output = self.model_path_edit.text().strip() or self._path_combo_value(self.home_model_combo).strip()
+        output = self._current_training_output_path(str(preset.get("id") or ""))
         self.log(f"Starting trainer manifest: {preset.get('label', preset.get('id', services.NAN_TEXT))}")
         self._run_task(
             lambda: services.run_trainer_manifest_job(
@@ -1859,7 +1863,7 @@ class MainWindow(QMainWindow):
             self.model_summary.setText(_compact_json({"status": "invalid_parameters", "message": str(exc)}))
             self.log(f"Training config save failed: {exc}")
             return
-        output_path = self.stablewm_hdf5_edit.text().strip() if preset_id == "stablewm_hdf5" else self._path_combo_value(self.home_model_combo).strip()
+        output_path = self._current_training_output_path(preset_id)
         try:
             row = services.save_training_config(
                 config_id=label,
@@ -1885,7 +1889,14 @@ class MainWindow(QMainWindow):
         if not root:
             self.log("训练 tiny world model 需要 dataset root")
             return
-        output = self.model_path_edit.text().strip() or str(services.ROOT / "outputs" / "models" / "gui_tiny_world_model")
+        try:
+            parameters = self._trainer_parameters_from_text()
+            ridge = float(parameters.get("ridge", 1e-4))
+        except (TypeError, ValueError) as exc:
+            self.model_summary.setText(_compact_json({"status": "invalid_parameters", "message": str(exc)}))
+            self.log(f"Training parameters are invalid: {exc}")
+            return
+        output = self._current_training_output_path("tiny_world_model") or str(services.ROOT / "outputs" / "models" / "gui_tiny_world_model")
         self.log(f"训练 tiny world model -> {output}")
         self._run_task(
             lambda: services.train_tiny_world_model(
@@ -1893,6 +1904,7 @@ class MainWindow(QMainWindow):
                 output,
                 adapter=self.adapter_edit.text().strip(),
                 sequence_id=self.sequence_combo.currentText().strip(),
+                ridge=ridge,
             ),
             self._training_finished,
             "training failed",
@@ -1901,7 +1913,15 @@ class MainWindow(QMainWindow):
 
     def export_stablewm_hdf5(self) -> None:
         root = self.dataset_root_edit.text().strip()
-        output = self.stablewm_hdf5_edit.text().strip() or str(services.ROOT / "outputs" / "stablewm" / "gui_export.h5")
+        try:
+            parameters = self._trainer_parameters_from_text()
+            image_size = int(parameters.get("image_size", self.settings.image_size))
+        except (TypeError, ValueError) as exc:
+            self.dataset_summary.setText(_compact_json({"status": "invalid_parameters", "message": str(exc)}))
+            self.log(f"StableWM export parameters are invalid: {exc}")
+            return
+        output = self._current_training_output_path("stablewm_hdf5") or str(services.ROOT / "outputs" / "stablewm" / "gui_export.h5")
+        self.stablewm_hdf5_edit.setText(output)
         self.log(f"导出 StableWM HDF5 -> {output}")
         self._run_task(
             lambda: services.export_lewm_hdf5(
@@ -1909,7 +1929,7 @@ class MainWindow(QMainWindow):
                 output,
                 adapter=self.adapter_edit.text().strip(),
                 sequence_id=self.sequence_combo.currentText().strip(),
-                image_size=self.settings.image_size,
+                image_size=image_size,
             ),
             self._hdf5_exported,
             "stablewm export failed",
@@ -1917,8 +1937,14 @@ class MainWindow(QMainWindow):
         )
 
     def train_lewm_cost_model(self) -> None:
-        hdf5_path = self.stablewm_hdf5_edit.text().strip()
-        output = self.model_path_edit.text().strip() or str(services.ROOT / "outputs" / "models" / "gui_lewm_cost")
+        try:
+            parameters = self._trainer_parameters_from_text()
+        except ValueError as exc:
+            self.model_summary.setText(_compact_json({"status": "invalid_parameters", "message": str(exc)}))
+            self.log(f"LE-WM cost parameters are invalid: {exc}")
+            return
+        hdf5_path = str(parameters.get("input_hdf5") or self.stablewm_hdf5_edit.text().strip())
+        output = self._current_training_output_path("lewm_cost_model") or str(services.ROOT / "outputs" / "models" / "gui_lewm_cost")
         self.log(f"训练 LE-WM cost model -> {output}")
         self._run_task(
             lambda: services.train_lewm_cost_model(hdf5_path, output),
@@ -2144,6 +2170,7 @@ class MainWindow(QMainWindow):
         self.model_path_edit.setText(str(payload.get("output_dir", "")))
         if payload.get("output_dir"):
             self.home_model_combo.setCurrentText(str(payload.get("output_dir", "")))
+            self.training_output_edit.setText(str(payload.get("output_dir", "")))
         self.model_summary.setText(_compact_json(payload))
         self._set_training_run_views(payload)
         self.log(f"模型训练完成: {payload.get('model_path', payload.get('checkpoint_path', services.NAN_TEXT))}")
@@ -2151,6 +2178,8 @@ class MainWindow(QMainWindow):
 
     def _hdf5_exported(self, payload: dict[str, Any]) -> None:
         self.stablewm_hdf5_edit.setText(str(payload.get("output_hdf5", "")))
+        if payload.get("output_hdf5"):
+            self.training_output_edit.setText(str(payload.get("output_hdf5", "")))
         self.dataset_summary.setText(_compact_json(payload))
         self._set_training_run_views(payload)
         self.log(f"HDF5 导出完成: {payload.get('output_hdf5', services.NAN_TEXT)}")
@@ -2243,6 +2272,7 @@ class MainWindow(QMainWindow):
             self._select_training_preset(preset_id)
         output_path = str(row.get("output_path") or "").strip()
         if output_path:
+            self.training_output_edit.setText(output_path)
             if preset_id == "stablewm_hdf5":
                 self.stablewm_hdf5_edit.setText(output_path)
             else:
@@ -2253,6 +2283,14 @@ class MainWindow(QMainWindow):
         self._trainer_params_autofill = text
         self.trainer_params_edit.setPlainText(text)
         self.model_summary.setText(_compact_json({"training_config": row}))
+
+    def _current_training_output_path(self, preset_id: str = "") -> str:
+        output = self.training_output_edit.text().strip() if hasattr(self, "training_output_edit") else ""
+        if output:
+            return output
+        if preset_id == "stablewm_hdf5":
+            return self.stablewm_hdf5_edit.text().strip()
+        return self.model_path_edit.text().strip() or self._path_combo_value(self.home_model_combo).strip()
 
     def _fill_dataset_manifest_combo(self) -> None:
         current = self.dataset_catalog_combo.currentData()

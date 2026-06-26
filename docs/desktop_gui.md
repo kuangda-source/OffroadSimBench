@@ -21,6 +21,9 @@ offroad-sim-gui
 - The Dataset and Training workbench owns dataset import/preview, HDF5 export,
   checkpoint path, algorithm, world-model type, model training, and saved
   world-model configs.
+- Dataset and Training can save reusable training configs that bind a dataset
+  root/adapter/sequence, a built-in or imported trainer manifest, JSON training
+  parameters, and a dedicated training output path.
 - The BeamNG Simulation workbench owns task selection, region/start/goal
   editing, model-config selection, runtime checks, simulation runs, evaluation,
   and terrain draft export.
@@ -30,6 +33,8 @@ offroad-sim-gui
 - Tiny learned world-model training through `TinyLearnedWorldModel.fit`.
 - StableWM HDF5 export with configurable image size from the advanced settings dialog.
 - LE-WM-compatible cost-model training from exported HDF5 files.
+- Imported `trainer.yaml` manifests can run external local model trainers and
+  record `training_run.json`, metrics, history curves, stdout, and stderr.
 - ORFD frame preview for RGB, depth, and label assets, including official ORFD ZIP releases.
 - ORFD-derived local heightmap/OBJ terrain draft export for BeamNG map prototyping.
 - BeamNG navigation task editing with realtime preview of region, start/goal, route markers, camera height,
