@@ -38,6 +38,7 @@ class WorldModelDirectAgent(OffroadAgent):
         self._last_diagnostics: dict[str, Any] = {}
         self._stuck_steps = 0
         self._last_goal_distance: float | None = None
+        self._goal_hold_latched = False
 
     def reset(self, scenario_info: Any) -> None:
         self.world_model.reset(scenario_info if isinstance(scenario_info, dict) else {"scenario": scenario_info})
@@ -45,6 +46,7 @@ class WorldModelDirectAgent(OffroadAgent):
         self._last_diagnostics = {}
         self._stuck_steps = 0
         self._last_goal_distance = None
+        self._goal_hold_latched = False
 
     def act(self, obs: Observation) -> Action:
         terminal_stop = self._terminal_stop_action(obs)
@@ -57,6 +59,7 @@ class WorldModelDirectAgent(OffroadAgent):
                 "target_goal": [float(obs.goal[0]), float(obs.goal[1])],
                 "route_used": False,
                 "goal_stop": True,
+                "goal_hold_latched": self._goal_hold_latched,
                 "executed_action": _action_dict(terminal_stop),
             }
             return terminal_stop
@@ -77,6 +80,7 @@ class WorldModelDirectAgent(OffroadAgent):
             "executed_action": _action_dict(action),
             "stuck_recovery": stuck_recovery,
             "goal_stop": False,
+            "goal_hold_latched": self._goal_hold_latched,
         }
         return action
 
@@ -113,7 +117,9 @@ class WorldModelDirectAgent(OffroadAgent):
             return None
         state = obs.vehicle_state
         distance = math.hypot(float(state.x) - float(obs.goal[0]), float(state.y) - float(obs.goal[1]))
-        if distance > radius:
+        if distance <= radius:
+            self._goal_hold_latched = True
+        if not self._goal_hold_latched:
             return None
         self._stuck_steps = 0
         self._last_goal_distance = distance

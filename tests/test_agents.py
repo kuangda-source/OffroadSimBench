@@ -159,6 +159,30 @@ def test_world_model_direct_agent_brakes_inside_navigation_goal_radius() -> None
     assert diagnostics["goal_stop"] is True
 
 
+def test_world_model_direct_agent_latches_goal_hold_after_overshoot() -> None:
+    agent = make_agent("world_model_direct", planner_config={"horizon": 4, "num_samples": 16, "seed": 4})
+    first = Observation(
+        timestamp=0.0,
+        vehicle_state=VehicleState(x=19.5, y=0.0, yaw=0.0, speed=3.0),
+        goal=(20.0, 0.0),
+        info={"navigation_region": {"goal_radius": 2.0}},
+    )
+    overshot = Observation(
+        timestamp=0.1,
+        vehicle_state=VehicleState(x=22.4, y=0.0, yaw=0.0, speed=2.0),
+        goal=(20.0, 0.0),
+        info={"navigation_region": {"goal_radius": 2.0}},
+    )
+
+    agent.act(first)
+    action = agent.act(overshot)
+    diagnostics = agent.diagnostics()
+
+    assert action.throttle == 0.0
+    assert action.brake == 1.0
+    assert diagnostics["goal_hold_latched"] is True
+
+
 def test_world_model_direct_agent_keeps_low_speed_progress() -> None:
     observation = Observation(
         timestamp=0.0,
@@ -227,6 +251,30 @@ def test_model_mpc_agent_brakes_inside_navigation_goal_radius() -> None:
     assert action.throttle == 0.0
     assert action.brake == 1.0
     assert diagnostics["terminal_stop"] is True
+
+
+def test_model_mpc_agent_latches_goal_hold_after_overshoot() -> None:
+    agent = ModelMPCAgent(route=[(0.0, 0.0), (10.0, 0.0)], planner_config={"horizon": 4, "num_samples": 12, "seed": 2})
+    first = Observation(
+        timestamp=0.0,
+        vehicle_state=VehicleState(x=9.0, y=0.0, yaw=0.0, speed=4.0),
+        goal=(10.0, 0.0),
+        info={"navigation_region": {"goal": {"pos": [10.0, 0.0], "radius": 2.0}}},
+    )
+    overshot = Observation(
+        timestamp=0.1,
+        vehicle_state=VehicleState(x=12.5, y=0.0, yaw=0.0, speed=2.5),
+        goal=(10.0, 0.0),
+        info={"navigation_region": {"goal": {"pos": [10.0, 0.0], "radius": 2.0}}},
+    )
+
+    agent.act(first)
+    action = agent.act(overshot)
+    diagnostics = agent.diagnostics()
+
+    assert action.throttle == 0.0
+    assert action.brake == 1.0
+    assert diagnostics["goal_hold_latched"] is True
 
 
 def test_model_mpc_agent_recovers_from_low_speed_stuck_turn() -> None:

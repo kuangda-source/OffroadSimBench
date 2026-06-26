@@ -47,6 +47,7 @@ class ModelMPCAgent(OffroadAgent):
         self._last_diagnostics: dict[str, Any] = {}
         self._stuck_steps = 0
         self._stuck_recovery = False
+        self._goal_hold_latched = False
 
     def reset(self, scenario_info: Any) -> None:
         if isinstance(scenario_info, dict):
@@ -59,6 +60,7 @@ class ModelMPCAgent(OffroadAgent):
         self._last_diagnostics = {}
         self._stuck_steps = 0
         self._stuck_recovery = False
+        self._goal_hold_latched = False
 
     def act(self, obs: Observation) -> Action:
         terminal_action = self._terminal_stop_action(obs)
@@ -71,6 +73,7 @@ class ModelMPCAgent(OffroadAgent):
                 "algorithm_model_path": self.algorithm_model_path or None,
                 "route_length": len(self.route),
                 "terminal_stop": True,
+                "goal_hold_latched": self._goal_hold_latched,
                 "target_goal": [float(obs.goal[0]), float(obs.goal[1])],
                 "executed_action": _action_dict(terminal_action),
             }
@@ -105,6 +108,7 @@ class ModelMPCAgent(OffroadAgent):
             "stuck_steps": self._stuck_steps,
             "stuck_recovery": self._stuck_recovery,
             "terminal_stop": False,
+            "goal_hold_latched": self._goal_hold_latched,
         }
         return action
 
@@ -130,7 +134,9 @@ class ModelMPCAgent(OffroadAgent):
             return None
         state = obs.vehicle_state
         distance = math.hypot(float(state.x) - float(obs.goal[0]), float(state.y) - float(obs.goal[1]))
-        if distance > radius:
+        if distance <= radius:
+            self._goal_hold_latched = True
+        if not self._goal_hold_latched:
             return None
         self._stuck_steps = 0
         self._stuck_recovery = False

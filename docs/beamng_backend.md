@@ -135,6 +135,9 @@ At runtime, the BeamNG backend includes the region task metadata in each
 observation. This keeps simulator control, model planning, and evaluation
 metrics connected through the shared `Observation.info` contract instead of
 hard-coding task logic inside BeamNG-only code.
+The `model_mpc` and `world_model_direct` agents latch a terminal goal hold once
+they enter the configured goal radius, so minor inertia overshoot does not
+cause the controller to accelerate again after arrival.
 
 The demo runs through the shared `route_world_model` agent so the selected
 world model and planner remain replaceable without BeamNG-specific application
