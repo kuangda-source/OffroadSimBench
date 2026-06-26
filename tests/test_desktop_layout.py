@@ -57,3 +57,15 @@ def test_desktop_controls_keep_stable_visual_heights() -> None:
         assert card.minimumHeight() == 82
 
     window.close()
+
+
+def test_dataset_training_page_exposes_external_trainer_controls() -> None:
+    _ensure_app()
+    window = MainWindow()
+
+    assert window.trainer_entrypoint_edit.placeholderText()
+    assert "{dataset_root}" in window.trainer_arguments_edit.toPlainText()
+    assert "{output_dir}" in window.trainer_arguments_edit.toPlainText()
+    assert window.save_trainer_button.text()
+
+    window.close()

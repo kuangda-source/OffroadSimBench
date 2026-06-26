@@ -279,6 +279,14 @@ outputs:
   artifact_type: checkpoint
 ```
 
+If an external algorithm does not already ship a `trainer.yaml`, the GUI can
+create one from the `Model training` tab: fill `Trainer entrypoint`, keep or
+edit the JSON `Trainer arguments` template, optionally add a JSON `Trainer
+parameter schema`, and click `Save trainer from script`. The saved trainer is
+installed under `configs/trainers/` and immediately appears in the `Training
+preset` selector. A `training_config.yaml` bundle can also inline the same
+trainer block under `trainer:` instead of referencing `trainer_manifest`.
+
 ### Environment
 
 The recommended setup uses the micromamba runtime bundled with the local BeamNG install:

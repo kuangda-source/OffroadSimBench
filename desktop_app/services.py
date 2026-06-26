@@ -493,6 +493,49 @@ def import_trainer_manifest(source_path: str | Path, destination_root: str | Pat
     return load_trainer_manifest(target)
 
 
+def save_trainer_manifest(
+    *,
+    trainer_id: str = "",
+    label: str = "",
+    entrypoint: str,
+    runtime: str = "python",
+    arguments: list[Any] | None = None,
+    parameters: dict[str, Any] | None = None,
+    input_spec: dict[str, Any] | None = None,
+    outputs: dict[str, Any] | None = None,
+    description: str = "",
+    destination_root: str | Path | None = None,
+) -> dict[str, Any]:
+    """Create a trainer manifest from a local algorithm entrypoint."""
+
+    entrypoint_path = Path(entrypoint).resolve()
+    if not entrypoint_path.exists():
+        raise FileNotFoundError(f"Trainer entrypoint not found: {entrypoint_path}")
+    manifest_id = _safe_name(str(trainer_id or label or entrypoint_path.stem)).lower()
+    display_name = str(label or trainer_id or entrypoint_path.stem)
+    data: dict[str, Any] = {
+        "trainer_id": manifest_id,
+        "display_name": display_name,
+        "runtime": str(runtime or "python"),
+        "entrypoint": str(entrypoint_path),
+        "arguments": list(arguments or ["{dataset_root}", "--output", "{output_dir}"]),
+        "parameters": dict(parameters or {}),
+        "input": dict(input_spec or {}),
+        "outputs": dict(outputs or {"artifact_type": "artifact"}),
+    }
+    if description:
+        data["description"] = description
+    destination = Path(destination_root or CONFIG_ROOT / "trainers")
+    destination.mkdir(parents=True, exist_ok=True)
+    target = destination / f"{manifest_id}.yaml"
+    try:
+        import yaml
+    except ModuleNotFoundError as exc:
+        raise RuntimeError("PyYAML is required to save trainer manifests.") from exc
+    target.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True), encoding="utf-8")
+    return load_trainer_manifest(target)
+
+
 def run_trainer_manifest_job(
     manifest_path: str | Path,
     *,
@@ -934,6 +977,25 @@ def import_training_config(
     if trainer_manifest:
         trainer_row = import_trainer_manifest(
             _resolve_relative_path(source.parent, trainer_manifest),
+            destination_root=trainer_destination_root or TRAINER_MANIFEST_DIRS[0],
+        )
+        preset_id = str(trainer_row.get("id") or preset_id)
+    inline_trainer = raw.get("trainer") if isinstance(raw.get("trainer"), dict) else {}
+    if inline_trainer and not trainer_manifest:
+        trainer_data = dict(inline_trainer)
+        entrypoint = str(trainer_data.get("entrypoint") or "").strip()
+        if not entrypoint:
+            raise ValueError(f"Inline trainer has no entrypoint: {source}")
+        trainer_row = save_trainer_manifest(
+            trainer_id=str(trainer_data.get("trainer_id") or trainer_data.get("id") or source.stem),
+            label=str(trainer_data.get("display_name") or trainer_data.get("label") or trainer_data.get("trainer_id") or source.stem),
+            entrypoint=str(_resolve_relative_path(source.parent, entrypoint)),
+            runtime=str(trainer_data.get("runtime") or "python"),
+            arguments=list(trainer_data.get("arguments") or ["{dataset_root}", "--output", "{output_dir}"]),
+            parameters=dict(trainer_data.get("parameters") if isinstance(trainer_data.get("parameters"), dict) else {}),
+            input_spec=dict(trainer_data.get("input") if isinstance(trainer_data.get("input"), dict) else {}),
+            outputs=dict(trainer_data.get("outputs") if isinstance(trainer_data.get("outputs"), dict) else {"artifact_type": "artifact"}),
+            description=str(trainer_data.get("description") or ""),
             destination_root=trainer_destination_root or TRAINER_MANIFEST_DIRS[0],
         )
         preset_id = str(trainer_row.get("id") or preset_id)

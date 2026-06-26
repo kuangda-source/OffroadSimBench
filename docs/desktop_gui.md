@@ -88,6 +88,28 @@ command arguments, declared parameters, and artifact type. After importing the
 training config, use `Start training/export`; the run writes `training_run.json`,
 stdout/stderr logs, metrics, and curve history when the trainer emits JSON.
 
+If a trainer does not ship with a manifest yet, the Model Training tab can
+create one directly from a local script path. Set `Trainer entrypoint`, edit the
+JSON `Trainer arguments` list such as `["{dataset_root}", "--output",
+"{output_dir}"]`, optionally declare a JSON parameter schema, then click `Save
+trainer from script`. Training bundles can also inline the same definition:
+
+```yaml
+trainer:
+  trainer_id: inline_trainer
+  display_name: Inline Trainer
+  runtime: python
+  entrypoint: train.py
+  arguments:
+    - "{dataset_root}"
+    - "--output"
+    - "{output_dir}"
+  parameters:
+    epochs:
+      type: int
+      default: 10
+```
+
 ## Explicit Placeholders
 
 The GUI intentionally shows `NaN` or `未完成` for capabilities whose runtime

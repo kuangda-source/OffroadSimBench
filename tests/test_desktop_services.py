@@ -312,6 +312,61 @@ parameters:
     assert any(config["id"] == "bundle_config" for config in configs)
 
 
+def test_import_training_config_accepts_inline_trainer_definition(tmp_path) -> None:
+    source_root = tmp_path / "inline_bundle"
+    source_root.mkdir()
+    trainer_script = source_root / "train_inline.py"
+    trainer_script.write_text("print('{}')\n", encoding="utf-8")
+    training_config = source_root / "training_config.yaml"
+    training_config.write_text(
+        """
+id: inline_config
+label: Inline Config
+dataset_root: D:/datasets/custom_drive
+adapter: manifest_dataset
+sequence_id: clip_001
+trainer:
+  trainer_id: inline_trainer
+  display_name: Inline Trainer
+  runtime: python
+  entrypoint: train_inline.py
+  arguments:
+    - "{dataset_root}"
+    - "--output"
+    - "{output_dir}"
+    - "--epochs"
+    - "{params.epochs}"
+  parameters:
+    epochs:
+      type: int
+      default: 3
+  outputs:
+    artifact_type: checkpoint
+output_path: outputs/models/inline_config
+parameters:
+  epochs: 6
+""",
+        encoding="utf-8",
+    )
+
+    row = services.import_training_config(
+        training_config,
+        path=tmp_path / "training_configs.json",
+        trainer_destination_root=tmp_path / "trainers",
+    )
+
+    installed_trainer = load_yaml_file(tmp_path / "trainers" / "inline_trainer.yaml")
+    configs = services.training_config_entries(tmp_path / "training_configs.json")
+
+    assert row["training_preset_id"] == "inline_trainer"
+    assert row["dataset_root"] == "D:/datasets/custom_drive"
+    assert row["adapter"] == "manifest_dataset"
+    assert row["parameters"] == {"epochs": 6}
+    assert installed_trainer["entrypoint"] == str(trainer_script.resolve())
+    assert installed_trainer["arguments"][-1] == "{params.epochs}"
+    assert any(config["id"] == "inline_config" and config["training_preset_id"] == "inline_trainer" for config in configs)
+
+
 def test_desktop_services_list_navigation_tasks_and_checkpoints(tmp_path) -> None:
     task_path = tmp_path / "task.yaml"
     services.save_manual_navigation_task(

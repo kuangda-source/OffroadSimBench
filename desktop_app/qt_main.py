@@ -1048,6 +1048,14 @@ class MainWindow(QMainWindow):
         self.trainer_params_edit.setPlaceholderText('{"epochs": 10, "batch_size": 16}')
         self.trainer_params_edit.setFixedHeight(96)
         self._trainer_params_autofill = ""
+        self.trainer_entrypoint_edit = QLineEdit()
+        self.trainer_entrypoint_edit.setPlaceholderText(r"D:\models\my_algorithm\train.py")
+        self.trainer_arguments_edit = QTextEdit()
+        self.trainer_arguments_edit.setPlainText(json.dumps(["{dataset_root}", "--output", "{output_dir}"], indent=2))
+        self.trainer_arguments_edit.setFixedHeight(86)
+        self.trainer_schema_edit = QTextEdit()
+        self.trainer_schema_edit.setPlaceholderText('{"epochs": {"type": "int", "default": 10}}')
+        self.trainer_schema_edit.setFixedHeight(86)
         self.training_config_name_edit = QLineEdit()
         self.training_config_name_edit.setPlaceholderText("Custom training config")
         self.training_output_edit = QLineEdit()
@@ -1084,6 +1092,7 @@ class MainWindow(QMainWindow):
             self.model_path_edit,
             self.training_output_edit,
             self.training_config_name_edit,
+            self.trainer_entrypoint_edit,
             self.model_config_name_edit,
             self.task_path_edit,
         ):
@@ -1291,6 +1300,12 @@ class MainWindow(QMainWindow):
         trainer_import = QPushButton("导入训练器 manifest")
         self._configure_button(trainer_import)
         trainer_import.clicked.connect(self.import_trainer_manifest)
+        trainer_entry_browse = QPushButton("Select")
+        self._configure_button(trainer_entry_browse)
+        trainer_entry_browse.clicked.connect(lambda: self._browse_file(self.trainer_entrypoint_edit, "Select trainer entrypoint"))
+        self.save_trainer_button = QPushButton("Save trainer from script")
+        self._configure_button(self.save_trainer_button)
+        self.save_trainer_button.clicked.connect(self.save_trainer_manifest_from_gui)
         training_config_import = QPushButton("Import training config")
         self._configure_button(training_config_import)
         training_config_import.clicked.connect(self.import_training_config)
@@ -1303,6 +1318,10 @@ class MainWindow(QMainWindow):
                 self._action_button("Save training config", self.save_training_config),
                 self._field("Training preset", self.training_preset_combo),
                 trainer_import,
+                self._field("Trainer entrypoint", self._with_button(self.trainer_entrypoint_edit, trainer_entry_browse)),
+                self._field("Trainer arguments", self.trainer_arguments_edit),
+                self._field("Trainer parameter schema", self.trainer_schema_edit),
+                self.save_trainer_button,
                 self._section_label("Training config summary"),
                 self.training_preset_summary,
                 self._field("Training parameters", self.trainer_params_edit),
@@ -1831,6 +1850,33 @@ class MainWindow(QMainWindow):
             return
         self.model_summary.setText(_compact_json({"status": "imported", "trainer": row}))
         self.log(f"Trainer manifest imported: {row.get('label', row.get('id', services.NAN_TEXT))}")
+        self.refresh_catalogs()
+        self._select_training_preset(str(row.get("id") or ""))
+
+    def save_trainer_manifest_from_gui(self) -> None:
+        entrypoint = self.trainer_entrypoint_edit.text().strip()
+        if not entrypoint:
+            self.model_summary.setText(_compact_json({"status": "invalid_trainer", "message": "Trainer entrypoint is required."}))
+            return
+        try:
+            arguments = self._trainer_arguments_from_text()
+            schema = self._trainer_schema_from_text()
+            row = services.save_trainer_manifest(
+                trainer_id=Path(entrypoint).stem,
+                label=Path(entrypoint).stem.replace("_", " ").title(),
+                entrypoint=entrypoint,
+                runtime="python",
+                arguments=arguments,
+                parameters=schema,
+                input_spec={"dataset_format": "any_registered_adapter"},
+                outputs={"artifact_type": "checkpoint"},
+            )
+        except Exception as exc:
+            self.model_summary.setText(_compact_json({"status": "save_failed", "message": str(exc)}))
+            self.log(f"Trainer manifest save failed: {exc}")
+            return
+        self.model_summary.setText(_compact_json({"status": "saved", "trainer": row}))
+        self.log(f"Trainer manifest saved: {row.get('label', row.get('id', services.NAN_TEXT))}")
         self.refresh_catalogs()
         self._select_training_preset(str(row.get("id") or ""))
 
@@ -2498,6 +2544,30 @@ class MainWindow(QMainWindow):
             raise ValueError("Expected JSON object.")
         return payload
 
+    def _trainer_arguments_from_text(self) -> list[str]:
+        text = self.trainer_arguments_edit.toPlainText().strip() if hasattr(self, "trainer_arguments_edit") else ""
+        if not text:
+            return ["{dataset_root}", "--output", "{output_dir}"]
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Expected JSON list for trainer arguments: {exc}") from exc
+        if not isinstance(payload, list) or not all(isinstance(item, str) for item in payload):
+            raise ValueError("Expected trainer arguments to be a JSON list of strings.")
+        return payload
+
+    def _trainer_schema_from_text(self) -> dict[str, Any]:
+        text = self.trainer_schema_edit.toPlainText().strip() if hasattr(self, "trainer_schema_edit") else ""
+        if not text:
+            return {}
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Expected JSON object for trainer parameter schema: {exc}") from exc
+        if not isinstance(payload, dict):
+            raise ValueError("Expected trainer parameter schema to be a JSON object.")
+        return payload
+
     def _fill_training_run_list(self) -> None:
         if not hasattr(self, "training_run_list"):
             return
@@ -2925,6 +2995,11 @@ class MainWindow(QMainWindow):
 
     def _browse_path_or_dir(self, target: QLineEdit) -> None:
         path = QFileDialog.getExistingDirectory(self, "选择目录", target.text() or str(services.ROOT))
+        if path:
+            target.setText(path)
+
+    def _browse_file(self, target: QLineEdit, title: str) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, title, target.text() or str(services.ROOT), "Python/scripts (*.py *.bat *.cmd *.exe);;All files (*)")
         if path:
             target.setText(path)
 

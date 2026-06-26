@@ -102,6 +102,33 @@ def test_import_trainer_manifest_copies_external_manifest(tmp_path, monkeypatch)
     assert entries[0]["id"] == "echo_trainer"
 
 
+def test_save_trainer_manifest_from_entrypoint_exposes_preset(tmp_path) -> None:
+    script = tmp_path / "train_custom.py"
+    script.write_text("print('{}')\n", encoding="utf-8")
+    destination_root = tmp_path / "trainers"
+
+    row = services.save_trainer_manifest(
+        trainer_id="custom_path_trainer",
+        label="Custom Path Trainer",
+        entrypoint=str(script),
+        runtime="python",
+        arguments=["{dataset_root}", "--output", "{output_dir}", "--epochs", "{params.epochs}"],
+        parameters={"epochs": {"type": "int", "default": 2}},
+        outputs={"artifact_type": "checkpoint"},
+        destination_root=destination_root,
+    )
+
+    saved = load_yaml_file(destination_root / "custom_path_trainer.yaml")
+    presets = services.training_preset_entries()
+
+    assert row["id"] == "custom_path_trainer"
+    assert row["label"] == "Custom Path Trainer"
+    assert saved["entrypoint"] == str(script.resolve())
+    assert saved["arguments"][-1] == "{params.epochs}"
+    assert any(preset["id"] == "custom_path_trainer" for preset in services.trainer_manifest_entries(destination_root))
+    assert any(preset["id"] == "tiny_world_model" for preset in presets)
+
+
 def test_run_trainer_manifest_job_executes_command_and_records(tmp_path) -> None:
     manifest = _write_echo_trainer(tmp_path)
     output_dir = tmp_path / "run"
