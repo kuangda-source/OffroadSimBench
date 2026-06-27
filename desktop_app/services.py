@@ -573,18 +573,20 @@ def run_trainer_manifest_job(
         )
         raise RuntimeError((completed.stderr or completed.stdout or "trainer command failed").strip())
 
-    payload = _json_from_command_output(completed.stdout, command)
     outputs = manifest.get("outputs", {}) if isinstance(manifest.get("outputs"), dict) else {}
+    payload = _trainer_result_payload(manifest, target_dir, completed.stdout, command)
+    metrics = payload.get("metrics") if isinstance(payload.get("metrics"), dict) else {}
+    history = payload.get("history") if isinstance(payload.get("history"), dict) else {}
     artifact_path = str(
         payload.get("checkpoint_path")
         or payload.get("model_path")
         or payload.get("artifact_path")
         or payload.get("output_dir")
+        or outputs.get("artifact_path")
         or target_dir
     )
+    artifact_path = str(_resolve_trainer_output_path(target_dir, artifact_path))
     artifact_type = str(payload.get("artifact_type") or outputs.get("artifact_type") or "artifact")
-    metrics = payload.get("metrics") if isinstance(payload.get("metrics"), dict) else _numeric_payload(payload)
-    history = payload.get("history") if isinstance(payload.get("history"), dict) else {}
     record = write_training_run_record(
         target_dir,
         preset_id=manifest["id"],
@@ -601,6 +603,10 @@ def run_trainer_manifest_job(
         logs={"stdout": str(stdout_path), "stderr": str(stderr_path)},
     )
     payload["output_dir"] = str(target_dir.resolve())
+    payload["metrics"] = metrics
+    payload["history"] = history
+    payload["artifact_path"] = artifact_path
+    payload["artifact_type"] = artifact_type
     payload["training_run_path"] = record["path"]
     payload["command"] = command
     return payload
@@ -677,6 +683,92 @@ def training_metric_history(record: dict[str, Any]) -> dict[str, list[float]]:
     if isinstance(metrics, dict):
         for key, value in _numeric_metric_items(metrics):
             history.setdefault(key, [value])
+    return history
+
+
+def _trainer_result_payload(manifest: dict[str, Any], output_dir: Path, stdout: str, command: list[str]) -> dict[str, Any]:
+    """Collect a trainer result from stdout JSON and optional sidecar files."""
+
+    payload: dict[str, Any] = {}
+    if stdout.strip():
+        try:
+            payload = _json_from_command_output(stdout, command)
+        except RuntimeError:
+            payload = {}
+    outputs = manifest.get("outputs", {}) if isinstance(manifest.get("outputs"), dict) else {}
+
+    metrics = payload.get("metrics") if isinstance(payload.get("metrics"), dict) else _numeric_payload(payload)
+    history = payload.get("history") if isinstance(payload.get("history"), dict) else {}
+
+    metrics_from_file = _read_optional_json_mapping(_trainer_output_file(output_dir, outputs.get("metrics_file"), "metrics.json"))
+    if metrics_from_file:
+        metrics.update(metrics_from_file)
+
+    history_from_file = _read_optional_json_mapping(_trainer_output_file(output_dir, outputs.get("history_file"), "history.json"))
+    if history_from_file:
+        history.update(history_from_file)
+
+    event_history = _read_metric_events(_trainer_output_file(output_dir, outputs.get("events_file"), "events.jsonl"))
+    if event_history:
+        for key, values in event_history.items():
+            history.setdefault(key, []).extend(values)
+
+    normalized_history = _normalize_metric_history(history)
+    for key, values in normalized_history.items():
+        if key.lower() in {"step", "epoch", "iteration", "global_step"}:
+            continue
+        if values and key not in metrics:
+            metrics[key] = values[-1]
+
+    payload["metrics"] = dict(metrics)
+    payload["history"] = normalized_history
+    return payload
+
+
+def _trainer_output_file(output_dir: Path, configured: Any, default_name: str) -> Path:
+    raw = str(configured or default_name).strip()
+    path = Path(raw)
+    if path.is_absolute():
+        return path
+    return output_dir / path
+
+
+def _resolve_trainer_output_path(output_dir: Path, value: str | Path) -> Path:
+    path = Path(value)
+    if path.is_absolute():
+        return path.resolve()
+    return (output_dir / path).resolve()
+
+
+def _read_optional_json_mapping(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return dict(payload) if isinstance(payload, dict) else {}
+
+
+def _read_metric_events(path: Path) -> dict[str, list[float]]:
+    if not path.exists():
+        return {}
+    history: dict[str, list[float]] = {}
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return {}
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        for key, value in _numeric_metric_items(event):
+            history.setdefault(key, []).append(value)
     return history
 
 

@@ -238,7 +238,9 @@ The desktop GUI `Dataset and Training` page is now a standalone training-visuali
 
 Training configs combine a dataset root, adapter, sequence, training preset, output path, and JSON parameters into one reusable GUI selection. Built-in configs include `ORFD StableWM HDF5 export` and `ORFD tiny world model`; users can edit the current fields and click `Save training config` to persist a new entry in `configs/training_configs.json`.
 
-Training records support a `history` field for loss, RMSE, frame count, or other curve data. The GUI plots the primary available metric in the training results tab, and falls back to single-point metrics or NaN when no real history exists.
+Training records support a `history` field for loss, RMSE, frame count, or other curve data. The GUI plots the primary available metric in the training results tab, lists the available curve names, and falls back to single-point metrics or NaN when no real history exists.
+
+External trainers can report metrics through a JSON object on stdout or through sidecar files in the selected output directory. Supported sidecars are `metrics.json` for final scalar metrics, `history.json` for metric arrays, and `events.jsonl` for per-step JSON events such as `{"step": 1, "loss": 0.9}`.
 
 BeamNG region self-supervised runs also write a `training_run.json` with the trained model path plus acceptance metrics such as `goal_success`, `min_goal_distance`, `final_goal_distance`, and `collision_count`, so the Training Results tab can index the simulator-trained model instead of leaving it as an opaque folder. When the GUI self-supervised workflow reaches `goal_success`, it also saves a validated `world_model_direct + tiny_learned` world-model config with the source `training_run.json` and validation metrics, making the trained model selectable from the Overview and BeamNG Simulation pages. Failed or collection-insufficient runs remain visible in Training Results but are not promoted to runnable model configs.
 
@@ -277,6 +279,10 @@ arguments:
   - "{params.epochs}"
 outputs:
   artifact_type: checkpoint
+  artifact_path: model.ckpt
+  metrics_file: metrics.json
+  history_file: history.json
+  events_file: events.jsonl
 ```
 
 If an external algorithm does not already ship a `trainer.yaml`, the GUI can

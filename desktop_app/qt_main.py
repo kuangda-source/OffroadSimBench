@@ -1245,9 +1245,11 @@ class MainWindow(QMainWindow):
         tabs = QTabWidget()
 
         data_tab = QWidget()
-        data_layout = QHBoxLayout(data_tab)
-        data_layout.setContentsMargins(0, 0, 0, 0)
-        data_layout.setSpacing(PAGE_SPACING)
+        data_root = QVBoxLayout(data_tab)
+        data_root.setContentsMargins(0, 0, 0, 0)
+        data_root.setSpacing(CARD_SPACING)
+        data_root.addWidget(self._tab_header("Dataset import", "Register a dataset, inspect sequences, and preview RGB/depth or label frames."))
+        data_layout = self._row_layout()
         dataset_browse = QPushButton("选择")
         self._configure_button(dataset_browse)
         dataset_browse.clicked.connect(lambda: self._browse_dir(self.dataset_root_edit))
@@ -1282,12 +1284,15 @@ class MainWindow(QMainWindow):
         preview_layout.addWidget(self._section_label("Frame metadata"))
         preview_layout.addWidget(self.dataset_summary, 1)
         data_layout.addWidget(preview_box, 2)
+        data_root.addLayout(data_layout, 1)
         tabs.addTab(data_tab, "数据集")
 
         training_tab = QWidget()
-        training_layout = QHBoxLayout(training_tab)
-        training_layout.setContentsMargins(0, 0, 0, 0)
-        training_layout.setSpacing(PAGE_SPACING)
+        training_root = QVBoxLayout(training_tab)
+        training_root.setContentsMargins(0, 0, 0, 0)
+        training_root.setSpacing(CARD_SPACING)
+        training_root.addWidget(self._tab_header("Model training", "Choose a reusable training config or bind a local trainer script with parameters."))
+        training_layout = self._row_layout()
         model_browse = QPushButton("选择")
         self._configure_button(model_browse)
         model_browse.clicked.connect(lambda: self._browse_path_combo(self.home_model_combo))
@@ -1346,16 +1351,23 @@ class MainWindow(QMainWindow):
         self.model_summary.setPlaceholderText("模型训练/推理结果：NaN")
         self.latest_training_curve = TrainingCurveWidget()
         output_layout.addWidget(self._section_label("Latest metric curve"))
+        self.latest_metric_summary = QLabel("Metric curves: NaN")
+        self.latest_metric_summary.setObjectName("mutedText")
+        self.latest_metric_summary.setWordWrap(True)
+        output_layout.addWidget(self.latest_metric_summary)
         output_layout.addWidget(self.latest_training_curve)
         output_layout.addWidget(self._section_label("Training output"))
         output_layout.addWidget(self.model_summary, 1)
         training_layout.addWidget(output_box, 2)
+        training_root.addLayout(training_layout, 1)
         tabs.addTab(training_tab, "模型训练")
 
         runs_tab = QWidget()
-        runs_layout = QHBoxLayout(runs_tab)
-        runs_layout.setContentsMargins(0, 0, 0, 0)
-        runs_layout.setSpacing(PAGE_SPACING)
+        runs_root = QVBoxLayout(runs_tab)
+        runs_root.setContentsMargins(0, 0, 0, 0)
+        runs_root.setSpacing(CARD_SPACING)
+        runs_root.addWidget(self._tab_header("Training results", "Review completed runs, loss curves, artifacts, logs, and promoted model configs."))
+        runs_layout = self._row_layout()
         run_list_box, run_list_layout = self._new_group("Training runs")
         self.training_run_list = QListWidget()
         self.training_run_list.itemClicked.connect(self._load_selected_training_run)
@@ -1370,6 +1382,10 @@ class MainWindow(QMainWindow):
         run_summary_layout.addWidget(self.training_run_overview)
         self.training_curve = TrainingCurveWidget()
         run_summary_layout.addWidget(self._section_label("Metric curve"))
+        self.training_run_metric_summary = QLabel("Metric curves: NaN")
+        self.training_run_metric_summary.setObjectName("mutedText")
+        self.training_run_metric_summary.setWordWrap(True)
+        run_summary_layout.addWidget(self.training_run_metric_summary)
         run_summary_layout.addWidget(self.training_curve)
         self.training_run_summary = QTextEdit()
         self.training_run_summary.setReadOnly(True)
@@ -1377,12 +1393,14 @@ class MainWindow(QMainWindow):
         run_summary_layout.addWidget(self._section_label("Raw training_run.json"))
         run_summary_layout.addWidget(self.training_run_summary, 1)
         runs_layout.addWidget(run_summary_box, 2)
+        runs_root.addLayout(runs_layout, 1)
         tabs.addTab(runs_tab, "Training results")
 
         processing_tab = QWidget()
         processing_layout = QVBoxLayout(processing_tab)
         processing_layout.setContentsMargins(0, 0, 0, 0)
         processing_layout.setSpacing(PAGE_SPACING)
+        processing_layout.addWidget(self._tab_header("Processing and labels", "Reserved tools for segmentation, masks, labels, and future dataset-to-map conversion."))
         processing_hint = QLabel(
             "图像分割、标签检查、terrain mask 和数据集到 BeamNG 地图转换会放在这里；未实现项保持 NaN/未完成。"
         )
@@ -2615,6 +2633,11 @@ class MainWindow(QMainWindow):
         if hasattr(self, "training_run_summary"):
             self.training_run_summary.setText(_compact_json(run))
         history = services.training_metric_history(run)
+        metric_summary = _metric_history_summary(history)
+        if hasattr(self, "training_run_metric_summary"):
+            self.training_run_metric_summary.setText(metric_summary)
+        if hasattr(self, "latest_metric_summary"):
+            self.latest_metric_summary.setText(metric_summary)
         if hasattr(self, "training_curve"):
             self.training_curve.set_history(history)
         if hasattr(self, "latest_training_curve"):
@@ -2967,6 +2990,21 @@ class MainWindow(QMainWindow):
         button.clicked.connect(slot)
         return button
 
+    def _tab_header(self, title: str, subtitle: str) -> QWidget:
+        frame = QWidget()
+        frame.setObjectName("tabHeader")
+        layout = QVBoxLayout(frame)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        title_label = QLabel(title)
+        title_label.setObjectName("tabTitle")
+        subtitle_label = QLabel(subtitle)
+        subtitle_label.setObjectName("mutedText")
+        subtitle_label.setWordWrap(True)
+        layout.addWidget(title_label)
+        layout.addWidget(subtitle_label)
+        return frame
+
     def _section_label(self, text: str) -> QLabel:
         label = QLabel(text)
         label.setObjectName("sectionLabel")
@@ -3069,6 +3107,13 @@ def _compact_json(payload: Any) -> str:
     import json
 
     return json.dumps(payload, indent=2, ensure_ascii=False, default=str)
+
+
+def _metric_history_summary(history: dict[str, list[float]]) -> str:
+    if not history:
+        return "Metric curves: NaN"
+    parts = [f"{key} ({len(values)} pts)" for key, values in sorted(history.items()) if values]
+    return "Metric curves: " + (", ".join(parts) if parts else services.NAN_TEXT)
 
 
 def _training_run_overview_text(run: dict[str, Any]) -> str:
@@ -3283,6 +3328,14 @@ QPushButton:disabled {
 }
 #sectionLabel {
     color: #1d1d1f;
+    font-weight: 700;
+}
+#tabHeader {
+    background: transparent;
+}
+#tabTitle {
+    color: #1d1d1f;
+    font-size: 18px;
     font-weight: 700;
 }
 QTabWidget::pane {

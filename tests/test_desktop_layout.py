@@ -4,7 +4,7 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication, QComboBox, QGroupBox, QLineEdit, QPushButton, QSpinBox
+from PySide6.QtWidgets import QApplication, QComboBox, QGroupBox, QLabel, QLineEdit, QPushButton, QSpinBox
 
 from desktop_app.qt_main import MainWindow
 
@@ -67,5 +67,23 @@ def test_dataset_training_page_exposes_external_trainer_controls() -> None:
     assert "{dataset_root}" in window.trainer_arguments_edit.toPlainText()
     assert "{output_dir}" in window.trainer_arguments_edit.toPlainText()
     assert window.save_trainer_button.text()
+
+    window.close()
+
+
+def test_dataset_training_tabs_have_visible_section_titles() -> None:
+    _ensure_app()
+    window = MainWindow()
+
+    titles = {
+        label.text()
+        for label in window.page_stack.widget(1).findChildren(QLabel)
+        if label.objectName() == "tabTitle"
+    }
+
+    assert "Dataset import" in titles
+    assert "Model training" in titles
+    assert "Training results" in titles
+    assert "Processing and labels" in titles
 
     window.close()

@@ -40,8 +40,10 @@ offroad-sim-gui
 - LE-WM-compatible cost-model training from exported HDF5 files.
 - Imported `trainer.yaml` manifests can run external local model trainers and
   record `training_run.json`, metrics, history curves, stdout, and stderr.
-- Training run details show the recorded artifact, key metrics, curve history,
-  and stdout/stderr log paths for imported trainers.
+  Trainers may return JSON on stdout or write sidecar files such as
+  `metrics.json`, `history.json`, or `events.jsonl` in the output directory.
+- Training run details show the recorded artifact, key metrics, available curve
+  names, curve history, and stdout/stderr log paths for imported trainers.
 - Existing model checkpoints, lightweight `model.json` files, or model folders
   containing `model.json` can be imported as saved world-model configs, then
   reused by the overview launcher and BeamNG simulation page without editing
@@ -91,7 +93,14 @@ parameters:
 `manifest_dataset` adapter. `trainer.yaml` describes the executable entrypoint,
 command arguments, declared parameters, and artifact type. After importing the
 training config, use `Start training/export`; the run writes `training_run.json`,
-stdout/stderr logs, metrics, and curve history when the trainer emits JSON.
+stdout/stderr logs, metrics, and curve history. The trainer can emit a JSON
+object on stdout, or write sidecar files in the output directory:
+
+```text
+metrics.json      # {"loss": 0.25, "accuracy": 0.75}
+history.json      # {"loss": [0.9, 0.5, 0.25]}
+events.jsonl      # {"step": 1, "loss": 0.9} per line
+```
 
 If a trainer does not ship with a manifest yet, the Model Training tab can
 create one directly from a local script path. Set `Trainer entrypoint`, edit the
@@ -113,6 +122,12 @@ trainer:
     epochs:
       type: int
       default: 10
+  outputs:
+    artifact_type: checkpoint
+    artifact_path: model.ckpt
+    metrics_file: metrics.json
+    history_file: history.json
+    events_file: events.jsonl
 ```
 
 ## Explicit Placeholders

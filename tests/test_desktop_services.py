@@ -367,6 +367,114 @@ parameters:
     assert any(config["id"] == "inline_config" and config["training_preset_id"] == "inline_trainer" for config in configs)
 
 
+def test_run_trainer_manifest_job_reads_sidecar_metrics_without_stdout_json(tmp_path) -> None:
+    trainer_script = tmp_path / "train_sidecar.py"
+    trainer_script.write_text(
+        """
+import argparse
+import json
+from pathlib import Path
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--output", required=True)
+args = parser.parse_args()
+out = Path(args.output)
+out.mkdir(parents=True, exist_ok=True)
+(out / "model.ckpt").write_text("checkpoint", encoding="utf-8")
+(out / "metrics.json").write_text(json.dumps({"loss": 0.25, "accuracy": 0.75}), encoding="utf-8")
+(out / "history.json").write_text(json.dumps({"loss": [0.9, 0.5, 0.25]}), encoding="utf-8")
+print("training complete")
+""",
+        encoding="utf-8",
+    )
+    manifest = tmp_path / "trainer.yaml"
+    manifest.write_text(
+        f"""
+trainer_id: sidecar_trainer
+display_name: Sidecar Trainer
+runtime: python
+entrypoint: {trainer_script}
+arguments:
+  - "--output"
+  - "{{output_dir}}"
+outputs:
+  artifact_type: checkpoint
+  artifact_path: model.ckpt
+  metrics_file: metrics.json
+  history_file: history.json
+""",
+        encoding="utf-8",
+    )
+
+    payload = services.run_trainer_manifest_job(
+        manifest,
+        dataset_root="D:/datasets/custom_drive",
+        output_dir=str(tmp_path / "run"),
+        parameters={},
+        adapter="manifest_dataset",
+        sequence_id="clip_001",
+    )
+
+    record = json.loads(Path(payload["training_run_path"]).read_text(encoding="utf-8"))
+    assert payload["metrics"] == {"loss": 0.25, "accuracy": 0.75}
+    assert record["artifact_path"] == str((tmp_path / "run" / "model.ckpt").resolve())
+    assert record["history"] == {"loss": [0.9, 0.5, 0.25]}
+    assert services.training_metric_history(record)["loss"] == [0.9, 0.5, 0.25]
+
+
+def test_run_trainer_manifest_job_builds_history_from_jsonl_events(tmp_path) -> None:
+    trainer_script = tmp_path / "train_events.py"
+    trainer_script.write_text(
+        """
+import argparse
+import json
+from pathlib import Path
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--output", required=True)
+args = parser.parse_args()
+out = Path(args.output)
+out.mkdir(parents=True, exist_ok=True)
+events = [
+    {"step": 1, "loss": 0.8, "val_loss": 0.9},
+    {"step": 2, "loss": 0.35, "val_loss": 0.5},
+]
+(out / "events.jsonl").write_text("\\n".join(json.dumps(row) for row in events), encoding="utf-8")
+print("finished")
+""",
+        encoding="utf-8",
+    )
+    manifest = tmp_path / "trainer.yaml"
+    manifest.write_text(
+        f"""
+trainer_id: event_trainer
+display_name: Event Trainer
+runtime: python
+entrypoint: {trainer_script}
+arguments:
+  - "--output"
+  - "{{output_dir}}"
+outputs:
+  artifact_type: checkpoint
+  events_file: events.jsonl
+""",
+        encoding="utf-8",
+    )
+
+    payload = services.run_trainer_manifest_job(
+        manifest,
+        dataset_root="D:/datasets/custom_drive",
+        output_dir=str(tmp_path / "run_events"),
+        parameters={},
+    )
+
+    record = json.loads(Path(payload["training_run_path"]).read_text(encoding="utf-8"))
+    assert record["history"]["loss"] == [0.8, 0.35]
+    assert record["history"]["val_loss"] == [0.9, 0.5]
+    assert record["metrics"]["loss"] == 0.35
+    assert record["metrics"]["val_loss"] == 0.5
+
+
 def test_desktop_services_list_navigation_tasks_and_checkpoints(tmp_path) -> None:
     task_path = tmp_path / "task.yaml"
     services.save_manual_navigation_task(

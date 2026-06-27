@@ -628,6 +628,28 @@ def test_gui_training_finished_loads_training_run_record_overview(tmp_path) -> N
     window.close()
 
 
+def test_gui_training_finished_shows_available_metric_curves(tmp_path) -> None:
+    _ensure_app()
+    run_dir = tmp_path / "run_metrics"
+    record = services.write_training_run_record(
+        run_dir,
+        preset_id="tiny_world_model",
+        status="completed",
+        artifact_path=str(run_dir / "model"),
+        artifact_type="world_model",
+        history={"loss": [0.8, 0.2], "val_loss": [0.9, 0.3]},
+    )
+    window = MainWindow()
+
+    window._training_finished({"output_dir": str(run_dir / "model"), "training_run_path": record["path"]})
+
+    assert "loss" in window.latest_metric_summary.text()
+    assert "val_loss" in window.latest_metric_summary.text()
+    assert "loss" in window.training_run_metric_summary.text()
+    assert "val_loss" in window.training_run_metric_summary.text()
+    window.close()
+
+
 def test_training_curve_widget_accepts_metric_history() -> None:
     _ensure_app()
     curve = TrainingCurveWidget()
