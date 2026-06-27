@@ -155,3 +155,79 @@ def test_run_trainer_manifest_job_executes_command_and_records(tmp_path) -> None
     assert record["history"]["loss"] == [1.0, 0.5, 0.25]
     assert record["logs"]["stdout"] == str((output_dir / "stdout.log").resolve())
     assert record["logs"]["stderr"] == str((output_dir / "stderr.log").resolve())
+
+
+def test_validate_training_config_setup_previews_external_trainer_command(tmp_path) -> None:
+    manifest = _write_echo_trainer(tmp_path)
+    config = services.save_training_config(
+        config_id="echo_config",
+        label="Echo Config",
+        training_preset_id="echo_trainer",
+        dataset_root=str(tmp_path / "dataset"),
+        adapter="manifest_dataset",
+        sequence_id="clip_001",
+        output_path=str(tmp_path / "run"),
+        parameters={"epochs": "5"},
+        path=tmp_path / "training_configs.json",
+    )
+    (tmp_path / "dataset").mkdir()
+
+    report = services.validate_training_config_setup(config, trainer_root=tmp_path)
+
+    assert report["ready"] is True
+    assert report["status"] == "ready"
+    assert report["issues"] == []
+    assert report["training_preset"]["id"] == "echo_trainer"
+    assert report["parameters"] == {"epochs": 5}
+    assert report["dataset"]["exists"] is True
+    assert report["command_preview"][1] == str((tmp_path / "echo_trainer.py").resolve())
+    assert "--epochs" in report["command_preview"]
+    assert "5" in report["command_preview"]
+    assert report["training_preset"]["manifest_path"] == str(manifest.resolve())
+
+
+def test_validate_training_config_setup_reports_missing_required_parameter(tmp_path) -> None:
+    script = tmp_path / "train_required.py"
+    script.write_text("print('{}')\n", encoding="utf-8")
+    manifest = tmp_path / "trainer.yaml"
+    manifest.write_text(
+        """
+trainer_id: required_trainer
+display_name: Required Trainer
+runtime: python
+entrypoint: train_required.py
+parameters:
+  learning_rate:
+    type: float
+    required: true
+arguments:
+  - "{dataset_root}"
+  - "--output"
+  - "{output_dir}"
+  - "--learning-rate"
+  - "{params.learning_rate}"
+outputs:
+  artifact_type: checkpoint
+""",
+        encoding="utf-8",
+    )
+    dataset_root = tmp_path / "dataset"
+    dataset_root.mkdir()
+
+    report = services.validate_training_config_setup(
+        {
+            "id": "required_config",
+            "label": "Required Config",
+            "training_preset_id": "required_trainer",
+            "dataset_root": str(dataset_root),
+            "adapter": "manifest_dataset",
+            "sequence_id": "",
+            "output_path": str(tmp_path / "run"),
+            "parameters": {},
+        },
+        trainer_root=tmp_path,
+    )
+
+    assert report["ready"] is False
+    assert report["status"] == "invalid"
+    assert "Missing required parameter: learning_rate" in report["issues"]

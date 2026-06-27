@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
+import scripts.run_region_self_supervised_world_model as region_self_supervised_script
 from desktop_app import services
 from offroad_sim.core import Action, Observation, VehicleState
 from offroad_sim.replay import EpisodeRecorder
@@ -290,3 +292,48 @@ def test_region_world_model_evaluation_loads_existing_model_without_training(tmp
     assert payload["status"] == "completed"
     assert payload["acceptance"]["goal_success"] is True
     assert payload["region_navigation"]["evaluation_agent"] == "world_model_direct"
+
+
+def test_region_self_supervised_script_exposes_gui_training_options(monkeypatch, tmp_path: Path, capsys) -> None:
+    task_path = tmp_path / "task.yaml"
+    _write_task(task_path)
+    captured: dict[str, services.RegionSelfSupervisedWorldModelRequest] = {}
+
+    def fake_run(request: services.RegionSelfSupervisedWorldModelRequest) -> dict[str, object]:
+        captured["request"] = request
+        return {"status": "ok", "training_run_path": "run.json"}
+
+    monkeypatch.setattr(region_self_supervised_script, "run_region_self_supervised_world_model", fake_run)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_region_self_supervised_world_model.py",
+            str(task_path),
+            "--collect-rollouts",
+            "3",
+            "--min-collection-goal-progress-ratio",
+            "0.35",
+            "--collection-goal-bias-interval",
+            "2",
+            "--collection-goal-corridor-interval",
+            "4",
+            "--collection-goal-corridor-lateral-m",
+            "3.5",
+            "--register-world-model-config",
+            "--world-model-config-path",
+            str(tmp_path / "world_model_configs.json"),
+        ],
+    )
+
+    region_self_supervised_script.main()
+
+    request = captured["request"]
+    assert request.collect_rollouts == 3
+    assert request.min_collection_goal_progress_ratio == 0.35
+    assert request.collection_goal_bias_interval == 2
+    assert request.collection_goal_corridor_interval == 4
+    assert request.collection_goal_corridor_lateral_m == 3.5
+    assert request.register_world_model_config is True
+    assert request.world_model_config_path == str(tmp_path / "world_model_configs.json")
+    assert json.loads(capsys.readouterr().out)["status"] == "ok"

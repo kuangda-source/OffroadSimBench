@@ -1257,7 +1257,7 @@ class MainWindow(QMainWindow):
         self._configure_button(dataset_import)
         dataset_import.clicked.connect(self.import_dataset_manifest)
         controls = self._group(
-            "Dataset import and preview",
+            "Data source",
             [
                 self._field("Dataset catalog", self.dataset_catalog_combo),
                 dataset_import,
@@ -1315,37 +1315,38 @@ class MainWindow(QMainWindow):
         self._configure_button(training_config_import)
         training_config_import.clicked.connect(self.import_training_config)
         training_controls = self._group(
-            "Model and algorithm training",
+            "Training config",
             [
                 self._field("Training config", self.training_config_combo),
                 training_config_import,
                 self._field("Config name", self.training_config_name_edit),
-                self._action_button("Save training config", self.save_training_config),
                 self._field("Training preset", self.training_preset_combo),
+                self._section_label("Training config summary"),
+                self.training_preset_summary,
+                self._field("Training parameters", self.trainer_params_edit),
+                self._field("Training output", self.training_output_edit),
+                self._action_button("Validate config", self.validate_training_config),
+                self._action_button("Save training config", self.save_training_config),
+                self._action_button("Start training/export", self.run_training_preset, primary=True),
+            ],
+        )
+        trainer_box = self._group(
+            "Trainer / algorithm",
+            [
                 trainer_import,
                 self._field("Trainer entrypoint", self._with_button(self.trainer_entrypoint_edit, trainer_entry_browse)),
                 self._field("Trainer arguments", self.trainer_arguments_edit),
                 self._field("Trainer parameter schema", self.trainer_schema_edit),
                 self.save_trainer_button,
-                self._section_label("Training config summary"),
-                self.training_preset_summary,
-                self._field("Training parameters", self.trainer_params_edit),
-                self._field("Training output", self.training_output_edit),
-                self._action_button("Start training/export", self.run_training_preset, primary=True),
-                self._field("World model config", self.world_model_config_edit_combo),
-                self._field("Config name", self.model_config_name_edit),
-                self._field("Model path", self._with_button(self.home_model_combo, model_browse)),
-                model_import,
-                model_dir_import,
-                self._field("Algorithm", self.algorithm_combo),
-                self._field("World model", self.world_model_combo),
-                self._action_button("Save world model config", self.save_world_model_config, primary=True),
-                self._action_button("训练 LE-WM cost model", self.train_lewm_cost_model),
-                self._action_button("训练 tiny world model", self.train_tiny_model),
             ],
         )
-        training_layout.addWidget(training_controls, 1)
-        output_box, output_layout = self._new_group("Training and inference results")
+        left_column = QVBoxLayout()
+        left_column.setContentsMargins(0, 0, 0, 0)
+        left_column.setSpacing(CARD_SPACING)
+        left_column.addWidget(training_controls, 3)
+        left_column.addWidget(trainer_box, 1)
+        training_layout.addLayout(left_column, 1)
+        output_box, output_layout = self._new_group("Latest training result")
         self.model_summary = QTextEdit()
         self.model_summary.setReadOnly(True)
         self.model_summary.setPlaceholderText("模型训练/推理结果：NaN")
@@ -1358,7 +1359,25 @@ class MainWindow(QMainWindow):
         output_layout.addWidget(self.latest_training_curve)
         output_layout.addWidget(self._section_label("Training output"))
         output_layout.addWidget(self.model_summary, 1)
-        training_layout.addWidget(output_box, 2)
+        registry_box = self._group(
+            "Trained model registry",
+            [
+                self._field("World model config", self.world_model_config_edit_combo),
+                self._field("Config name", self.model_config_name_edit),
+                self._field("Model path", self._with_button(self.home_model_combo, model_browse)),
+                model_import,
+                model_dir_import,
+                self._field("Algorithm", self.algorithm_combo),
+                self._field("World model", self.world_model_combo),
+                self._action_button("Save world model config", self.save_world_model_config, primary=True),
+            ],
+        )
+        right_column = QVBoxLayout()
+        right_column.setContentsMargins(0, 0, 0, 0)
+        right_column.setSpacing(CARD_SPACING)
+        right_column.addWidget(output_box, 3)
+        right_column.addWidget(registry_box, 1)
+        training_layout.addLayout(right_column, 2)
         training_root.addLayout(training_layout, 1)
         tabs.addTab(training_tab, "模型训练")
 
@@ -1811,6 +1830,17 @@ class MainWindow(QMainWindow):
             return
         self.model_summary.setText(_compact_json({"status": services.UNFINISHED_TEXT, "training_preset": preset}))
 
+    def validate_training_config(self) -> None:
+        try:
+            row = self._current_training_config_row()
+            report = services.validate_training_config_setup(row)
+        except Exception as exc:
+            report = {"ready": False, "status": "invalid", "issues": [str(exc)]}
+        self.model_summary.setText(_compact_json(report))
+        self._set_training_run_views(report)
+        status = report.get("status", services.NAN_TEXT) if isinstance(report, dict) else services.NAN_TEXT
+        self.log(f"Training config validation: {status}")
+
     def import_training_config(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
             self,
@@ -2012,6 +2042,21 @@ class MainWindow(QMainWindow):
         self.log(f"Training config saved: {row['label']}")
         self.refresh_catalogs()
         self._select_training_config(str(row["id"]))
+
+    def _current_training_config_row(self) -> dict[str, Any]:
+        label = self.training_config_name_edit.text().strip() or "Manual training config"
+        preset = self.training_preset_combo.currentData()
+        preset_id = str(preset.get("id") if isinstance(preset, dict) else self.training_preset_combo.currentText())
+        return {
+            "id": label,
+            "label": label,
+            "training_preset_id": preset_id,
+            "dataset_root": self.dataset_root_edit.text().strip(),
+            "adapter": self.adapter_edit.text().strip(),
+            "sequence_id": self.sequence_combo.currentText().strip(),
+            "output_path": self._current_training_output_path(preset_id),
+            "parameters": self._trainer_parameters_from_text(),
+        }
 
     def train_tiny_model(self) -> None:
         root = self.dataset_root_edit.text().strip()

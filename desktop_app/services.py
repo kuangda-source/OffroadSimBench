@@ -347,7 +347,7 @@ def import_dataset_manifest(source_path: str | Path, destination_root: str | Pat
     return load_dataset_manifest(target)
 
 
-def training_preset_entries() -> list[dict[str, Any]]:
+def training_preset_entries(trainer_root: str | Path | None = None) -> list[dict[str, Any]]:
     rows = [
         {
             "id": "stablewm_hdf5",
@@ -399,7 +399,7 @@ def training_preset_entries() -> list[dict[str, Any]]:
         },
     ]
     manifest_ids = {row["id"] for row in rows}
-    for row in trainer_manifest_entries():
+    for row in trainer_manifest_entries(trainer_root):
         if row["id"] in manifest_ids:
             continue
         rows.append(
@@ -610,6 +610,92 @@ def run_trainer_manifest_job(
     payload["training_run_path"] = record["path"]
     payload["command"] = command
     return payload
+
+
+def validate_training_config_setup(
+    training_config: str | dict[str, Any],
+    *,
+    config_path: str | Path | None = None,
+    trainer_root: str | Path | None = None,
+) -> dict[str, Any]:
+    """Validate a reusable training config without launching the trainer.
+
+    The GUI uses this as a neutral adapter boundary: built-in trainers, imported
+    trainer manifests, and future model algorithms all reduce to the same
+    dataset/preset/parameter/output contract before any long-running work starts.
+    """
+
+    row = _resolve_training_config(training_config, config_path=config_path)
+    preset_id = str(row.get("training_preset_id") or "")
+    presets = {str(item.get("id") or ""): dict(item) for item in training_preset_entries(trainer_root)}
+    preset = presets.get(preset_id, {})
+    issues: list[str] = []
+
+    dataset_root = str(row.get("dataset_root") or "").strip()
+    dataset_path = Path(dataset_root) if dataset_root else None
+    dataset_exists = bool(dataset_path and dataset_path.exists())
+    if not dataset_root:
+        issues.append("Dataset root is required.")
+    elif not dataset_exists:
+        issues.append(f"Dataset root not found: {dataset_root}")
+
+    if not preset:
+        issues.append(f"Training preset not found: {preset_id or NAN_TEXT}")
+    elif preset.get("available") is False:
+        issues.append(f"Training preset is not available: {preset.get('label') or preset_id}")
+
+    schema = preset.get("parameters") if isinstance(preset.get("parameters"), dict) else {}
+    parameters: dict[str, Any] = {}
+    try:
+        parameters = _trainer_parameters(schema, row.get("parameters") if isinstance(row.get("parameters"), dict) else {})
+    except ValueError as exc:
+        issues.append(str(exc))
+
+    output_path = str(row.get("output_path") or "").strip()
+    if not output_path:
+        output_path = str(ROOT / "outputs" / "training_runs" / f"{row['id']}_{_timestamp()}")
+
+    command_preview: list[str] = []
+    manifest: dict[str, Any] = {}
+    manifest_path = str(preset.get("manifest_path") or "").strip()
+    if manifest_path and not issues:
+        try:
+            manifest = load_trainer_manifest(manifest_path)
+            entrypoint = _resolve_trainer_entrypoint(manifest)
+            if not entrypoint.exists():
+                issues.append(f"Trainer entrypoint not found: {entrypoint}")
+            command_preview = _trainer_command(
+                manifest,
+                dataset_root,
+                Path(output_path),
+                parameters,
+                str(row.get("adapter") or ""),
+                str(row.get("sequence_id") or ""),
+            )
+        except Exception as exc:
+            issues.append(f"Trainer manifest is invalid: {exc}")
+
+    status = "ready" if not issues else "invalid"
+    if preset and preset.get("available") is False:
+        status = "unfinished"
+    return {
+        "ready": status == "ready",
+        "status": status,
+        "issues": issues,
+        "training_config": row,
+        "training_preset": preset,
+        "trainer_manifest": manifest,
+        "dataset": {
+            "root": dataset_root,
+            "exists": dataset_exists,
+            "adapter": str(row.get("adapter") or ""),
+            "sequence_id": str(row.get("sequence_id") or ""),
+        },
+        "parameters": parameters,
+        "parameter_schema": dict(schema),
+        "output_path": output_path,
+        "command_preview": command_preview,
+    }
 
 
 def write_training_run_record(
@@ -2774,6 +2860,18 @@ def _training_config_row(raw: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _resolve_training_config(training_config: str | dict[str, Any], *, config_path: str | Path | None = None) -> dict[str, Any]:
+    if isinstance(training_config, dict):
+        return _training_config_row(training_config)
+    config_id = str(training_config or "").strip()
+    if not config_id:
+        raise ValueError("Training config id is required.")
+    for row in training_config_entries(config_path):
+        if row["id"] == config_id or row["label"] == config_id:
+            return row
+    raise ValueError(f"Training config not found: {config_id}")
+
+
 def _read_json(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
@@ -2828,11 +2926,15 @@ def _dataset_manifest_paths(root: Path) -> list[Path]:
 
 def _trainer_parameters(schema: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:
     values: dict[str, Any] = {}
+    normalized_overrides = {str(name): value for name, value in overrides.items()}
     for name, raw_spec in schema.items():
+        key = str(name)
         spec = raw_spec if isinstance(raw_spec, dict) else {}
         if "default" in spec:
-            values[str(name)] = _coerce_trainer_value(spec.get("default"), str(spec.get("type") or "str"))
-    for name, value in overrides.items():
+            values[key] = _coerce_trainer_value(spec.get("default"), str(spec.get("type") or "str"))
+        if spec.get("required") is True and key not in values and key not in normalized_overrides:
+            raise ValueError(f"Missing required parameter: {key}")
+    for name, value in normalized_overrides.items():
         spec = schema.get(name) if isinstance(schema.get(name), dict) else {}
         values[str(name)] = _coerce_trainer_value(value, str(spec.get("type") or "str"))
     return values

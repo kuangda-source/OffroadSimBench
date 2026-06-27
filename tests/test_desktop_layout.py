@@ -87,3 +87,18 @@ def test_dataset_training_tabs_have_visible_section_titles() -> None:
     assert "Processing and labels" in titles
 
     window.close()
+
+
+def test_dataset_training_page_separates_dataset_trainer_config_and_results() -> None:
+    _ensure_app()
+    window = MainWindow()
+
+    group_titles = {group.title() for group in window.page_stack.widget(1).findChildren(QGroupBox)}
+
+    assert "Data source" in group_titles
+    assert "Trainer / algorithm" in group_titles
+    assert "Training config" in group_titles
+    assert "Latest training result" in group_titles
+    assert "Trained model registry" in group_titles
+
+    window.close()

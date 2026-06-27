@@ -13,6 +13,11 @@ def main() -> None:
     parser.add_argument("task_path", help="navigation_region_v1 task YAML.")
     parser.add_argument("--output-dir", default="", help="Output directory for model and summary.")
     parser.add_argument("--collect-steps", type=int, default=1000)
+    parser.add_argument("--collect-rollouts", type=int, default=1)
+    parser.add_argument("--min-collection-goal-progress-ratio", type=float, default=0.0)
+    parser.add_argument("--collection-goal-bias-interval", type=int, default=1)
+    parser.add_argument("--collection-goal-corridor-interval", type=int, default=1)
+    parser.add_argument("--collection-goal-corridor-lateral-m", type=float, default=2.0)
     parser.add_argument("--eval-steps", type=int, default=1000)
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--planner", default="navigation_mpc")
@@ -25,6 +30,8 @@ def main() -> None:
     parser.add_argument("--close-beamng", action="store_true")
     parser.add_argument("--step-delay-sec", type=float, default=0.02)
     parser.add_argument("--post-run-hold-sec", type=float, default=20.0)
+    parser.add_argument("--register-world-model-config", action="store_true")
+    parser.add_argument("--world-model-config-path", default="")
     args = parser.parse_args()
 
     payload = run_region_self_supervised_world_model(
@@ -32,6 +39,11 @@ def main() -> None:
             task_path=args.task_path,
             output_dir=args.output_dir,
             collect_steps=args.collect_steps,
+            collect_rollouts=args.collect_rollouts,
+            min_collection_goal_progress_ratio=args.min_collection_goal_progress_ratio,
+            collection_goal_bias_interval=args.collection_goal_bias_interval,
+            collection_goal_corridor_interval=args.collection_goal_corridor_interval,
+            collection_goal_corridor_lateral_m=args.collection_goal_corridor_lateral_m,
             eval_steps=args.eval_steps,
             seed=args.seed,
             planner=args.planner,
@@ -44,6 +56,8 @@ def main() -> None:
             close_beamng=args.close_beamng,
             step_delay_sec=args.step_delay_sec,
             post_run_hold_sec=args.post_run_hold_sec,
+            register_world_model_config=args.register_world_model_config,
+            world_model_config_path=args.world_model_config_path,
         )
     )
     print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))

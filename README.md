@@ -236,7 +236,7 @@ OffroadSimBench is a local off-road autonomous-driving simulation, dataset repla
 
 The desktop GUI `Dataset and Training` page is now a standalone training-visualization workbench. It can inspect and preview ORFD-style datasets, choose a training/export preset, review the current training config summary and latest metric curve, run StableWM HDF5 export, train the local LE-WM-compatible cost model, or train the tiny world model. Successful training/export actions write a `training_run.json` record next to the produced artifact, and the GUI `Training results` tab indexes those records so users can review artifact paths, parameters, and metrics. `LE-WM full self-supervised`, `TD-MPC2`, and `DreamerV3` are exposed as unfinished pluggable presets without fabricating results.
 
-Training configs combine a dataset root, adapter, sequence, training preset, output path, and JSON parameters into one reusable GUI selection. Built-in configs include `ORFD StableWM HDF5 export` and `ORFD tiny world model`; users can edit the current fields and click `Save training config` to persist a new entry in `configs/training_configs.json`.
+Training configs combine a dataset root, adapter, sequence, training preset, output path, and JSON parameters into one reusable GUI selection. Built-in configs include `ORFD StableWM HDF5 export` and `ORFD tiny world model`; users can edit the current fields and click `Save training config` to persist a new entry in `configs/training_configs.json`. The `Validate config` action performs a dry run before training: it checks dataset availability, resolves the selected trainer manifest, coerces parameter types, reports missing required parameters, and shows the external command preview when the preset is backed by a local script.
 
 Training records support a `history` field for loss, RMSE, frame count, or other curve data. The GUI plots the primary available metric in the training results tab, lists the available curve names, and falls back to single-point metrics or NaN when no real history exists.
 
@@ -271,6 +271,7 @@ parameters:
   epochs:
     type: int
     default: 10
+    required: true
 arguments:
   - "{dataset_root}"
   - "--output"
