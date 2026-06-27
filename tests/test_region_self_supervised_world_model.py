@@ -201,6 +201,58 @@ def test_region_self_supervised_world_model_trains_from_multiple_collection_roll
     assert training_record["metrics"]["collection_min_goal_distance"] <= 10.0
 
 
+def test_region_self_supervised_world_model_records_navigation_diagnostics_when_eval_misses_goal(tmp_path: Path) -> None:
+    task_path = tmp_path / "task.yaml"
+    _write_task(task_path)
+    collection_episode = _save_episode(
+        tmp_path / "collection",
+        [(2.0, 2.0, 0.0, 0.5), (12.0, 12.0, 0.2, 1.2), (25.0, 25.0, 0.45, 1.5)],
+    )
+    evaluation_episode = _save_episode(
+        tmp_path / "evaluation",
+        [(2.0, 2.0, 0.0, 0.5), (7.0, 3.0, 0.05, 1.0), (9.0, 4.0, 0.02, 0.7)],
+    )
+    episodes = [collection_episode, evaluation_episode]
+    seen_agents: list[str] = []
+
+    def fake_run_episode(**kwargs):
+        seen_agents.append(kwargs["agent_name"])
+        index = len(seen_agents) - 1
+
+        class Result:
+            def to_dict(self):
+                return {
+                    "episode_id": f"episode_{index}",
+                    "episode_path": str(episodes[index]),
+                    "metrics": {"horizontal_distance_traveled": 25.0, "collision_count": 0, "drive_mode": "manual"},
+                }
+
+        return Result()
+
+    with patch("desktop_app.services.run_episode", side_effect=fake_run_episode):
+        payload = services.run_region_self_supervised_world_model(
+            services.RegionSelfSupervisedWorldModelRequest(
+                task_path=str(task_path),
+                output_dir=str(tmp_path / "out"),
+                collect_steps=20,
+                eval_steps=20,
+                close_beamng=True,
+            )
+        )
+
+    training_record = json.loads(Path(payload["training_run_path"]).read_text(encoding="utf-8"))
+    diagnostics = payload["diagnostics"]
+
+    assert payload["status"] == "completed"
+    assert payload["acceptance"]["goal_success"] is False
+    assert diagnostics["status"] == "navigation_model_insufficient"
+    assert diagnostics["evidence"]["route_free"] is True
+    assert diagnostics["evidence"]["model_controlled"] is True
+    assert diagnostics["evidence"]["min_goal_distance"] > payload["acceptance"]["goal_radius"]
+    assert any("coverage" in item.lower() for item in diagnostics["next_actions"])
+    assert training_record["summary"]["diagnostics"] == diagnostics
+
+
 def test_region_self_supervised_world_model_stops_when_collection_makes_no_goal_progress(tmp_path: Path) -> None:
     task_path = tmp_path / "task.yaml"
     _write_task(task_path)

@@ -6,7 +6,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication, QComboBox, QGroupBox, QLabel, QLineEdit, QPushButton, QSpinBox
 
-from desktop_app.qt_main import MainWindow
+from desktop_app.qt_main import MainWindow, _training_run_overview_text
 
 
 def _ensure_app() -> QApplication:
@@ -102,3 +102,25 @@ def test_dataset_training_page_separates_dataset_trainer_config_and_results() ->
     assert "Trained model registry" in group_titles
 
     window.close()
+
+
+def test_training_run_overview_surfaces_region_navigation_diagnostics() -> None:
+    text = _training_run_overview_text(
+        {
+            "run_id": "demo",
+            "preset_id": "region_self_supervised_world_model",
+            "status": "completed",
+            "artifact_path": "outputs/model",
+            "summary": {
+                "diagnostics": {
+                    "status": "navigation_model_insufficient",
+                    "message": "Model-controlled evaluation did not reach the goal.",
+                    "next_actions": ["Collect wider coverage inside the region."],
+                }
+            },
+            "metrics": {"goal_success": False, "min_goal_distance": 42.0},
+        }
+    )
+
+    assert "diagnostic_status: navigation_model_insufficient" in text
+    assert "diagnostic_next: Collect wider coverage inside the region." in text

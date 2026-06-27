@@ -1852,6 +1852,18 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
     collection_distance = float(sum(collection_distances)) if collection_distances else math.nan
     quality_gate = _collection_quality_gate(task, collection_acceptance, min_progress_ratio=request.min_collection_goal_progress_ratio)
     if not quality_gate["passed"]:
+        diagnostics = _region_self_supervised_diagnostics(
+            quality_gate=quality_gate,
+            collection_acceptance=collection_acceptance,
+            acceptance={},
+            training={},
+            region_navigation={
+                "collection_agent": "region_explorer",
+                "evaluation_agent": request.evaluation_agent,
+                "route_free": evaluation_route_free,
+                "evaluation_route_mode": "route_free" if evaluation_route_free else "task_route",
+            },
+        )
         training_run = write_training_run_record(
             output_dir,
             preset_id="region_self_supervised_world_model",
@@ -1892,6 +1904,7 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
             summary={
                 "task_path": str(Path(request.task_path).resolve()),
                 "quality_gate": quality_gate,
+                "diagnostics": diagnostics,
                 "collection_acceptance": collection_acceptance,
                 "collection_acceptances": collection_acceptances,
             },
@@ -1907,6 +1920,7 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
             "evaluation": {},
             "acceptance": {},
             "quality_gate": quality_gate,
+            "diagnostics": diagnostics,
             "region_navigation": {
                 "collection_agent": "region_explorer",
                 "evaluation_agent": request.evaluation_agent,
@@ -1968,6 +1982,20 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
         evaluation = _run_region_beamng_episode(**evaluation_kwargs)
     acceptance = _navigation_acceptance(evaluation, task)
     region_navigation = evaluation.get("region_navigation", {}) if isinstance(evaluation.get("region_navigation"), dict) else {}
+    region_navigation_payload = {
+        **region_navigation,
+        "collection_agent": "region_explorer",
+        "evaluation_agent": request.evaluation_agent,
+        "route_free": evaluation_route_free,
+        "evaluation_route_mode": "route_free" if evaluation_route_free else "task_route",
+    }
+    diagnostics = _region_self_supervised_diagnostics(
+        quality_gate=quality_gate,
+        collection_acceptance=collection_acceptance,
+        acceptance=acceptance,
+        training=training,
+        region_navigation=region_navigation_payload,
+    )
     training_run = write_training_run_record(
         output_dir,
         preset_id="region_self_supervised_world_model",
@@ -2018,6 +2046,7 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
         summary={
             "task_path": str(Path(request.task_path).resolve()),
             "quality_gate": quality_gate,
+            "diagnostics": diagnostics,
             "collection_acceptance": collection_acceptance,
             "collection_acceptances": collection_acceptances,
             "acceptance": acceptance,
@@ -2034,13 +2063,8 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
         "evaluation": evaluation,
         "acceptance": acceptance,
         "quality_gate": quality_gate,
-        "region_navigation": {
-            **region_navigation,
-            "collection_agent": "region_explorer",
-            "evaluation_agent": request.evaluation_agent,
-            "route_free": evaluation_route_free,
-            "evaluation_route_mode": "route_free" if evaluation_route_free else "task_route",
-        },
+        "diagnostics": diagnostics,
+        "region_navigation": region_navigation_payload,
         "training_run_path": training_run["path"],
     }
     world_model_config = _register_region_self_supervised_world_model_config(
@@ -2609,6 +2633,76 @@ def _collection_quality_gate(
         "start_goal_distance": float(start_distance),
         "collection_min_goal_distance": min_distance,
         "collection_goal_reached": goal_reached,
+    }
+
+
+def _region_self_supervised_diagnostics(
+    *,
+    quality_gate: dict[str, Any],
+    collection_acceptance: dict[str, Any],
+    acceptance: dict[str, Any],
+    training: dict[str, Any],
+    region_navigation: dict[str, Any],
+) -> dict[str, Any]:
+    if not bool(quality_gate.get("passed")):
+        status = "collection_insufficient"
+        message = "Self-supervised collection did not cover enough goal-directed motion to train a useful navigation model."
+        next_actions = [
+            "Collect wider coverage inside the region with more rollouts or stronger goal/corridor bias.",
+            "Lower the progress gate only for smoke tests, not for navigation acceptance.",
+        ]
+    elif bool(acceptance.get("goal_success")):
+        status = "accepted"
+        message = "Model-controlled evaluation reached and held the goal inside the configured region."
+        next_actions: list[str] = []
+    elif not bool(acceptance.get("model_controlled", True)):
+        status = "not_model_controlled"
+        message = "Evaluation did not run under model/manual control, so it cannot validate the learned model."
+        next_actions = ["Switch evaluation to world_model_direct or model_mpc before accepting the run."]
+    elif int(acceptance.get("collision_count", 0) or 0) > int(acceptance.get("max_collision_count", 0) or 0):
+        status = "collision_limit_exceeded"
+        message = "The vehicle collided more than allowed during model-controlled evaluation."
+        next_actions = [
+            "Reduce target speed or throttle during evaluation.",
+            "Collect more recovery and low-speed steering examples near obstacles.",
+        ]
+    elif bool(acceptance.get("goal_reached")) and not bool(acceptance.get("final_goal_reached")):
+        status = "goal_hold_failed"
+        message = "The vehicle entered the goal radius but did not finish stopped inside it."
+        next_actions = ["Verify terminal braking and goal latch behavior for the selected controller."]
+    else:
+        status = "navigation_model_insufficient"
+        message = "The local learned dynamics model ran under model control but did not produce a successful start-to-goal navigation policy."
+        next_actions = [
+            "Collect wider coverage inside the region with multiple rollouts and corridor-biased exploration.",
+            "Run a task-route evaluation to isolate local control quality from route-free navigation.",
+            "Add a traversability or cost-map learner before expecting route-free global navigation.",
+        ]
+
+    evidence = {
+        "route_free": bool(region_navigation.get("route_free")),
+        "evaluation_agent": str(region_navigation.get("evaluation_agent") or ""),
+        "evaluation_route_mode": str(region_navigation.get("evaluation_route_mode") or ""),
+        "model_controlled": bool(acceptance.get("model_controlled", True)),
+        "goal_success": bool(acceptance.get("goal_success")),
+        "goal_reached": bool(acceptance.get("goal_reached")),
+        "final_goal_reached": bool(acceptance.get("final_goal_reached")),
+        "min_goal_distance": acceptance.get("min_goal_distance"),
+        "final_goal_distance": acceptance.get("final_goal_distance"),
+        "goal_radius": acceptance.get("goal_radius"),
+        "collision_count": acceptance.get("collision_count"),
+        "max_collision_count": acceptance.get("max_collision_count"),
+        "collection_progress_ratio": quality_gate.get("progress_ratio"),
+        "required_collection_progress_ratio": quality_gate.get("required_progress_ratio"),
+        "collection_min_goal_distance": collection_acceptance.get("min_goal_distance"),
+        "train_rmse": (training.get("metrics") if isinstance(training.get("metrics"), dict) else {}).get("train_rmse"),
+        "train_mse": (training.get("metrics") if isinstance(training.get("metrics"), dict) else {}).get("train_mse"),
+    }
+    return {
+        "status": status,
+        "message": message,
+        "next_actions": next_actions,
+        "evidence": evidence,
     }
 
 

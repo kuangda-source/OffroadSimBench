@@ -3181,6 +3181,15 @@ def _training_run_overview_text(run: dict[str, Any]) -> str:
         validation = promoted_config.get("validation") if isinstance(promoted_config.get("validation"), dict) else {}
         if "goal_success" in validation:
             lines.append(f"config_goal_success: {services.display_value(validation['goal_success'])}")
+    diagnostics = summary.get("diagnostics") if isinstance(summary.get("diagnostics"), dict) else {}
+    if diagnostics:
+        if diagnostics.get("status"):
+            lines.append(f"diagnostic_status: {diagnostics['status']}")
+        if diagnostics.get("message"):
+            lines.append(f"diagnostic_message: {diagnostics['message']}")
+        next_actions = diagnostics.get("next_actions") if isinstance(diagnostics.get("next_actions"), list) else []
+        if next_actions:
+            lines.append(f"diagnostic_next: {next_actions[0]}")
     logs = run.get("logs") if isinstance(run.get("logs"), dict) else {}
     for key in ("stdout", "stderr"):
         path = str(logs.get(key) or "").strip()

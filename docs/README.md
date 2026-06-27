@@ -11,3 +11,4 @@ Design notes and backend integration guides.
 - `phase4_acceptance_report.md`: visible BeamNG autonomous-driving acceptance results.
 - `le_wm_integration.md`: LE-WM planning bridge and runtime assumptions.
 - `desktop_gui.md`: PySide6 desktop GUI scope and connected interfaces.
+- `reports/2026-06-27_region_self_supervised_probe.md`: short real BeamNG self-supervised probe with navigation diagnostics.
