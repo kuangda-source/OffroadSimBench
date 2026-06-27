@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from offroad_sim.core import VehicleState
+from offroad_sim.core import Action, VehicleState
 
 
 @dataclass(slots=True)
@@ -21,6 +21,7 @@ class DatasetFrame:
     local_bev_path: str | None = None
     terrain_map_path: str | None = None
     label_path: str | None = None
+    action: Action | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def available_assets(self) -> dict[str, str]:

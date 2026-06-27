@@ -90,6 +90,33 @@ def test_navigation_mpc_samples_deceleration_candidates() -> None:
     assert any(candidate[0].throttle == 0.0 for candidate in candidates)
 
 
+def test_navigation_mpc_penalizes_heading_away_from_goal() -> None:
+    observation = Observation(
+        timestamp=0.0,
+        vehicle_state=VehicleState(x=0.0, y=0.0, yaw=0.0, speed=1.0),
+        goal=(10.0, 0.0),
+    )
+    planner = NavigationMPCPlanner(horizon=3, num_samples=8, seed=2)
+    candidate = [Action(throttle=0.4) for _ in range(3)]
+    aligned_cost, aligned_parts = planner._trajectory_cost(
+        observation,
+        candidate,
+        [VehicleState(x=2.0, y=0.0, yaw=0.0, speed=1.0)],
+        {},
+        0.0,
+    )
+    away_cost, away_parts = planner._trajectory_cost(
+        observation,
+        candidate,
+        [VehicleState(x=2.0, y=0.0, yaw=np.pi, speed=1.0)],
+        {},
+        0.0,
+    )
+
+    assert away_cost > aligned_cost
+    assert aligned_parts["heading_alignment_cost"] < away_parts["heading_alignment_cost"]
+
+
 def test_navigation_mpc_reports_world_model_prediction_fallback() -> None:
     class FailingWorldModel:
         def predict(self, observation, action, horizon=10):  # noqa: ANN001, ANN202

@@ -17,7 +17,7 @@ import numpy as np
 from offroad_sim.agents import default_agent_registry
 from offroad_sim.algorithms import DataPrepRequest, TrainRequest, default_algorithm_registry
 from offroad_sim.backends import BeamNGBackend, BeamNGConnectionConfig, default_backend_registry
-from offroad_sim.core import VehicleState
+from offroad_sim.core import Action, VehicleState
 from offroad_sim.datasets import default_dataset_registry
 from offroad_sim.datasets import DatasetFrame, DatasetSequence
 from offroad_sim.evaluation import run_episode
@@ -2329,6 +2329,11 @@ def _episode_trace_to_dataset_sequence(episode_path: str | Path, task: Navigatio
                     pitch=_finite_or_default(row.get("pitch"), 0.0),
                     roll=_finite_or_default(row.get("roll"), 0.0),
                     speed=_finite_or_default(row.get("speed"), 0.0),
+                ),
+                action=Action(
+                    steer=_finite_or_default(row.get("steer"), 0.0),
+                    throttle=_finite_or_default(row.get("throttle"), 0.0),
+                    brake=_finite_or_default(row.get("brake"), 0.0),
                 ),
                 metadata={"source_step_index": row.get("step_index")},
             )

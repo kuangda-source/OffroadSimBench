@@ -36,6 +36,7 @@ class NavigationMPCPlanner:
         smoothness_weight: float = 0.05,
         action_weight: float = 0.03,
         model_score_weight: float = 0.35,
+        heading_weight: float = 0.45,
     ) -> None:
         self.horizon = max(1, int(horizon))
         self.num_samples = max(4, int(num_samples))
@@ -48,6 +49,7 @@ class NavigationMPCPlanner:
         self.smoothness_weight = float(smoothness_weight)
         self.action_weight = float(action_weight)
         self.model_score_weight = float(model_score_weight)
+        self.heading_weight = float(heading_weight)
         self._fallback_model = SimpleKinematicWorldModel()
         self.rng = np.random.default_rng(self.seed)
 
@@ -163,6 +165,9 @@ class NavigationMPCPlanner:
         goal_distance = math.hypot(float(final_state.x) - goal_x, float(final_state.y) - goal_y)
         start_distance = math.hypot(float(observation.vehicle_state.x) - goal_x, float(observation.vehicle_state.y) - goal_y)
         progress = start_distance - goal_distance
+        desired_heading = math.atan2(goal_y - float(final_state.y), goal_x - float(final_state.x))
+        heading_error = abs(_wrap_angle(desired_heading - float(final_state.yaw)))
+        heading_alignment = heading_error / math.pi
         risk = float(prediction_metadata.get("max_risk", prediction_metadata.get("mean_risk", 0.0)) or 0.0)
         region_cost = 0.0
         region = navigation_region_from_observation_info(observation.info)
@@ -179,6 +184,7 @@ class NavigationMPCPlanner:
             + self.smoothness_weight * smoothness
             + self.action_weight * effort
             + self.model_score_weight * external_score
+            + self.heading_weight * heading_alignment
         )
         cost_parts: dict[str, Any] = {
             "goal_distance": float(goal_distance),
@@ -188,6 +194,8 @@ class NavigationMPCPlanner:
             "smoothness_cost": float(smoothness),
             "action_cost": float(effort),
             "external_model_cost": float(external_score),
+            "heading_alignment_cost": float(heading_alignment),
+            "heading_error_rad": float(heading_error),
         }
         if "prediction_fallback" in prediction_metadata:
             cost_parts["prediction_fallback"] = str(prediction_metadata["prediction_fallback"])
@@ -202,3 +210,11 @@ def _clamp_action(action: Action) -> Action:
         throttle=float(np.clip(action.throttle, 0.0, 1.0)),
         brake=float(np.clip(action.brake, 0.0, 1.0)),
     )
+
+
+def _wrap_angle(angle: float) -> float:
+    while angle > math.pi:
+        angle -= 2.0 * math.pi
+    while angle < -math.pi:
+        angle += 2.0 * math.pi
+    return angle

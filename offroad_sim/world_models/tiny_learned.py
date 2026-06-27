@@ -64,13 +64,16 @@ class TinyLearnedWorldModel(BaseWorldModel):
         targets: list[np.ndarray] = []
         frame_count = 0
         sequence_count = 0
+        recorded_action_sample_count = 0
 
         for sequence in sequences:
             sequence_count += 1
             frames = sequence.frames
             frame_count += len(frames)
             for current, nxt in zip(frames, frames[1:]):
-                action = _action_from_pair(current.vehicle_state, nxt.vehicle_state)
+                action, action_source = _transition_action(current, nxt)
+                if action_source == "recorded":
+                    recorded_action_sample_count += 1
                 features.append(_features(current.vehicle_state, action))
                 targets.append(_target(current.vehicle_state, nxt.vehicle_state))
 
@@ -88,6 +91,7 @@ class TinyLearnedWorldModel(BaseWorldModel):
             "sample_count": int(x.shape[0]),
             "train_mse": float(np.mean(residual**2)),
             "train_rmse": float(np.sqrt(np.mean(residual**2))),
+            "recorded_action_sample_count": recorded_action_sample_count,
             "feature_names": list(FEATURE_NAMES),
             "output_names": list(OUTPUT_NAMES),
         }
@@ -228,3 +232,13 @@ def _action_from_pair(current: VehicleState, nxt: VehicleState) -> Action:
         throttle=max(0.0, min(1.0, speed_delta / 2.0 + 0.35)),
         brake=max(0.0, min(1.0, -speed_delta / 2.0)),
     )
+
+
+def _transition_action(current: DatasetFrame, nxt: DatasetFrame) -> tuple[Action, str]:
+    # Episode records store the command that produced a frame, so the next
+    # frame's action is the best label for the current -> next transition.
+    if nxt.action is not None:
+        return nxt.action, "recorded"
+    if current.action is not None:
+        return current.action, "recorded"
+    return _action_from_pair(current.vehicle_state, nxt.vehicle_state), "inferred"

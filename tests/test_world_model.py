@@ -4,7 +4,7 @@ import numpy as np
 
 from offroad_sim.agents import WorldModelAgent, make_agent
 from offroad_sim.core import Action, Observation, VehicleState
-from offroad_sim.datasets import create_mock_orfd_dataset, default_dataset_registry
+from offroad_sim.datasets import DatasetFrame, DatasetSequence, create_mock_orfd_dataset, default_dataset_registry
 from offroad_sim.world_models import SimpleKinematicWorldModel, TinyLearnedWorldModel, default_world_model_registry, make_world_model
 
 
@@ -71,3 +71,28 @@ def test_tiny_learned_world_model_trains_and_loads(tmp_path) -> None:
     assert prediction.final_state is not None
     assert prediction.metadata["model_type"] == "tiny_learned"
     assert model.metadata["sample_count"] == 4
+
+
+def test_tiny_learned_world_model_uses_recorded_transition_actions() -> None:
+    sequence = DatasetSequence(
+        dataset_id="beamng_episode",
+        dataset_type="beamng_episode",
+        sequence_id="recorded_actions",
+        root=".",
+        frames=[
+            DatasetFrame("000000", 0.0, VehicleState(x=0.0, y=0.0, yaw=0.0, speed=0.0), action=Action(throttle=0.0)),
+            DatasetFrame("000001", 1.0, VehicleState(x=0.0, y=0.0, yaw=0.0, speed=0.0), action=Action(throttle=1.0)),
+            DatasetFrame("000002", 2.0, VehicleState(x=1.0, y=0.0, yaw=0.0, speed=1.0), action=Action(throttle=1.0)),
+        ],
+    )
+
+    model = TinyLearnedWorldModel.fit([sequence], ridge=1e-8)
+    prediction = model.predict(
+        Observation(timestamp=0.0, vehicle_state=VehicleState(x=0.0, y=0.0, yaw=0.0, speed=0.0), goal=(10.0, 0.0)),
+        Action(throttle=1.0),
+        horizon=1,
+    )
+
+    assert prediction.final_state is not None
+    assert prediction.final_state.x > 0.2
+    assert model.metadata["recorded_action_sample_count"] == 2
