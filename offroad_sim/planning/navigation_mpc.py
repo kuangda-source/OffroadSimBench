@@ -37,6 +37,7 @@ class NavigationMPCPlanner:
         action_weight: float = 0.03,
         model_score_weight: float = 0.35,
         heading_weight: float = 0.45,
+        low_speed_brake_weight: float = 4.0,
     ) -> None:
         self.horizon = max(1, int(horizon))
         self.num_samples = max(4, int(num_samples))
@@ -50,6 +51,7 @@ class NavigationMPCPlanner:
         self.action_weight = float(action_weight)
         self.model_score_weight = float(model_score_weight)
         self.heading_weight = float(heading_weight)
+        self.low_speed_brake_weight = float(low_speed_brake_weight)
         self._fallback_model = SimpleKinematicWorldModel()
         self.rng = np.random.default_rng(self.seed)
 
@@ -176,6 +178,7 @@ class NavigationMPCPlanner:
         actions = np.asarray([[item.steer, item.throttle, item.brake] for item in candidate], dtype=np.float64)
         smoothness = float(np.mean(np.abs(np.diff(actions, axis=0)))) if len(actions) > 1 else 0.0
         effort = float(np.mean(np.abs(actions))) if len(actions) else 0.0
+        low_speed_brake = _low_speed_brake_cost(observation, actions, start_distance)
         total = (
             self.goal_weight * goal_distance
             - self.progress_weight * progress
@@ -185,6 +188,7 @@ class NavigationMPCPlanner:
             + self.action_weight * effort
             + self.model_score_weight * external_score
             + self.heading_weight * heading_alignment
+            + self.low_speed_brake_weight * low_speed_brake
         )
         cost_parts: dict[str, Any] = {
             "goal_distance": float(goal_distance),
@@ -196,6 +200,7 @@ class NavigationMPCPlanner:
             "external_model_cost": float(external_score),
             "heading_alignment_cost": float(heading_alignment),
             "heading_error_rad": float(heading_error),
+            "low_speed_brake_cost": float(low_speed_brake),
         }
         if "prediction_fallback" in prediction_metadata:
             cost_parts["prediction_fallback"] = str(prediction_metadata["prediction_fallback"])
@@ -218,3 +223,40 @@ def _wrap_angle(angle: float) -> float:
     while angle < -math.pi:
         angle += 2.0 * math.pi
     return angle
+
+
+def _low_speed_brake_cost(observation: Observation, actions: np.ndarray, start_distance: float) -> float:
+    if actions.size == 0:
+        return 0.0
+    speed = max(0.0, float(observation.vehicle_state.speed))
+    if speed >= 3.0:
+        return 0.0
+    radius = _goal_radius_from_info(observation.info)
+    if start_distance <= max(8.0, radius * 2.0):
+        return 0.0
+    mean_throttle = float(np.mean(actions[:, 1]))
+    mean_brake = float(np.mean(actions[:, 2]))
+    if mean_brake <= 0.05 or mean_throttle >= 0.1:
+        return 0.0
+    return float(mean_brake * ((3.0 - speed) / 3.0))
+
+
+def _goal_radius_from_info(info: dict[str, Any]) -> float:
+    candidates: list[Any] = [
+        info.get("goal_radius"),
+        info.get("success_radius_m"),
+    ]
+    navigation_region = info.get("navigation_region")
+    if isinstance(navigation_region, dict):
+        candidates.append(navigation_region.get("goal_radius"))
+        goal = navigation_region.get("goal")
+        if isinstance(goal, dict):
+            candidates.append(goal.get("radius"))
+    for value in candidates:
+        try:
+            radius = float(value)
+        except (TypeError, ValueError):
+            continue
+        if radius > 0.0:
+            return radius
+    return 0.0

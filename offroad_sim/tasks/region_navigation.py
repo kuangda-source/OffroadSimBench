@@ -85,13 +85,20 @@ class NavigationRegionTask:
             drive_mode = self.beamng.get("evaluation_drive_mode", "manual")
         else:
             drive_mode = self.beamng.get("collection_drive_mode") or self.beamng.get("drive_mode", "ai_line")
+        uses_route = mode == "collection" or self._uses_evaluation_route(mode)
+        start_yaw, yaw_source = self._beamng_start_yaw(uses_route=uses_route)
+        rot_quat = self.beamng.get("rot_quat")
+        if yaw_source == "expert_route_first_segment" or rot_quat is None:
+            rot_quat = _yaw_to_quat(start_yaw)
         beamng = {
             "level": self.level,
             "vehicle_model": str(self.beamng.get("vehicle_model", "pickup")),
             "vehicle_start": {
                 "pos": list(self.start_pos),
-                "yaw": self.start_yaw,
-                "rot_quat": list(self.beamng.get("rot_quat", _yaw_to_quat(self.start_yaw))),
+                "yaw": start_yaw,
+                "original_yaw": self.start_yaw,
+                "yaw_source": yaw_source,
+                "rot_quat": list(rot_quat),
             },
             "camera_mode": str(self.beamng.get("camera_mode", "follow")),
             "draw_route": bool(self.beamng.get("draw_route", True)),
@@ -100,7 +107,7 @@ class NavigationRegionTask:
             "ai_line_speed": float(self.beamng.get("ai_line_speed", 8.0)),
             "steps_per_action": int(self.beamng.get("steps_per_action", 6)),
         }
-        if mode == "collection" or self._uses_evaluation_route(mode):
+        if uses_route:
             beamng["route"] = [list(point) for point in self.expert_route]
         return {
             "scenario_id": f"{self.task_id}_{mode}",
@@ -126,6 +133,17 @@ class NavigationRegionTask:
             return False
         route_mode = str(self.beamng.get("evaluation_route_mode", "none")).strip().lower()
         return route_mode in {"expert", "expert_route", "route", "agent", "draw"}
+
+    def _beamng_start_yaw(self, *, uses_route: bool) -> tuple[float, str]:
+        if not uses_route or not bool(self.beamng.get("align_start_yaw_to_route", True)):
+            return self.start_yaw, "task_start_yaw"
+        route_yaw = _initial_route_heading(self.expert_route)
+        if route_yaw is None:
+            return self.start_yaw, "task_start_yaw"
+        threshold = float(self.beamng.get("start_yaw_route_align_threshold_rad", 0.75))
+        if abs(_wrap_angle(route_yaw - self.start_yaw)) <= threshold:
+            return self.start_yaw, "task_start_yaw"
+        return route_yaw, "expert_route_first_segment"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -172,3 +190,23 @@ def _yaw_to_quat(yaw: float) -> list[float]:
     beamng_yaw = -float(yaw) - math.pi * 0.5
     half = beamng_yaw * 0.5
     return [0.0, 0.0, round(math.sin(half), 6), round(math.cos(half), 6)]
+
+
+def _initial_route_heading(route: list[Point2]) -> float | None:
+    if len(route) < 2:
+        return None
+    start = route[0]
+    for point in route[1:]:
+        dx = float(point[0]) - float(start[0])
+        dy = float(point[1]) - float(start[1])
+        if abs(dx) + abs(dy) > 1e-6:
+            return math.atan2(dy, dx)
+    return None
+
+
+def _wrap_angle(angle: float) -> float:
+    while angle > math.pi:
+        angle -= 2.0 * math.pi
+    while angle < -math.pi:
+        angle += 2.0 * math.pi
+    return angle

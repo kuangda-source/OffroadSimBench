@@ -117,6 +117,35 @@ def test_navigation_mpc_penalizes_heading_away_from_goal() -> None:
     assert aligned_parts["heading_alignment_cost"] < away_parts["heading_alignment_cost"]
 
 
+def test_navigation_mpc_penalizes_low_speed_braking_far_from_goal() -> None:
+    observation = Observation(
+        timestamp=0.0,
+        vehicle_state=VehicleState(x=0.0, y=0.0, yaw=0.0, speed=0.5),
+        goal=(30.0, 0.0),
+        info={"navigation_region": {"goal_radius": 3.0}},
+    )
+    planner = NavigationMPCPlanner(horizon=3, num_samples=8, seed=2)
+    same_prediction = [VehicleState(x=1.0, y=0.0, yaw=0.0, speed=0.5)]
+
+    throttle_cost, throttle_parts = planner._trajectory_cost(
+        observation,
+        [Action(throttle=0.45, brake=0.0) for _ in range(3)],
+        same_prediction,
+        {},
+        0.0,
+    )
+    brake_cost, brake_parts = planner._trajectory_cost(
+        observation,
+        [Action(throttle=0.0, brake=0.18) for _ in range(3)],
+        same_prediction,
+        {},
+        0.0,
+    )
+
+    assert brake_cost > throttle_cost
+    assert brake_parts["low_speed_brake_cost"] > throttle_parts["low_speed_brake_cost"]
+
+
 def test_navigation_mpc_reports_world_model_prediction_fallback() -> None:
     class FailingWorldModel:
         def predict(self, observation, action, horizon=10):  # noqa: ANN001, ANN202

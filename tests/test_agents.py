@@ -236,22 +236,98 @@ def test_world_model_direct_agent_keeps_low_speed_progress() -> None:
     assert abs(action.steer) <= 0.25
 
 
+def test_world_model_direct_agent_uses_controlled_sharp_turn_from_low_speed() -> None:
+    observation = Observation(
+        timestamp=0.0,
+        vehicle_state=VehicleState(x=0.0, y=0.0, yaw=0.0, speed=0.2),
+        goal=(0.0, -20.0),
+        info={},
+    )
+
+    action = _stabilize_action(
+        Action(steer=0.0, throttle=0.1, brake=0.0),
+        Action(steer=-1.0, throttle=0.25, brake=0.0),
+        observation,
+    )
+
+    assert action.steer <= -0.7
+    assert 0.35 <= action.throttle <= 0.5
+    assert action.brake == 0.0
+
+
+def test_world_model_direct_agent_limits_speed_for_medium_speed_sharp_turn() -> None:
+    observation = Observation(
+        timestamp=0.0,
+        vehicle_state=VehicleState(x=0.0, y=0.0, yaw=0.0, speed=5.8),
+        goal=(0.0, -20.0),
+        info={},
+    )
+
+    action = _stabilize_action(
+        Action(steer=-0.9, throttle=0.65, brake=0.0),
+        Action(steer=-0.9, throttle=0.25, brake=0.0),
+        observation,
+    )
+
+    assert abs(action.steer) <= 0.55
+    assert action.throttle <= 0.2
+    assert action.brake >= 0.08
+
+
+def test_world_model_direct_agent_rejects_medium_speed_steer_against_goal_bearing() -> None:
+    observation = Observation(
+        timestamp=0.0,
+        vehicle_state=VehicleState(x=0.0, y=0.0, yaw=0.0, speed=4.1),
+        goal=(-20.0, -20.0),
+        info={},
+    )
+
+    action = _stabilize_action(
+        Action(steer=0.75, throttle=0.45, brake=0.0),
+        Action(steer=-1.0, throttle=0.25, brake=0.0),
+        observation,
+    )
+
+    assert action.steer < 0.0
+    assert abs(action.steer) <= 0.75
+    assert action.throttle <= 0.2
+    assert action.brake >= 0.08
+
+
 def test_world_model_direct_agent_recovers_from_low_speed_no_progress() -> None:
     agent = make_agent("world_model_direct", planner_config={"horizon": 4, "num_samples": 16, "seed": 4})
     observation = Observation(
         timestamp=0.0,
         vehicle_state=VehicleState(x=0.0, y=0.0, yaw=0.0, speed=0.02),
-        goal=(20.0, 0.0),
+        goal=(0.0, -20.0),
         info={},
     )
 
     for _ in range(24):
-        action, stuck = agent._progress_filter(Action(steer=0.6, throttle=0.7, brake=0.0), Action(steer=0.6, throttle=0.5, brake=0.0), observation)
+        action, stuck = agent._progress_filter(Action(steer=-0.75, throttle=0.4, brake=0.0), Action(steer=-0.9, throttle=0.45, brake=0.0), observation)
 
     assert stuck is True
     assert action.throttle == 1.0
     assert action.brake == 0.0
-    assert abs(action.steer) <= 0.18
+    assert abs(action.steer) <= 0.1
+
+
+def test_world_model_direct_agent_turns_again_after_straight_recovery_burst() -> None:
+    agent = make_agent("world_model_direct", planner_config={"horizon": 4, "num_samples": 16, "seed": 4})
+    observation = Observation(
+        timestamp=0.0,
+        vehicle_state=VehicleState(x=0.0, y=0.0, yaw=0.0, speed=0.02),
+        goal=(0.0, -20.0),
+        info={},
+    )
+
+    for _ in range(36):
+        action, stuck = agent._progress_filter(Action(steer=-0.75, throttle=0.4, brake=0.0), Action(steer=-0.9, throttle=0.45, brake=0.0), observation)
+
+    assert stuck is True
+    assert 0.4 <= action.throttle <= 0.65
+    assert action.brake == 0.0
+    assert action.steer <= -0.65
 
 
 def test_model_mpc_agent_uses_route_and_mpc_diagnostics() -> None:
@@ -323,8 +399,25 @@ def test_model_mpc_agent_recovers_from_low_speed_stuck_turn() -> None:
     for _ in range(14):
         action = agent._execution_filter(Action(steer=-1.0, throttle=0.45), Action(steer=-1.0, throttle=0.25), observation)
 
-    assert action.throttle >= 0.8
-    assert action.steer <= -0.85
+    assert action.throttle == 1.0
+    assert abs(action.steer) <= 0.1
+    assert agent.diagnostics().get("stuck_recovery") is True
+
+
+def test_model_mpc_agent_turns_after_straight_recovery_burst() -> None:
+    agent = ModelMPCAgent(route=[(0.0, 0.0), (0.0, 20.0)], planner_config={"horizon": 4, "num_samples": 12, "seed": 2})
+    observation = Observation(
+        timestamp=0.0,
+        vehicle_state=VehicleState(x=0.0, y=0.0, yaw=0.7, speed=0.05),
+        goal=(0.0, 20.0),
+        info={},
+    )
+
+    for _ in range(26):
+        action = agent._execution_filter(Action(steer=-1.0, throttle=0.45), Action(steer=-1.0, throttle=0.25), observation)
+
+    assert 0.45 <= action.throttle <= 0.75
+    assert action.steer <= -0.65
     assert agent.diagnostics().get("stuck_recovery") is True
 
 

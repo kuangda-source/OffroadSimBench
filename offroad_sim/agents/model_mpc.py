@@ -163,7 +163,20 @@ class ModelMPCAgent(OffroadAgent):
             throttle = max(throttle, 1.0)
             brake = 0.0
             if speed < 0.2:
-                steer = _recovery_steer(reference_steer, self._stuck_steps)
+                turn_demand = abs(reference_steer)
+                if turn_demand > 0.35:
+                    phase = _recovery_phase(self._stuck_steps)
+                    if phase == 0:
+                        steer = 0.0
+                        throttle = 1.0
+                    elif phase == 1:
+                        steer = max(min(reference_steer, 0.9), -0.9)
+                        throttle = min(max(float(reference_action.throttle), 0.55), 0.75)
+                    else:
+                        steer = max(min(reference_steer, 0.45), -0.45)
+                        throttle = 0.75
+                else:
+                    steer = _recovery_steer(reference_steer, self._stuck_steps)
             else:
                 recovery_steer_limit = 1.0 if sharp_turn else 0.55
                 steer = max(min(reference_steer, recovery_steer_limit), -recovery_steer_limit)
@@ -250,12 +263,16 @@ def _turn_speed_target(turn_demand: float) -> float:
 
 def _recovery_steer(reference_steer: float, stuck_steps: int) -> float:
     direction = 1.0 if reference_steer >= 0.0 else -1.0
-    phase = ((max(0, int(stuck_steps)) - 12) // 20) % 3
+    phase = _recovery_phase(stuck_steps)
     if phase == 0:
-        return 0.9 * direction
+        return 0.0
     if phase == 1:
-        return 1.0 * direction
+        return 0.9 * direction
     return 0.55 * direction
+
+
+def _recovery_phase(stuck_steps: int) -> int:
+    return ((max(0, int(stuck_steps)) - 12) // 12) % 3
 
 
 def _goal_radius_from_info(info: dict[str, Any]) -> float:

@@ -8,7 +8,7 @@ from typing import Any
 
 from offroad_sim.agents.base import OffroadAgent
 from offroad_sim.agents.basic import RuleBasedGoalAgent
-from offroad_sim.agents.model_mpc import _action_dict, _goal_radius_from_info
+from offroad_sim.agents.model_mpc import _action_dict, _goal_radius_from_info, _speed_steer_limit, _turn_speed_target
 from offroad_sim.core import Action, Observation
 from offroad_sim.planning import make_planner
 from offroad_sim.planning.navigation_mpc import NavigationMPCPlanner
@@ -102,9 +102,48 @@ class WorldModelDirectAgent(OffroadAgent):
         self._last_goal_distance = goal_distance
         if self._stuck_steps < 18:
             return action, False
+        reference_steer = max(min(float(reference_action.steer), 1.0), -1.0)
+        turn_demand = abs(reference_steer)
+        recovery_phase = ((self._stuck_steps - 18) // 12) % 3
+        if turn_demand > 0.35 and recovery_phase == 0:
+            return (
+                Action(
+                    steer=0.0,
+                    throttle=1.0,
+                    brake=0.0,
+                ),
+                True,
+            )
+        if turn_demand > 0.35 and recovery_phase == 2:
+            return (
+                Action(
+                    steer=max(min(reference_steer, 0.45), -0.45),
+                    throttle=0.75,
+                    brake=0.0,
+                ),
+                True,
+            )
+        if turn_demand > 0.75:
+            return (
+                Action(
+                    steer=max(min(reference_steer, 0.9), -0.9),
+                    throttle=min(max(float(reference_action.throttle), 0.55), 0.7),
+                    brake=0.0,
+                ),
+                True,
+            )
+        if turn_demand > 0.35:
+            return (
+                Action(
+                    steer=max(min(reference_steer, 0.65), -0.65),
+                    throttle=min(max(float(reference_action.throttle), 0.65), 0.8),
+                    brake=0.0,
+                ),
+                True,
+            )
         return (
             Action(
-                steer=max(min(float(reference_action.steer), 0.18), -0.18),
+                steer=max(min(reference_steer, 0.25), -0.25),
                 throttle=1.0,
                 brake=0.0,
             ),
@@ -131,19 +170,42 @@ def _stabilize_action(action: Action, reference_action: Action, obs: Observation
     steer = max(min(float(action.steer), 1.0), -1.0)
     throttle = max(min(float(action.throttle), 1.0), 0.0)
     brake = max(min(float(action.brake), 1.0), 0.0)
-    turn_demand = max(abs(steer), abs(float(reference_action.steer)))
+    reference_steer = max(min(float(reference_action.steer), 1.0), -1.0)
+    turn_demand = max(abs(steer), abs(reference_steer))
+    sharp_turn = abs(reference_steer) > 0.75
     if speed < 3.5:
-        steer_conflict = abs(steer - float(reference_action.steer)) > 0.45
+        steer_conflict = abs(steer - reference_steer) > 0.45
         planner_stalling = throttle < 0.35 or brake > 0.01 or abs(steer) > 0.75
         if steer_conflict or planner_stalling:
+            if sharp_turn:
+                steer_limit = 0.9 if speed < 1.0 else 0.75
+                throttle_floor = 0.42 if speed < 1.0 else 0.35
+                throttle_cap = 0.5 if speed < 1.0 else 0.6
+                return Action(
+                    steer=max(min(reference_steer, steer_limit), -steer_limit),
+                    throttle=min(max(throttle, float(reference_action.throttle), throttle_floor), throttle_cap),
+                    brake=0.0,
+                )
             steer_limit = 0.25 if speed < 1.0 else 0.5
             return Action(
-                steer=max(min(float(reference_action.steer), steer_limit), -steer_limit),
+                steer=max(min(reference_steer, steer_limit), -steer_limit),
                 throttle=max(throttle, float(reference_action.throttle), 0.78),
                 brake=0.0,
             )
-    if speed > 6.0 and turn_demand > 0.35:
-        throttle = min(throttle, 0.15)
-        brake = max(brake, 0.12)
-        steer = max(min(steer, 0.5), -0.5)
+    if abs(reference_steer) > 0.35 and steer * reference_steer < -0.05:
+        steer_limit = _speed_steer_limit(speed, sharp_turn=sharp_turn)
+        steer = max(min(reference_steer, steer_limit), -steer_limit)
+        turn_demand = max(abs(steer), abs(reference_steer))
+    if turn_demand > 0.35:
+        steer_limit = _speed_steer_limit(speed, sharp_turn=sharp_turn)
+        steer = max(min(steer, steer_limit), -steer_limit)
+        target_speed = _turn_speed_target(turn_demand)
+        if speed > target_speed:
+            overspeed = speed - target_speed
+            throttle = 0.0 if overspeed >= 1.0 else min(throttle, 0.15)
+            brake = max(brake, min(0.45, 0.08 + 0.08 * overspeed))
+        elif speed > target_speed - 0.4:
+            throttle = min(throttle, 0.2)
+    if brake > 0.2 and throttle > 0.2:
+        throttle = min(throttle, 0.2)
     return Action(steer=steer, throttle=throttle, brake=brake)

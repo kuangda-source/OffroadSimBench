@@ -102,6 +102,49 @@ def test_navigation_region_task_can_share_expert_route_with_manual_evaluation() 
     ]
 
 
+def test_navigation_region_task_aligns_spawn_yaw_to_used_route() -> None:
+    task = NavigationRegionTask(
+        task_id="route_aligned_yaw",
+        map_id="johnson_valley_dirt_route",
+        level="johnson_valley",
+        region_polygon=[(-10.0, -10.0), (30.0, -10.0), (30.0, 30.0), (-10.0, 30.0)],
+        start_pos=(0.0, 0.0, 1.0),
+        start_yaw=-0.5,
+        goal_pos=(0.0, 20.0),
+        goal_radius=2.0,
+        expert_route=[(0.0, 0.0), (0.0, 20.0)],
+        beamng={"evaluation_drive_mode": "manual", "evaluation_route_mode": "expert"},
+    )
+
+    scenario = task.to_beamng_scenario(mode="evaluation")
+    start = scenario["metadata"]["beamng"]["vehicle_start"]
+
+    assert start["yaw"] == 1.5707963267948966
+    assert start["original_yaw"] == -0.5
+    assert start["yaw_source"] == "expert_route_first_segment"
+
+
+def test_navigation_region_task_can_disable_route_yaw_alignment() -> None:
+    task = NavigationRegionTask(
+        task_id="route_original_yaw",
+        map_id="johnson_valley_dirt_route",
+        level="johnson_valley",
+        region_polygon=[(-10.0, -10.0), (30.0, -10.0), (30.0, 30.0), (-10.0, 30.0)],
+        start_pos=(0.0, 0.0, 1.0),
+        start_yaw=-0.5,
+        goal_pos=(0.0, 20.0),
+        goal_radius=2.0,
+        expert_route=[(0.0, 0.0), (0.0, 20.0)],
+        beamng={"evaluation_drive_mode": "manual", "evaluation_route_mode": "expert", "align_start_yaw_to_route": False},
+    )
+
+    scenario = task.to_beamng_scenario(mode="evaluation")
+    start = scenario["metadata"]["beamng"]["vehicle_start"]
+
+    assert start["yaw"] == -0.5
+    assert start["yaw_source"] == "task_start_yaw"
+
+
 def test_navigation_region_task_derives_spawn_rotation_from_start_yaw() -> None:
     task = NavigationRegionTask(
         task_id="yaw_spawn",
