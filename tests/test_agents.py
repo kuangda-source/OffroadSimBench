@@ -123,6 +123,40 @@ def test_region_explorer_samples_goal_corridor_targets_between_vehicle_and_goal(
     assert abs(diagnostics["target"][1] - 2.0) < 3.0
 
 
+def test_region_explorer_can_cycle_coverage_targets_inside_region() -> None:
+    agent = make_agent(
+        "region_explorer",
+        seed=3,
+        goal_bias_interval=0,
+        goal_corridor_interval=0,
+        coverage_grid_size=3,
+        coverage_target_interval=1,
+        max_target_steps=1,
+    )
+    observation = Observation(
+        timestamp=0.0,
+        vehicle_state=VehicleState(x=2.0, y=2.0, yaw=0.0, speed=0.5),
+        goal=(28.0, 28.0),
+        info={
+            "navigation_region": {
+                "region": {"polygon": [[0.0, 0.0], [30.0, 0.0], [30.0, 30.0], [0.0, 30.0]]}
+            }
+        },
+    )
+
+    targets: list[tuple[float, float]] = []
+    for step in range(4):
+        observation.timestamp = float(step)
+        agent.act(observation)
+        diagnostics = agent.diagnostics()
+        targets.append(tuple(diagnostics["target"]))
+        assert diagnostics["target_source"] == "coverage"
+        assert diagnostics["target_in_region"] is True
+        assert diagnostics["coverage_target_count"] >= 4
+
+    assert len(set(targets)) == len(targets)
+
+
 def test_world_model_direct_agent_ignores_expert_route_info() -> None:
     agent = make_agent("world_model_direct", planner_config={"horizon": 4, "num_samples": 16, "seed": 4})
     observation = Observation(

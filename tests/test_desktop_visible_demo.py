@@ -990,6 +990,9 @@ def test_gui_exposes_region_self_supervised_training(monkeypatch) -> None:
     assert captured["request"].collect_steps >= 1000
     assert captured["request"].collect_rollouts >= 3
     assert captured["request"].min_collection_goal_progress_ratio >= 0.25
+    assert captured["request"].collection_coverage_grid_size >= 4
+    assert captured["request"].collection_coverage_target_interval == 1
+    assert captured["request"].collection_max_target_steps <= 40
     assert captured["request"].eval_steps >= 1000
     assert captured["request"].close_beamng is False
     window.close()

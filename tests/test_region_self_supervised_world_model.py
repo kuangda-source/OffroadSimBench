@@ -119,6 +119,9 @@ def test_region_self_supervised_world_model_trains_and_evaluates_without_route(t
     assert "route" not in seen_scenarios[1]["metadata"]["beamng"]
     assert seen_agent_options[0]["goal_bias_interval"] == 1
     assert seen_agent_options[0]["goal_corridor_interval"] == 1
+    assert seen_agent_options[0]["coverage_grid_size"] == 0
+    assert seen_agent_options[0]["coverage_target_interval"] == 0
+    assert seen_agent_options[0]["max_target_steps"] == 80
     assert seen_agent_options[1]["world_model_name"] == "tiny_learned"
     assert seen_agent_options[1]["planner_config"] == {"horizon": 6, "num_samples": 32, "iterations": 3}
     assert Path(payload["training"]["model_path"]).exists()
@@ -372,6 +375,12 @@ def test_region_self_supervised_script_exposes_gui_training_options(monkeypatch,
             "4",
             "--collection-goal-corridor-lateral-m",
             "3.5",
+            "--collection-coverage-grid-size",
+            "5",
+            "--collection-coverage-target-interval",
+            "2",
+            "--collection-max-target-steps",
+            "35",
             "--register-world-model-config",
             "--world-model-config-path",
             str(tmp_path / "world_model_configs.json"),
@@ -386,6 +395,9 @@ def test_region_self_supervised_script_exposes_gui_training_options(monkeypatch,
     assert request.collection_goal_bias_interval == 2
     assert request.collection_goal_corridor_interval == 4
     assert request.collection_goal_corridor_lateral_m == 3.5
+    assert request.collection_coverage_grid_size == 5
+    assert request.collection_coverage_target_interval == 2
+    assert request.collection_max_target_steps == 35
     assert request.register_world_model_config is True
     assert request.world_model_config_path == str(tmp_path / "world_model_configs.json")
     assert json.loads(capsys.readouterr().out)["status"] == "ok"

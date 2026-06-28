@@ -18,6 +18,9 @@ def main() -> None:
     parser.add_argument("--collection-goal-bias-interval", type=int, default=1)
     parser.add_argument("--collection-goal-corridor-interval", type=int, default=1)
     parser.add_argument("--collection-goal-corridor-lateral-m", type=float, default=2.0)
+    parser.add_argument("--collection-coverage-grid-size", type=int, default=0)
+    parser.add_argument("--collection-coverage-target-interval", type=int, default=0)
+    parser.add_argument("--collection-max-target-steps", type=int, default=80)
     parser.add_argument("--eval-steps", type=int, default=1000)
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--planner", default="navigation_mpc")
@@ -44,6 +47,9 @@ def main() -> None:
             collection_goal_bias_interval=args.collection_goal_bias_interval,
             collection_goal_corridor_interval=args.collection_goal_corridor_interval,
             collection_goal_corridor_lateral_m=args.collection_goal_corridor_lateral_m,
+            collection_coverage_grid_size=args.collection_coverage_grid_size,
+            collection_coverage_target_interval=args.collection_coverage_target_interval,
+            collection_max_target_steps=args.collection_max_target_steps,
             eval_steps=args.eval_steps,
             seed=args.seed,
             planner=args.planner,

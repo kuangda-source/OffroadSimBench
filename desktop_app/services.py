@@ -161,6 +161,9 @@ class RegionSelfSupervisedWorldModelRequest:
     collection_goal_bias_interval: int = 1
     collection_goal_corridor_interval: int = 1
     collection_goal_corridor_lateral_m: float = 2.0
+    collection_coverage_grid_size: int = 0
+    collection_coverage_target_interval: int = 0
+    collection_max_target_steps: int = 80
     eval_steps: int = 1000
     seed: int = 7
     planner: str = "navigation_mpc"
@@ -1943,6 +1946,9 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
                 "goal_bias_interval": max(0, int(request.collection_goal_bias_interval)),
                 "goal_corridor_interval": max(0, int(request.collection_goal_corridor_interval)),
                 "goal_corridor_lateral_m": max(0.0, float(request.collection_goal_corridor_lateral_m)),
+                "coverage_grid_size": max(0, int(request.collection_coverage_grid_size)),
+                "coverage_target_interval": max(0, int(request.collection_coverage_target_interval)),
+                "max_target_steps": max(1, int(request.collection_max_target_steps)),
             },
             world_model_type="simple_kinematic",
             world_model_path="",
@@ -2020,6 +2026,9 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
                 "collection_goal_bias_interval": max(0, int(request.collection_goal_bias_interval)),
                 "collection_goal_corridor_interval": max(0, int(request.collection_goal_corridor_interval)),
                 "collection_goal_corridor_lateral_m": max(0.0, float(request.collection_goal_corridor_lateral_m)),
+                "collection_coverage_grid_size": max(0, int(request.collection_coverage_grid_size)),
+                "collection_coverage_target_interval": max(0, int(request.collection_coverage_target_interval)),
+                "collection_max_target_steps": max(1, int(request.collection_max_target_steps)),
             },
             summary={
                 "task_path": str(Path(request.task_path).resolve()),
@@ -2162,6 +2171,9 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
             "collection_goal_bias_interval": max(0, int(request.collection_goal_bias_interval)),
             "collection_goal_corridor_interval": max(0, int(request.collection_goal_corridor_interval)),
             "collection_goal_corridor_lateral_m": max(0.0, float(request.collection_goal_corridor_lateral_m)),
+            "collection_coverage_grid_size": max(0, int(request.collection_coverage_grid_size)),
+            "collection_coverage_target_interval": max(0, int(request.collection_coverage_target_interval)),
+            "collection_max_target_steps": max(1, int(request.collection_max_target_steps)),
         },
         summary={
             "task_path": str(Path(request.task_path).resolve()),
