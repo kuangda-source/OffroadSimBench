@@ -123,9 +123,22 @@ class ManifestDatasetAdapter(DatasetAdapter):
             if field_name is None or template in (None, ""):
                 continue
             rendered = str(template).format_map(_SafeFormatDict(context))
-            path = (sequence_root / rendered).resolve()
-            fields[field_name] = str(path) if path.exists() else None
+            fields[field_name] = self._resolve_asset_path(sequence_root, rendered, index)
         return fields
+
+    def _resolve_asset_path(self, sequence_root: Path, rendered: str, index: int) -> str | None:
+        if any(char in rendered for char in "*?["):
+            pattern = Path(rendered)
+            if pattern.is_absolute():
+                matches = sorted(pattern.parent.glob(pattern.name), key=lambda path: str(path).lower())
+            else:
+                matches = sorted(sequence_root.glob(rendered), key=lambda path: str(path).lower())
+            return str(matches[index].resolve()) if index < len(matches) else None
+        path = Path(rendered)
+        if not path.is_absolute():
+            path = sequence_root / rendered
+        resolved = path.resolve()
+        return str(resolved) if resolved.exists() else None
 
     def _goal(self, row: dict[str, Any], frames: list[DatasetFrame]) -> tuple[float, float] | None:
         value = row.get("goal")

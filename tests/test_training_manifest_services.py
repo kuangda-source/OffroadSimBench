@@ -157,6 +157,32 @@ def test_run_trainer_manifest_job_executes_command_and_records(tmp_path) -> None
     assert record["logs"]["stderr"] == str((output_dir / "stderr.log").resolve())
 
 
+def test_run_training_config_job_executes_external_trainer_config(tmp_path) -> None:
+    _write_echo_trainer(tmp_path)
+    dataset_root = tmp_path / "dataset"
+    dataset_root.mkdir()
+    output_dir = tmp_path / "configured_run"
+    config = {
+        "id": "echo_config",
+        "label": "Echo Config",
+        "training_preset_id": "echo_trainer",
+        "dataset_root": str(dataset_root),
+        "adapter": "manifest_dataset",
+        "sequence_id": "clip_001",
+        "output_path": str(output_dir),
+        "parameters": {"epochs": 6},
+    }
+
+    payload = services.run_training_config_job(config, trainer_root=tmp_path)
+
+    record = json.loads((output_dir / services.TRAINING_RUN_FILENAME).read_text(encoding="utf-8"))
+    assert payload["artifact_type"] == "checkpoint"
+    assert Path(payload["artifact_path"]).name == "echo.ckpt"
+    assert payload["training_config"]["id"] == "echo_config"
+    assert payload["metrics"]["final_loss"] == 0.25
+    assert record["parameters"]["epochs"] == 6
+
+
 def test_validate_training_config_setup_previews_external_trainer_command(tmp_path) -> None:
     manifest = _write_echo_trainer(tmp_path)
     config = services.save_training_config(

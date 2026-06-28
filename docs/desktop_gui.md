@@ -24,6 +24,10 @@ offroad-sim-gui
 - Dataset and Training can save reusable training configs that bind a dataset
   root/adapter/sequence, a built-in or imported trainer manifest, JSON training
   parameters, and a dedicated training output path.
+- The Dataset tab can register a generic `manifest_dataset` directly from the
+  current dataset root, display name, and JSON sequence/asset declarations via
+  `Save dataset manifest`, so a new driving dataset does not require Python code
+  before it can appear in the catalog.
 - A complete external training bundle can be imported through
   `Import training config`. The bundle config may reference a
   `dataset_manifest.yaml`, a `trainer.yaml`, an output path, and parameter
@@ -38,8 +42,9 @@ offroad-sim-gui
 - Tiny learned world-model training through `TinyLearnedWorldModel.fit`.
 - StableWM HDF5 export with configurable image size from the advanced settings dialog.
 - LE-WM-compatible cost-model training from exported HDF5 files.
-- Imported `trainer.yaml` manifests can run external local model trainers and
-  record `training_run.json`, metrics, history curves, stdout, and stderr.
+- `Start training/export` runs the current training config through one service
+  boundary. Imported `trainer.yaml` manifests can run external local model
+  trainers and record `training_run.json`, metrics, history curves, stdout, and stderr.
   Trainers may return JSON on stdout or write sidecar files such as
   `metrics.json`, `history.json`, or `events.jsonl` in the output directory.
 - Training run details show the recorded artifact, key metrics, available curve

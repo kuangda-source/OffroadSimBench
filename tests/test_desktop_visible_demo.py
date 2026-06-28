@@ -207,6 +207,11 @@ def test_gui_dataset_training_page_exposes_training_studio_controls() -> None:
     assert "Training output" in labels
     assert "Training config summary" in labels
     assert "Latest metric curve" in labels
+    assert "Dataset name" in labels
+    assert "Manifest sequences" in labels
+    assert "Save dataset manifest" in buttons
+    assert "Preview dataset frame" in buttons
+    assert "预览 ORFD 图像" not in buttons
     assert "Save training config" in buttons
     assert "Start training/export" in buttons
     assert hasattr(window, "training_preset_summary")
@@ -325,6 +330,49 @@ def test_gui_imports_dataset_manifest(monkeypatch, tmp_path) -> None:
     window.close()
 
 
+def test_gui_saves_dataset_manifest_from_current_dataset_fields(monkeypatch, tmp_path) -> None:
+    _ensure_app()
+    window = MainWindow()
+    dataset_root = tmp_path / "drive_dataset"
+    sequence_root = dataset_root / "clip_001"
+    sequence_root.mkdir(parents=True)
+    window.dataset_manifest_name_edit.setText("Custom Drive")
+    window.dataset_root_edit.setText(str(dataset_root))
+    window.dataset_manifest_sequences_edit.setPlainText(
+        '[{"id": "clip_001", "root": "clip_001", "assets": {"front_rgb": "images/*.png"}}]'
+    )
+    captured: dict[str, object] = {}
+    saved = {
+        "id": "custom_drive",
+        "label": "Custom Drive",
+        "adapter": "manifest_dataset",
+        "dataset_root": str(tmp_path / "configs" / "datasets" / "custom_drive"),
+        "sequences": ["clip_001"],
+    }
+
+    def fake_save_dataset_manifest(**kwargs):
+        captured.update(kwargs)
+        return saved
+
+    def fake_refresh_catalogs() -> None:
+        window.catalog["dataset_manifests"] = [saved]
+        window._fill_dataset_manifest_combo()
+
+    monkeypatch.setattr(services, "save_dataset_manifest", fake_save_dataset_manifest)
+    monkeypatch.setattr(window, "refresh_catalogs", fake_refresh_catalogs)
+
+    window.save_dataset_manifest_from_gui()
+
+    assert captured["dataset_id"] == "Custom Drive"
+    assert captured["dataset_root"] == str(dataset_root)
+    assert captured["sequences"][0]["id"] == "clip_001"
+    assert captured["sequences"][0]["assets"]["front_rgb"] == "images/*.png"
+    assert window.dataset_catalog_combo.currentData()["id"] == "custom_drive"
+    assert window.adapter_edit.text() == "manifest_dataset"
+    assert window.sequence_combo.currentText() == "clip_001"
+    window.close()
+
+
 def test_gui_saves_and_applies_training_config(monkeypatch, tmp_path) -> None:
     _ensure_app()
     monkeypatch.setattr(services, "TRAINING_CONFIGS_PATH", tmp_path / "training_configs.json")
@@ -355,9 +403,12 @@ def test_gui_training_preset_dispatches_existing_actions(monkeypatch) -> None:
     window = MainWindow()
     calls: list[str] = []
 
-    monkeypatch.setattr(window, "export_stablewm_hdf5", lambda: calls.append("stablewm_hdf5"))
-    monkeypatch.setattr(window, "train_lewm_cost_model", lambda: calls.append("lewm_cost_model"))
-    monkeypatch.setattr(window, "train_tiny_model", lambda: calls.append("tiny_world_model"))
+    def fake_run_training_config_job(config, **kwargs):
+        calls.append(config["training_preset_id"])
+        return {"output_dir": "outputs/models/test", "training_run_path": "outputs/models/test/training_run.json"}
+
+    monkeypatch.setattr(services, "run_training_config_job", fake_run_training_config_job)
+    monkeypatch.setattr(window, "_run_task", lambda task, callback, label, **kwargs: callback(task()))
 
     for preset_id in ["stablewm_hdf5", "lewm_cost_model", "tiny_world_model"]:
         for index in range(window.training_preset_combo.count()):
@@ -375,8 +426,10 @@ def test_gui_training_preset_dispatches_manifest_trainer(monkeypatch, tmp_path) 
     _ensure_app()
     manifest = tmp_path / "trainer.yaml"
     manifest.write_text("trainer_id: echo_trainer\nentrypoint: echo_trainer.py\n", encoding="utf-8")
+    dataset_root = tmp_path / "dataset"
+    dataset_root.mkdir()
     window = MainWindow()
-    window.dataset_root_edit.setText("dataset_root")
+    window.dataset_root_edit.setText(str(dataset_root))
     window.adapter_edit.setText("manifest_dataset")
     window.sequence_combo.setCurrentText("clip_001")
     window.model_path_edit.setText(str(tmp_path / "run"))
@@ -393,21 +446,22 @@ def test_gui_training_preset_dispatches_manifest_trainer(monkeypatch, tmp_path) 
     window._fill_training_preset_combo()
     captured: dict[str, object] = {}
 
-    def fake_run_trainer_manifest_job(*args, **kwargs):
-        captured["args"] = args
+    def fake_run_training_config_job(config, **kwargs):
+        captured["config"] = config
         captured["kwargs"] = kwargs
         return {"output_dir": str(tmp_path / "run"), "training_run_path": str(tmp_path / "run" / "training_run.json")}
 
-    monkeypatch.setattr(services, "run_trainer_manifest_job", fake_run_trainer_manifest_job)
+    monkeypatch.setattr(services, "run_training_config_job", fake_run_training_config_job)
     monkeypatch.setattr(window, "_run_task", lambda task, callback, label, **kwargs: callback(task()))
 
     window.run_training_preset()
 
-    assert captured["args"][0] == str(manifest)
-    assert captured["kwargs"]["dataset_root"] == "dataset_root"
-    assert captured["kwargs"]["adapter"] == "manifest_dataset"
-    assert captured["kwargs"]["sequence_id"] == "clip_001"
-    assert captured["kwargs"]["parameters"] == {"epochs": 4}
+    assert captured["config"]["training_preset_id"] == "echo_trainer"
+    assert captured["config"]["dataset_root"] == str(dataset_root)
+    assert captured["config"]["adapter"] == "manifest_dataset"
+    assert captured["config"]["sequence_id"] == "clip_001"
+    assert captured["config"]["parameters"] == {"epochs": 4}
+    assert captured["kwargs"]["trainer_root"] == str(tmp_path)
     window.close()
 
 
@@ -416,6 +470,8 @@ def test_gui_training_config_dispatches_manifest_trainer_with_saved_output(monke
     manifest = tmp_path / "trainer.yaml"
     manifest.write_text("trainer_id: echo_trainer\nentrypoint: echo_trainer.py\n", encoding="utf-8")
     output_dir = tmp_path / "configured_run"
+    dataset_root = tmp_path / "dataset"
+    dataset_root.mkdir()
     window = MainWindow()
     window.catalog["training_presets"] = [
         {
@@ -431,7 +487,7 @@ def test_gui_training_config_dispatches_manifest_trainer_with_saved_output(monke
             "id": "echo_config",
             "label": "Echo Config",
             "training_preset_id": "echo_trainer",
-            "dataset_root": "D:/datasets/custom_drive",
+            "dataset_root": str(dataset_root),
             "adapter": "manifest_dataset",
             "sequence_id": "clip_001",
             "output_path": str(output_dir),
@@ -443,22 +499,69 @@ def test_gui_training_config_dispatches_manifest_trainer_with_saved_output(monke
     window._select_training_config("echo_config")
     captured: dict[str, object] = {}
 
-    def fake_run_trainer_manifest_job(*args, **kwargs):
-        captured["args"] = args
+    def fake_run_training_config_job(config, **kwargs):
+        captured["config"] = config
         captured["kwargs"] = kwargs
         return {"output_dir": str(output_dir), "training_run_path": str(output_dir / "training_run.json")}
 
-    monkeypatch.setattr(services, "run_trainer_manifest_job", fake_run_trainer_manifest_job)
+    monkeypatch.setattr(services, "run_training_config_job", fake_run_training_config_job)
     monkeypatch.setattr(window, "_run_task", lambda task, callback, label, **kwargs: callback(task()))
 
     window.run_training_preset()
 
-    assert captured["args"][0] == str(manifest)
-    assert captured["kwargs"]["dataset_root"] == "D:/datasets/custom_drive"
-    assert captured["kwargs"]["adapter"] == "manifest_dataset"
-    assert captured["kwargs"]["sequence_id"] == "clip_001"
-    assert captured["kwargs"]["output_dir"] == str(output_dir)
-    assert captured["kwargs"]["parameters"] == {"epochs": 7}
+    assert captured["config"]["training_preset_id"] == "echo_trainer"
+    assert captured["config"]["dataset_root"] == str(dataset_root)
+    assert captured["config"]["adapter"] == "manifest_dataset"
+    assert captured["config"]["sequence_id"] == "clip_001"
+    assert captured["config"]["output_path"] == str(output_dir)
+    assert captured["config"]["parameters"] == {"epochs": 7}
+    assert captured["kwargs"]["trainer_root"] == str(tmp_path)
+    window.close()
+
+
+def test_gui_start_training_runs_current_training_config_through_unified_service(monkeypatch, tmp_path) -> None:
+    _ensure_app()
+    manifest = tmp_path / "trainer.yaml"
+    manifest.write_text("trainer_id: echo_trainer\nentrypoint: echo_trainer.py\n", encoding="utf-8")
+    dataset_root = tmp_path / "dataset"
+    dataset_root.mkdir()
+    output_dir = tmp_path / "run"
+    window = MainWindow()
+    window.catalog["training_presets"] = [
+        {
+            "id": "echo_trainer",
+            "label": "Echo Trainer",
+            "available": True,
+            "manifest_path": str(manifest),
+            "parameters": {"epochs": {"type": "int", "default": 3}},
+        }
+    ]
+    window._fill_training_preset_combo()
+    window.training_config_name_edit.setText("Echo Config")
+    window.dataset_root_edit.setText(str(dataset_root))
+    window.adapter_edit.setText("manifest_dataset")
+    window.sequence_combo.setCurrentText("clip_001")
+    window.training_output_edit.setText(str(output_dir))
+    window.trainer_params_edit.setPlainText('{"epochs": 8}')
+    captured: dict[str, object] = {}
+
+    def fake_run_training_config_job(config, **kwargs):
+        captured["config"] = config
+        captured["kwargs"] = kwargs
+        return {"output_dir": str(output_dir), "training_run_path": str(output_dir / "training_run.json")}
+
+    monkeypatch.setattr(services, "run_training_config_job", fake_run_training_config_job)
+    monkeypatch.setattr(window, "_run_task", lambda task, callback, label, **kwargs: callback(task()))
+
+    window.run_training_preset()
+
+    row = captured["config"]
+    assert row["training_preset_id"] == "echo_trainer"
+    assert row["dataset_root"] == str(dataset_root)
+    assert row["adapter"] == "manifest_dataset"
+    assert row["sequence_id"] == "clip_001"
+    assert row["output_path"] == str(output_dir)
+    assert row["parameters"] == {"epochs": 8}
     window.close()
 
 
@@ -540,8 +643,10 @@ parameters:
 def test_gui_tiny_training_uses_training_parameters_and_output_path(monkeypatch, tmp_path) -> None:
     _ensure_app()
     output_dir = tmp_path / "tiny_run"
+    dataset_root = tmp_path / "dataset"
+    dataset_root.mkdir()
     window = MainWindow()
-    window.dataset_root_edit.setText("D:/datasets/custom_drive")
+    window.dataset_root_edit.setText(str(dataset_root))
     window.adapter_edit.setText("manifest_dataset")
     window.sequence_combo.setCurrentText("clip_001")
     window._select_training_preset("tiny_world_model")
@@ -549,20 +654,22 @@ def test_gui_tiny_training_uses_training_parameters_and_output_path(monkeypatch,
     window.trainer_params_edit.setPlainText('{"ridge": 0.25}')
     captured: dict[str, object] = {}
 
-    def fake_train_tiny_world_model(*args, **kwargs):
-        captured["args"] = args
+    def fake_run_training_config_job(config, **kwargs):
+        captured["config"] = config
         captured["kwargs"] = kwargs
         return {"output_dir": str(output_dir), "training_run_path": str(output_dir / "training_run.json")}
 
-    monkeypatch.setattr(services, "train_tiny_world_model", fake_train_tiny_world_model)
+    monkeypatch.setattr(services, "run_training_config_job", fake_run_training_config_job)
     monkeypatch.setattr(window, "_run_task", lambda task, callback, label, **kwargs: callback(task()))
 
     window.run_training_preset()
 
-    assert captured["args"] == ("D:/datasets/custom_drive", str(output_dir))
-    assert captured["kwargs"]["adapter"] == "manifest_dataset"
-    assert captured["kwargs"]["sequence_id"] == "clip_001"
-    assert captured["kwargs"]["ridge"] == 0.25
+    assert captured["config"]["training_preset_id"] == "tiny_world_model"
+    assert captured["config"]["dataset_root"] == str(dataset_root)
+    assert captured["config"]["output_path"] == str(output_dir)
+    assert captured["config"]["adapter"] == "manifest_dataset"
+    assert captured["config"]["sequence_id"] == "clip_001"
+    assert captured["config"]["parameters"] == {"ridge": 0.25}
     window.close()
 
 

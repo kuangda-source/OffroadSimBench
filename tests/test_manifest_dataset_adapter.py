@@ -60,3 +60,36 @@ sequences:
     assert Path(loaded.frames[0].front_rgb_path).name == "000000.npy"
     assert Path(loaded.frames[0].depth_path).name == "000000.npy"
     assert Path(loaded.frames[0].label_path).name == "000000.npy"
+
+
+def test_manifest_dataset_adapter_supports_sorted_glob_asset_patterns(tmp_path) -> None:
+    root = tmp_path / "glob_drive"
+    sequence = root / "clip_001"
+    (sequence / "images").mkdir(parents=True)
+    for name in ["b.png", "a.png"]:
+        (sequence / "images" / name).write_bytes(b"fake")
+
+    with (sequence / "poses.csv").open("w", encoding="utf-8", newline="") as file:
+        writer = csv.DictWriter(file, fieldnames=["frame_id", "timestamp"])
+        writer.writeheader()
+        writer.writerow({"frame_id": "first", "timestamp": "0.0"})
+        writer.writerow({"frame_id": "second", "timestamp": "0.1"})
+
+    (root / "dataset_manifest.yaml").write_text(
+        """
+adapter: manifest_dataset
+dataset_id: glob_drive
+sequences:
+  - id: clip_001
+    root: clip_001
+    assets:
+      front_rgb: images/*.png
+""",
+        encoding="utf-8",
+    )
+
+    adapter = default_dataset_registry().resolve(root, "manifest_dataset")
+    loaded = adapter.load_sequence(root, "clip_001")
+
+    assert Path(loaded.frames[0].front_rgb_path).name == "a.png"
+    assert Path(loaded.frames[1].front_rgb_path).name == "b.png"

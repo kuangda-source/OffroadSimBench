@@ -347,6 +347,69 @@ def import_dataset_manifest(source_path: str | Path, destination_root: str | Pat
     return load_dataset_manifest(target)
 
 
+def save_dataset_manifest(
+    *,
+    dataset_id: str,
+    display_name: str = "",
+    dataset_root: str,
+    sequences: list[dict[str, Any]],
+    destination_root: str | Path | None = None,
+    dataset_type: str = "manifest_dataset",
+) -> dict[str, Any]:
+    """Create a generic manifest_dataset entry from a user-described directory.
+
+    This is the GUI boundary for "bring any driving dataset": the user still
+    declares sequences and asset patterns, while the rest of the platform only
+    sees the registered manifest adapter.
+    """
+
+    source_root = Path(dataset_root).resolve()
+    if not source_root.exists():
+        raise FileNotFoundError(f"Dataset root not found: {source_root}")
+    manifest_id = _safe_name(dataset_id).lower()
+    if not manifest_id:
+        raise ValueError("Dataset id is required.")
+    if not sequences:
+        raise ValueError("At least one dataset sequence is required.")
+
+    normalized_sequences: list[dict[str, Any]] = []
+    for index, raw_sequence in enumerate(sequences, start=1):
+        sequence_id = str(raw_sequence.get("id") or raw_sequence.get("sequence_id") or f"sequence_{index:04d}").strip()
+        sequence_root = Path(str(raw_sequence.get("root") or "."))
+        if not sequence_root.is_absolute():
+            sequence_root = (source_root / sequence_root).resolve()
+        row: dict[str, Any] = {
+            "id": sequence_id,
+            "root": str(sequence_root.resolve()),
+        }
+        for key in ("pose_csv", "timestamp_csv", "actions_csv", "metadata"):
+            value = raw_sequence.get(key)
+            if value:
+                row[key] = value
+        assets = raw_sequence.get("assets") if isinstance(raw_sequence.get("assets"), dict) else {}
+        if assets:
+            row["assets"] = {str(name): str(pattern) for name, pattern in assets.items() if str(name)}
+        normalized_sequences.append(row)
+
+    data = {
+        "adapter": "manifest_dataset",
+        "dataset_id": manifest_id,
+        "display_name": display_name or dataset_id,
+        "dataset_type": dataset_type or "manifest_dataset",
+        "source_root": str(source_root),
+        "sequences": normalized_sequences,
+    }
+    destination = Path(destination_root or DATASET_MANIFEST_DIRS[0]) / manifest_id
+    destination.mkdir(parents=True, exist_ok=True)
+    target = destination / "dataset_manifest.yaml"
+    try:
+        import yaml
+    except ModuleNotFoundError as exc:
+        raise RuntimeError("PyYAML is required to save dataset manifests.") from exc
+    target.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True), encoding="utf-8")
+    return load_dataset_manifest(target)
+
+
 def training_preset_entries(trainer_root: str | Path | None = None) -> list[dict[str, Any]]:
     rows = [
         {
@@ -609,6 +672,63 @@ def run_trainer_manifest_job(
     payload["artifact_type"] = artifact_type
     payload["training_run_path"] = record["path"]
     payload["command"] = command
+    return payload
+
+
+def run_training_config_job(
+    training_config: str | dict[str, Any],
+    *,
+    config_path: str | Path | None = None,
+    trainer_root: str | Path | None = None,
+) -> dict[str, Any]:
+    """Run a reusable training config through the neutral trainer boundary."""
+
+    report = validate_training_config_setup(training_config, config_path=config_path, trainer_root=trainer_root)
+    if not report.get("ready"):
+        issues = report.get("issues") if isinstance(report.get("issues"), list) else []
+        raise ValueError("; ".join(str(item) for item in issues) or "Training config is not ready.")
+    row = report["training_config"]
+    preset = report["training_preset"]
+    preset_id = str(row.get("training_preset_id") or "")
+    parameters = report.get("parameters") if isinstance(report.get("parameters"), dict) else {}
+    output_path = str(report.get("output_path") or row.get("output_path") or "")
+    dataset_root = str(row.get("dataset_root") or "")
+    adapter = str(row.get("adapter") or "")
+    sequence_id = str(row.get("sequence_id") or "")
+
+    manifest_path = str(preset.get("manifest_path") or "").strip()
+    if manifest_path:
+        payload = run_trainer_manifest_job(
+            manifest_path,
+            dataset_root=dataset_root,
+            output_dir=output_path,
+            parameters=parameters,
+            adapter=adapter,
+            sequence_id=sequence_id,
+        )
+    elif preset_id == "stablewm_hdf5":
+        payload = export_lewm_hdf5(
+            dataset_root,
+            output_path,
+            adapter=adapter,
+            sequence_id=sequence_id,
+            image_size=int(parameters.get("image_size", 64)),
+        )
+    elif preset_id == "tiny_world_model":
+        payload = train_tiny_world_model(
+            dataset_root,
+            output_path,
+            adapter=adapter,
+            sequence_id=sequence_id,
+            ridge=float(parameters.get("ridge", 1e-4)),
+        )
+    elif preset_id == "lewm_cost_model":
+        input_hdf5 = str(parameters.get("input_hdf5") or dataset_root)
+        payload = train_lewm_cost_model(input_hdf5, output_path)
+    else:
+        raise ValueError(f"Training preset is not runnable: {preset_id or NAN_TEXT}")
+
+    payload["training_config"] = row
     return payload
 
 

@@ -1064,6 +1064,13 @@ class MainWindow(QMainWindow):
         self.model_config_name_edit.setPlaceholderText("Johnson Valley LE-WM validated")
 
         self.dataset_catalog_combo = self._combo()
+        self.dataset_manifest_name_edit = QLineEdit()
+        self.dataset_manifest_name_edit.setPlaceholderText("Custom driving dataset")
+        self.dataset_manifest_sequences_edit = QTextEdit()
+        self.dataset_manifest_sequences_edit.setPlaceholderText(
+            '[{"id": "clip_001", "root": ".", "assets": {"front_rgb": "images/*.png"}}]'
+        )
+        self.dataset_manifest_sequences_edit.setFixedHeight(92)
         self.dataset_root_edit = QLineEdit()
         self.dataset_root_edit.setPlaceholderText(r"datasets\ORFD_Dataset_ICRA2022_ZIP")
         self.sequence_combo = self._combo(editable=True)
@@ -1092,6 +1099,7 @@ class MainWindow(QMainWindow):
             self.model_path_edit,
             self.training_output_edit,
             self.training_config_name_edit,
+            self.dataset_manifest_name_edit,
             self.trainer_entrypoint_edit,
             self.model_config_name_edit,
             self.task_path_edit,
@@ -1256,17 +1264,23 @@ class MainWindow(QMainWindow):
         dataset_import = QPushButton("导入 dataset manifest")
         self._configure_button(dataset_import)
         dataset_import.clicked.connect(self.import_dataset_manifest)
+        dataset_save = QPushButton("Save dataset manifest")
+        self._configure_button(dataset_save)
+        dataset_save.clicked.connect(self.save_dataset_manifest_from_gui)
         controls = self._group(
             "Data source",
             [
                 self._field("Dataset catalog", self.dataset_catalog_combo),
                 dataset_import,
                 self._field("Dataset root", self._with_button(self.dataset_root_edit, dataset_browse)),
+                self._field("Dataset name", self.dataset_manifest_name_edit),
+                self._field("Manifest sequences", self.dataset_manifest_sequences_edit),
+                dataset_save,
                 self._field("Sequence", self.sequence_combo),
                 self._field("Adapter", self.adapter_edit),
                 self._field("StableWM HDF5", self.stablewm_hdf5_edit),
                 self._action_button("检查数据集", self.inspect_dataset),
-                self._action_button("预览 ORFD 图像", self.preview_dataset),
+                self._action_button("Preview dataset frame", self.preview_dataset),
                 self._action_button("导出 StableWM HDF5", self.export_stablewm_hdf5),
             ],
         )
@@ -1791,7 +1805,7 @@ class MainWindow(QMainWindow):
         )
 
     def preview_dataset(self) -> None:
-        self.log("生成 ORFD 预览...")
+        self.log("生成数据集帧预览...")
         self._run_task(
             lambda: services.preview_dataset_frame(
                 self.dataset_root_edit.text().strip(),
@@ -1816,19 +1830,21 @@ class MainWindow(QMainWindow):
             self.model_summary.setText(_compact_json(payload))
             self.log(f"Training preset is not available yet: {preset.get('label', preset_id)}")
             return
-        if preset.get("manifest_path"):
-            self.run_manifest_trainer(preset)
+        try:
+            row = self._current_training_config_row()
+        except ValueError as exc:
+            self.model_summary.setText(_compact_json({"status": "invalid_parameters", "message": str(exc)}))
+            self.log(f"Training parameters are invalid: {exc}")
             return
-        if preset_id == "stablewm_hdf5":
-            self.export_stablewm_hdf5()
-            return
-        if preset_id == "lewm_cost_model":
-            self.train_lewm_cost_model()
-            return
-        if preset_id == "tiny_world_model":
-            self.train_tiny_model()
-            return
-        self.model_summary.setText(_compact_json({"status": services.UNFINISHED_TEXT, "training_preset": preset}))
+        manifest_path = str(preset.get("manifest_path") or "").strip()
+        trainer_root = str(Path(manifest_path).parent) if manifest_path else None
+        self.log(f"Starting training config: {row.get('label', row.get('id', services.NAN_TEXT))}")
+        self._run_task(
+            lambda: services.run_training_config_job(row, trainer_root=trainer_root),
+            self._training_config_finished,
+            "training config failed",
+            task_label=f"Train {preset.get('label', preset_id)}",
+        )
 
     def validate_training_config(self) -> None:
         try:
@@ -1878,6 +1894,29 @@ class MainWindow(QMainWindow):
             return
         self.dataset_summary.setText(_compact_json({"status": "imported", "dataset": row}))
         self.log(f"Dataset manifest imported: {row.get('label', row.get('id', services.NAN_TEXT))}")
+        self.refresh_catalogs()
+        self._select_dataset_manifest(str(row.get("id") or ""))
+
+    def save_dataset_manifest_from_gui(self) -> None:
+        dataset_root = self.dataset_root_edit.text().strip()
+        dataset_id = self.dataset_manifest_name_edit.text().strip() or Path(dataset_root).name or "Custom Dataset"
+        if not dataset_root:
+            self.dataset_summary.setText(_compact_json({"status": "invalid_dataset", "message": "Dataset root is required."}))
+            return
+        try:
+            sequences = self._dataset_sequences_from_text()
+            row = services.save_dataset_manifest(
+                dataset_id=dataset_id,
+                display_name=dataset_id,
+                dataset_root=dataset_root,
+                sequences=sequences,
+            )
+        except Exception as exc:
+            self.dataset_summary.setText(_compact_json({"status": "save_failed", "message": str(exc)}))
+            self.log(f"Dataset manifest save failed: {exc}")
+            return
+        self.dataset_summary.setText(_compact_json({"status": "saved", "dataset": row}))
+        self.log(f"Dataset manifest saved: {row.get('label', row.get('id', services.NAN_TEXT))}")
         self.refresh_catalogs()
         self._select_dataset_manifest(str(row.get("id") or ""))
 
@@ -2358,6 +2397,12 @@ class MainWindow(QMainWindow):
         self.beamng_summary.setText(_compact_json(payload))
         self.log(f"地形草案已导出: {payload.get('manifest', services.NAN_TEXT)}")
 
+    def _training_config_finished(self, payload: dict[str, Any]) -> None:
+        if isinstance(payload, dict) and payload.get("output_hdf5"):
+            self._hdf5_exported(payload)
+            return
+        self._training_finished(payload)
+
     def _training_finished(self, payload: dict[str, Any]) -> None:
         self.model_path_edit.setText(str(payload.get("output_dir", "")))
         if payload.get("output_dir"):
@@ -2621,6 +2666,21 @@ class MainWindow(QMainWindow):
         if not isinstance(payload, dict):
             raise ValueError("Expected JSON object.")
         return payload
+
+    def _dataset_sequences_from_text(self) -> list[dict[str, Any]]:
+        text = self.dataset_manifest_sequences_edit.toPlainText().strip() if hasattr(self, "dataset_manifest_sequences_edit") else ""
+        if not text:
+            sequence_id = self.sequence_combo.currentText().strip() or "sequence_001"
+            return [{"id": sequence_id, "root": "."}]
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Expected JSON list or object for dataset sequences: {exc}") from exc
+        if isinstance(payload, dict):
+            payload = payload.get("sequences", [payload])
+        if not isinstance(payload, list) or not all(isinstance(item, dict) for item in payload):
+            raise ValueError("Expected dataset sequences to be a JSON list of objects.")
+        return [dict(item) for item in payload]
 
     def _trainer_arguments_from_text(self) -> list[str]:
         text = self.trainer_arguments_edit.toPlainText().strip() if hasattr(self, "trainer_arguments_edit") else ""

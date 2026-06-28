@@ -84,6 +84,40 @@ def test_import_dataset_manifest_rewrites_relative_roots_and_registers_dataset(t
     assert inspected["frame_count"] == 2
 
 
+def test_save_dataset_manifest_from_directory_registers_generic_dataset(tmp_path) -> None:
+    dataset_root = tmp_path / "drive_dataset"
+    sequence_root = dataset_root / "clip_001"
+    sequence_root.mkdir(parents=True)
+    destination_root = tmp_path / "configs" / "datasets"
+
+    row = services.save_dataset_manifest(
+        dataset_id="custom_drive",
+        display_name="Custom Drive",
+        dataset_root=str(dataset_root),
+        sequences=[
+            {
+                "id": "clip_001",
+                "root": str(sequence_root),
+                "assets": {"front_rgb": "images/*.png", "mask": "masks/*.png"},
+            }
+        ],
+        destination_root=destination_root,
+    )
+
+    installed_root = destination_root / "custom_drive"
+    installed = load_yaml_file(installed_root / "dataset_manifest.yaml")
+
+    assert row["id"] == "custom_drive"
+    assert row["label"] == "Custom Drive"
+    assert row["adapter"] == "manifest_dataset"
+    assert row["dataset_root"] == str(installed_root.resolve())
+    assert row["sequences"] == ["clip_001"]
+    assert installed["dataset_type"] == "manifest_dataset"
+    assert installed["source_root"] == str(dataset_root.resolve())
+    assert installed["sequences"][0]["root"] == str(sequence_root.resolve())
+    assert installed["sequences"][0]["assets"]["front_rgb"] == "images/*.png"
+
+
 def test_training_preset_entries_include_available_and_future_models() -> None:
     presets = {row["id"]: row for row in services.training_preset_entries()}
 
