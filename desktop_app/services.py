@@ -413,6 +413,113 @@ def save_dataset_manifest(
     return load_dataset_manifest(target)
 
 
+def suggest_dataset_manifest_sequences(dataset_root: str | Path) -> list[dict[str, Any]]:
+    """Suggest manifest_dataset sequence rows for common driving-dataset layouts."""
+
+    root = Path(dataset_root).resolve()
+    if not root.exists():
+        raise FileNotFoundError(f"Dataset root not found: {root}")
+
+    candidates: list[Path] = []
+    if _sequence_pose_csv(root) is not None:
+        candidates.append(root)
+    for child in sorted((path for path in root.iterdir() if path.is_dir()), key=lambda path: path.name.lower()):
+        if _sequence_pose_csv(child) is not None:
+            candidates.append(child)
+    if not candidates:
+        for child in sorted((path for path in root.iterdir() if path.is_dir()), key=lambda path: path.name.lower()):
+            for grandchild in sorted((path for path in child.iterdir() if path.is_dir()), key=lambda path: path.name.lower()):
+                if _sequence_pose_csv(grandchild) is not None:
+                    candidates.append(grandchild)
+
+    rows: list[dict[str, Any]] = []
+    seen: set[Path] = set()
+    for sequence_dir in candidates:
+        resolved = sequence_dir.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        pose_csv = _sequence_pose_csv(resolved)
+        if pose_csv is None:
+            continue
+        relative_root = _relative_path_for_manifest(resolved, root)
+        row: dict[str, Any] = {
+            "id": _safe_name(resolved.name or root.name) or f"sequence_{len(rows) + 1:04d}",
+            "root": relative_root,
+            "pose_csv": pose_csv.name,
+        }
+        actions_csv = _first_existing_file(resolved, ("actions.csv", "controls.csv", "commands.csv"))
+        if actions_csv is not None:
+            row["actions_csv"] = actions_csv.name
+        assets = _suggest_sequence_assets(resolved)
+        if assets:
+            row["assets"] = assets
+        rows.append(row)
+
+    if not rows:
+        raise ValueError("No manifest-compatible sequences found. Expected poses.csv plus common asset folders such as images/, rgb/, depth/, masks/, or lidar/.")
+    return rows
+
+
+def _sequence_pose_csv(sequence_root: Path) -> Path | None:
+    return _first_existing_file(
+        sequence_root,
+        (
+            "poses.csv",
+            "pose.csv",
+            "odometry.csv",
+            "trajectory.csv",
+            "state.csv",
+            "states.csv",
+        ),
+    )
+
+
+def _first_existing_file(root: Path, names: tuple[str, ...]) -> Path | None:
+    for name in names:
+        path = root / name
+        if path.is_file():
+            return path
+    return None
+
+
+def _suggest_sequence_assets(sequence_root: Path) -> dict[str, str]:
+    candidates: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
+        ("front_rgb", ("front_rgb", "images", "image", "rgb", "camera", "camera_front"), (".png", ".jpg", ".jpeg", ".npy")),
+        ("depth", ("depth", "depths", "dense_depth", "dense-depth"), (".npy", ".png", ".exr")),
+        ("label", ("masks", "mask", "labels", "label", "segmentation", "seg"), (".png", ".npy")),
+        ("lidar", ("lidar", "lidar_points", "pointcloud", "point_cloud", "velodyne"), (".bin", ".npy", ".pcd")),
+        ("local_bev", ("local_bev", "bev"), (".npy", ".png")),
+        ("terrain_map", ("terrain_map", "terrain"), (".npy", ".png")),
+    )
+    assets: dict[str, str] = {}
+    for asset_name, directory_names, extensions in candidates:
+        pattern = _first_asset_pattern(sequence_root, directory_names, extensions)
+        if pattern:
+            assets[asset_name] = pattern
+    return assets
+
+
+def _first_asset_pattern(sequence_root: Path, directory_names: tuple[str, ...], extensions: tuple[str, ...]) -> str:
+    for directory_name in directory_names:
+        directory = sequence_root / directory_name
+        if not directory.is_dir():
+            continue
+        for extension in extensions:
+            if any(path.is_file() for path in directory.glob(f"*{extension}")):
+                return f"{directory_name}/*{extension}"
+    return ""
+
+
+def _relative_path_for_manifest(path: Path, root: Path) -> str:
+    try:
+        relative = path.resolve().relative_to(root.resolve())
+    except ValueError:
+        return str(path.resolve())
+    text = relative.as_posix()
+    return "." if text == "." else text
+
+
 def training_preset_entries(trainer_root: str | Path | None = None) -> list[dict[str, Any]]:
     rows = [
         {

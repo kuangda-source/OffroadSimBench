@@ -209,6 +209,7 @@ def test_gui_dataset_training_page_exposes_training_studio_controls() -> None:
     assert "Latest metric curve" in labels
     assert "Dataset name" in labels
     assert "Manifest sequences" in labels
+    assert "Auto-detect sequences" in buttons
     assert "Save dataset manifest" in buttons
     assert "Preview dataset frame" in buttons
     assert "预览 ORFD 图像" not in buttons
@@ -370,6 +371,31 @@ def test_gui_saves_dataset_manifest_from_current_dataset_fields(monkeypatch, tmp
     assert window.dataset_catalog_combo.currentData()["id"] == "custom_drive"
     assert window.adapter_edit.text() == "manifest_dataset"
     assert window.sequence_combo.currentText() == "clip_001"
+    window.close()
+
+
+def test_gui_auto_detects_dataset_sequences(monkeypatch, tmp_path) -> None:
+    _ensure_app()
+    window = MainWindow()
+    dataset_root = tmp_path / "drive_dataset"
+    dataset_root.mkdir()
+    suggested = [
+        {
+            "id": "clip_001",
+            "root": "clip_001",
+            "pose_csv": "poses.csv",
+            "assets": {"front_rgb": "images/*.png"},
+        }
+    ]
+    monkeypatch.setattr(services, "suggest_dataset_manifest_sequences", lambda root: suggested)
+    window.dataset_root_edit.setText(str(dataset_root))
+
+    window.suggest_dataset_manifest_sequences_from_gui()
+
+    assert '"id": "clip_001"' in window.dataset_manifest_sequences_edit.toPlainText()
+    assert window.dataset_manifest_name_edit.text() == "drive_dataset"
+    assert window.adapter_edit.text() == "manifest_dataset"
+    assert "suggested_sequences" in window.dataset_summary.toPlainText()
     window.close()
 
 

@@ -157,6 +157,49 @@ def test_save_dataset_manifest_from_directory_registers_generic_dataset(tmp_path
     assert installed["sequences"][0]["assets"]["front_rgb"] == "images/*.png"
 
 
+def test_suggest_dataset_manifest_sequences_detects_common_driving_layout(tmp_path) -> None:
+    dataset_root = tmp_path / "drive_dataset"
+    sequence_root = dataset_root / "clip_001"
+    (sequence_root / "images").mkdir(parents=True)
+    (sequence_root / "depth").mkdir()
+    (sequence_root / "masks").mkdir()
+    (sequence_root / "images" / "000001.png").write_bytes(b"fake")
+    (sequence_root / "depth" / "000001.npy").write_bytes(b"fake")
+    (sequence_root / "masks" / "000001.png").write_bytes(b"fake")
+    (sequence_root / "poses.csv").write_text("frame_id,timestamp\n000001,0.0\n", encoding="utf-8")
+    (sequence_root / "actions.csv").write_text("frame_id,steer\n000001,0.0\n", encoding="utf-8")
+
+    sequences = services.suggest_dataset_manifest_sequences(dataset_root)
+
+    assert sequences == [
+        {
+            "id": "clip_001",
+            "root": "clip_001",
+            "pose_csv": "poses.csv",
+            "actions_csv": "actions.csv",
+            "assets": {
+                "front_rgb": "images/*.png",
+                "depth": "depth/*.npy",
+                "label": "masks/*.png",
+            },
+        }
+    ]
+
+
+def test_suggest_dataset_manifest_sequences_handles_single_root_sequence(tmp_path) -> None:
+    dataset_root = tmp_path / "single_drive"
+    (dataset_root / "rgb").mkdir(parents=True)
+    (dataset_root / "rgb" / "000001.jpg").write_bytes(b"fake")
+    (dataset_root / "poses.csv").write_text("frame_id,timestamp\n000001,0.0\n", encoding="utf-8")
+
+    sequences = services.suggest_dataset_manifest_sequences(dataset_root)
+
+    assert sequences[0]["id"] == "single_drive"
+    assert sequences[0]["root"] == "."
+    assert sequences[0]["pose_csv"] == "poses.csv"
+    assert sequences[0]["assets"] == {"front_rgb": "rgb/*.jpg"}
+
+
 def test_training_preset_entries_include_available_and_future_models() -> None:
     presets = {row["id"]: row for row in services.training_preset_entries()}
 

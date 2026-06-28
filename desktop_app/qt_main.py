@@ -1267,6 +1267,9 @@ class MainWindow(QMainWindow):
         dataset_save = QPushButton("Save dataset manifest")
         self._configure_button(dataset_save)
         dataset_save.clicked.connect(self.save_dataset_manifest_from_gui)
+        dataset_suggest = QPushButton("Auto-detect sequences")
+        self._configure_button(dataset_suggest)
+        dataset_suggest.clicked.connect(self.suggest_dataset_manifest_sequences_from_gui)
         controls = self._group(
             "Data source",
             [
@@ -1275,6 +1278,7 @@ class MainWindow(QMainWindow):
                 self._field("Dataset root", self._with_button(self.dataset_root_edit, dataset_browse)),
                 self._field("Dataset name", self.dataset_manifest_name_edit),
                 self._field("Manifest sequences", self.dataset_manifest_sequences_edit),
+                dataset_suggest,
                 dataset_save,
                 self._field("Sequence", self.sequence_combo),
                 self._field("Adapter", self.adapter_edit),
@@ -1919,6 +1923,34 @@ class MainWindow(QMainWindow):
         self.log(f"Dataset manifest saved: {row.get('label', row.get('id', services.NAN_TEXT))}")
         self.refresh_catalogs()
         self._select_dataset_manifest(str(row.get("id") or ""))
+
+    def suggest_dataset_manifest_sequences_from_gui(self) -> None:
+        dataset_root = self.dataset_root_edit.text().strip()
+        if not dataset_root:
+            self.dataset_summary.setText(_compact_json({"status": "invalid_dataset", "message": "Dataset root is required."}))
+            return
+        try:
+            sequences = services.suggest_dataset_manifest_sequences(dataset_root)
+        except Exception as exc:
+            self.dataset_summary.setText(_compact_json({"status": "suggest_failed", "message": str(exc)}))
+            self.log(f"Dataset sequence auto-detect failed: {exc}")
+            return
+        self.dataset_manifest_sequences_edit.setPlainText(json.dumps(sequences, indent=2, ensure_ascii=False))
+        if not self.dataset_manifest_name_edit.text().strip():
+            self.dataset_manifest_name_edit.setText(Path(dataset_root).name or "Custom Dataset")
+        self.adapter_edit.setText("manifest_dataset")
+        if sequences:
+            self.sequence_combo.setCurrentText(str(sequences[0].get("id") or ""))
+        self.dataset_summary.setText(
+            _compact_json(
+                {
+                    "status": "suggested_sequences",
+                    "sequence_count": len(sequences),
+                    "sequences": sequences,
+                }
+            )
+        )
+        self.log(f"Dataset sequences auto-detected: {len(sequences)}")
 
     def import_trainer_manifest(self) -> None:
         path, _ = QFileDialog.getOpenFileName(

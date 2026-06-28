@@ -246,6 +246,8 @@ BeamNG region self-supervised runs also write a `training_run.json` with the tra
 
 External datasets can use `dataset_manifest.yaml` with the `manifest_dataset` adapter, be imported from the GUI with `Import dataset manifest`, or be registered directly from the current Dataset page fields with `Save dataset manifest`. Registering from the GUI writes `configs/datasets/<dataset_id>/dataset_manifest.yaml`, keeps the original dataset directory as `source_root`, and stores user-provided sequence roots and asset glob/templates. Imported manifests still rewrite relative sequence roots to absolute paths so the dataset remains reusable from the catalog. The manifest declares sequence roots, optional pose/action CSV files, and sensor/label asset templates, and the platform converts them into the unified `DatasetSequence` contract:
 
+For common driving dataset layouts, the GUI can also fill the manifest sequence JSON automatically with `Auto-detect sequences`. It looks for sequence folders containing pose CSV files such as `poses.csv`, plus common asset folders such as `images/`, `rgb/`, `depth/`, `masks/`, `lidar/`, `local_bev/`, or `terrain_map/`. Users can then review or edit the generated manifest before saving it.
+
 ```yaml
 adapter: manifest_dataset
 dataset_id: custom_drive
