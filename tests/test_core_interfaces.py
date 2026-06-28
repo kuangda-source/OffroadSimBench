@@ -48,12 +48,13 @@ class EchoBackend(OffroadSimBackend):
 def test_core_data_types_can_be_instantiated() -> None:
     state = VehicleState(x=1.0, y=2.0, yaw=0.5, speed=3.0)
     obs = Observation(timestamp=1.25, vehicle_state=state, goal=(5.0, 6.0))
-    action = Action.from_mapping({"steer": "0.2", "throttle": 0.4})
+    action = Action.from_mapping({"steer": "0.2", "throttle": 0.4, "gear": -1})
     result = StepResult(obs, reward=1.0, terminated=False, truncated=True)
     episode = EpisodeInfo(episode_id="episode_001", scenario_id="forest_trail_001")
 
     assert action.steer == 0.2
     assert action.brake == 0.0
+    assert action.gear == -1
     assert result.done is True
     assert episode.scenario_id == "forest_trail_001"
 
@@ -69,4 +70,3 @@ def test_agent_and_backend_interfaces_work_together() -> None:
 
     assert result.info["action"].throttle == 0.3
     assert backend.get_metrics() == {"steps": 1}
-

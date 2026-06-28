@@ -16,13 +16,16 @@ class Action:
     steer: float = 0.0
     throttle: float = 0.0
     brake: float = 0.0
+    gear: int | None = None
 
     @classmethod
     def from_mapping(cls, data: dict[str, Any]) -> "Action":
+        gear = data.get("gear")
         return cls(
             steer=float(data.get("steer", 0.0)),
             throttle=float(data.get("throttle", 0.0)),
             brake=float(data.get("brake", 0.0)),
+            gear=int(gear) if gear is not None else None,
         )
 
 
@@ -79,4 +82,3 @@ class EpisodeInfo:
     agent_id: str | None = None
     backend: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
-

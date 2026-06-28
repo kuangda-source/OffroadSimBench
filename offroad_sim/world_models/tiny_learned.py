@@ -14,7 +14,7 @@ from offroad_sim.datasets import DatasetSequence
 from offroad_sim.world_models.base import BaseWorldModel, WorldModelPrediction
 
 
-FEATURE_NAMES = ("bias", "speed", "yaw_sin", "yaw_cos", "steer", "throttle", "brake")
+FEATURE_NAMES = ("bias", "speed", "yaw_sin", "yaw_cos", "steer", "throttle", "brake", "gear")
 OUTPUT_NAMES = ("dx", "dy", "dyaw", "dspeed")
 
 
@@ -51,12 +51,15 @@ class TinyLearnedWorldModel(BaseWorldModel):
         metadata: dict[str, Any] | None = None,
     ) -> None:
         default_shape = (len(FEATURE_NAMES), len(OUTPUT_NAMES))
-        self.weights = np.asarray(weights, dtype=np.float64) if weights is not None else np.zeros(default_shape)
+        raw_weights = np.asarray(weights, dtype=np.float64) if weights is not None else np.zeros(default_shape)
+        self.weights = _normalize_weights(raw_weights, default_shape)
         if self.weights.shape != default_shape:
             raise ValueError(f"Expected weights shape {default_shape}, got {self.weights.shape}")
         self.dt = float(dt)
         self.ridge = float(ridge)
         self.metadata = dict(metadata or {})
+        self.metadata["feature_names"] = list(FEATURE_NAMES)
+        self.metadata["output_names"] = list(OUTPUT_NAMES)
 
     @classmethod
     def fit(cls, sequences: Iterable[DatasetSequence], *, ridge: float = 1e-4) -> "TinyLearnedWorldModel":
@@ -207,6 +210,7 @@ def _features(state: VehicleState, action: Action) -> np.ndarray:
             float(action.steer),
             float(action.throttle),
             float(action.brake),
+            float(action.gear) if action.gear is not None else 1.0,
         ],
         dtype=np.float64,
     )
@@ -231,6 +235,7 @@ def _action_from_pair(current: VehicleState, nxt: VehicleState) -> Action:
         steer=max(-1.0, min(1.0, yaw_delta / 0.25)),
         throttle=max(0.0, min(1.0, speed_delta / 2.0 + 0.35)),
         brake=max(0.0, min(1.0, -speed_delta / 2.0)),
+        gear=1,
     )
 
 
@@ -242,3 +247,13 @@ def _transition_action(current: DatasetFrame, nxt: DatasetFrame) -> tuple[Action
     if current.action is not None:
         return current.action, "recorded"
     return _action_from_pair(current.vehicle_state, nxt.vehicle_state), "inferred"
+
+
+def _normalize_weights(weights: np.ndarray, expected_shape: tuple[int, int]) -> np.ndarray:
+    if weights.shape == expected_shape:
+        return weights
+    legacy_shape = (expected_shape[0] - 1, expected_shape[1])
+    if weights.shape == legacy_shape:
+        gear_row = np.zeros((1, expected_shape[1]), dtype=np.float64)
+        return np.vstack([weights, gear_row])
+    return weights

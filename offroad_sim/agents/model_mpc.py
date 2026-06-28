@@ -140,13 +140,14 @@ class ModelMPCAgent(OffroadAgent):
             return None
         self._stuck_steps = 0
         self._stuck_recovery = False
-        return Action(steer=0.0, throttle=0.0, brake=1.0)
+        return Action(steer=0.0, throttle=0.0, brake=1.0, gear=1)
 
     def _execution_filter(self, action: Action, reference_action: Action, obs: Observation) -> Action:
         speed = max(0.0, float(obs.vehicle_state.speed))
         steer = max(min(float(action.steer), 1.0), -1.0)
         throttle = max(min(float(action.throttle), 1.0), 0.0)
         brake = max(min(float(action.brake), 1.0), 0.0)
+        gear = int(action.gear) if action.gear is not None else 1
         reference_steer = float(reference_action.steer)
         sharp_turn = abs(reference_steer) > 0.75
         low_speed_turn = speed < 0.35 and abs(reference_steer) > 0.5
@@ -168,18 +169,29 @@ class ModelMPCAgent(OffroadAgent):
                     phase = _recovery_phase(self._stuck_steps)
                     if phase == 0:
                         steer = 0.0
-                        throttle = 1.0
+                        throttle = 0.55
+                        gear = -1
                     elif phase == 1:
                         steer = max(min(reference_steer, 0.9), -0.9)
                         throttle = min(max(float(reference_action.throttle), 0.55), 0.75)
+                        gear = 1
                     else:
                         steer = max(min(reference_steer, 0.45), -0.45)
                         throttle = 0.75
+                        gear = 1
                 else:
-                    steer = _recovery_steer(reference_steer, self._stuck_steps)
+                    phase = _recovery_phase(self._stuck_steps)
+                    if phase == 0:
+                        steer = 0.0
+                        throttle = 0.55
+                        gear = -1
+                    else:
+                        steer = _recovery_steer(reference_steer, self._stuck_steps)
+                        gear = 1
             else:
                 recovery_steer_limit = 1.0 if sharp_turn else 0.55
                 steer = max(min(reference_steer, recovery_steer_limit), -recovery_steer_limit)
+                gear = 1
         else:
             steer_limit = _speed_steer_limit(speed, sharp_turn=sharp_turn)
             if abs(steer) > steer_limit:
@@ -194,7 +206,7 @@ class ModelMPCAgent(OffroadAgent):
                 throttle = min(throttle, 0.2)
         if brake > 0.2 and throttle > 0.2:
             throttle = min(throttle, 0.2)
-        return Action(steer=steer, throttle=throttle, brake=brake)
+        return Action(steer=steer, throttle=throttle, brake=brake, gear=gear)
 
     def _target_for(self, obs: Observation) -> tuple[float, float] | None:
         if not self.route:
@@ -296,5 +308,12 @@ def _goal_radius_from_info(info: dict[str, Any]) -> float:
     return 0.0
 
 
-def _action_dict(action: Action) -> dict[str, float]:
-    return {"steer": float(action.steer), "throttle": float(action.throttle), "brake": float(action.brake)}
+def _action_dict(action: Action) -> dict[str, float | int]:
+    data: dict[str, float | int] = {
+        "steer": float(action.steer),
+        "throttle": float(action.throttle),
+        "brake": float(action.brake),
+    }
+    if action.gear is not None:
+        data["gear"] = int(action.gear)
+    return data

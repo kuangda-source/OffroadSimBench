@@ -24,12 +24,15 @@ def _json_default(value: Any) -> Any:
     raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
 
 
-def _action_to_dict(action: Action) -> dict[str, float]:
-    return {
+def _action_to_dict(action: Action) -> dict[str, float | int]:
+    data: dict[str, float | int] = {
         "steer": float(action.steer),
         "throttle": float(action.throttle),
         "brake": float(action.brake),
     }
+    if action.gear is not None:
+        data["gear"] = int(action.gear)
+    return data
 
 
 def _vehicle_state_to_dict(state: VehicleState) -> dict[str, float]:

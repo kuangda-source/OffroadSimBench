@@ -24,7 +24,7 @@ def test_episode_recorder_saves_and_player_loads(tmp_path: Path) -> None:
     recorder.start_episode({"scenario_id": "forest_trail_001", "agent": "rule_based"})
     recorder.record_step(
         observation=make_observation(1),
-        action=Action(throttle=0.5),
+        action=Action(throttle=0.5, gear=-1),
         reward=1.25,
         done=False,
         info={"distance_to_goal": 9.0},
@@ -39,6 +39,7 @@ def test_episode_recorder_saves_and_player_loads(tmp_path: Path) -> None:
     assert player.metadata["step_count"] == 1
     assert player.get_metrics()["total_reward"] == 1.25
     assert steps[0]["action"]["throttle"] == 0.5
+    assert steps[0]["action"]["gear"] == -1
     assert steps[0]["observation"]["vehicle_state"]["x"] == 1.0
 
 

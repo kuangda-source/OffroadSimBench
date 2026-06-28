@@ -107,11 +107,7 @@ class WorldModelDirectAgent(OffroadAgent):
         recovery_phase = ((self._stuck_steps - 18) // 12) % 3
         if turn_demand > 0.35 and recovery_phase == 0:
             return (
-                Action(
-                    steer=0.0,
-                    throttle=1.0,
-                    brake=0.0,
-                ),
+                Action(steer=0.0, throttle=0.55, brake=0.0, gear=-1),
                 True,
             )
         if turn_demand > 0.35 and recovery_phase == 2:
@@ -120,6 +116,7 @@ class WorldModelDirectAgent(OffroadAgent):
                     steer=max(min(reference_steer, 0.45), -0.45),
                     throttle=0.75,
                     brake=0.0,
+                    gear=1,
                 ),
                 True,
             )
@@ -129,6 +126,7 @@ class WorldModelDirectAgent(OffroadAgent):
                     steer=max(min(reference_steer, 0.9), -0.9),
                     throttle=min(max(float(reference_action.throttle), 0.55), 0.7),
                     brake=0.0,
+                    gear=1,
                 ),
                 True,
             )
@@ -138,14 +136,18 @@ class WorldModelDirectAgent(OffroadAgent):
                     steer=max(min(reference_steer, 0.65), -0.65),
                     throttle=min(max(float(reference_action.throttle), 0.65), 0.8),
                     brake=0.0,
+                    gear=1,
                 ),
                 True,
             )
+        if recovery_phase == 0:
+            return (Action(steer=0.0, throttle=0.55, brake=0.0, gear=-1), True)
         return (
             Action(
                 steer=max(min(reference_steer, 0.25), -0.25),
                 throttle=1.0,
                 brake=0.0,
+                gear=1,
             ),
             True,
         )
@@ -162,7 +164,7 @@ class WorldModelDirectAgent(OffroadAgent):
             return None
         self._stuck_steps = 0
         self._last_goal_distance = distance
-        return Action(steer=0.0, throttle=0.0, brake=1.0)
+        return Action(steer=0.0, throttle=0.0, brake=1.0, gear=1)
 
 
 def _stabilize_action(action: Action, reference_action: Action, obs: Observation) -> Action:
@@ -170,6 +172,7 @@ def _stabilize_action(action: Action, reference_action: Action, obs: Observation
     steer = max(min(float(action.steer), 1.0), -1.0)
     throttle = max(min(float(action.throttle), 1.0), 0.0)
     brake = max(min(float(action.brake), 1.0), 0.0)
+    gear = int(action.gear) if action.gear is not None else 1
     reference_steer = max(min(float(reference_action.steer), 1.0), -1.0)
     turn_demand = max(abs(steer), abs(reference_steer))
     sharp_turn = abs(reference_steer) > 0.75
@@ -185,12 +188,14 @@ def _stabilize_action(action: Action, reference_action: Action, obs: Observation
                     steer=max(min(reference_steer, steer_limit), -steer_limit),
                     throttle=min(max(throttle, float(reference_action.throttle), throttle_floor), throttle_cap),
                     brake=0.0,
+                    gear=gear,
                 )
             steer_limit = 0.25 if speed < 1.0 else 0.5
             return Action(
                 steer=max(min(reference_steer, steer_limit), -steer_limit),
                 throttle=max(throttle, float(reference_action.throttle), 0.78),
                 brake=0.0,
+                gear=gear,
             )
     if abs(reference_steer) > 0.35 and steer * reference_steer < -0.05:
         steer_limit = _speed_steer_limit(speed, sharp_turn=sharp_turn)
@@ -208,4 +213,4 @@ def _stabilize_action(action: Action, reference_action: Action, obs: Observation
             throttle = min(throttle, 0.2)
     if brake > 0.2 and throttle > 0.2:
         throttle = min(throttle, 0.2)
-    return Action(steer=steer, throttle=throttle, brake=brake)
+    return Action(steer=steer, throttle=throttle, brake=brake, gear=gear)

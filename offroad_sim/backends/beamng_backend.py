@@ -1056,7 +1056,9 @@ class BeamNGBackend(OffroadSimBackend):
         }
         if bool(beamng_options.get("manual_control_is_adas", True)):
             payload["is_adas"] = True
-        if "manual_control_gear" in beamng_options:
+        if command.gear is not None:
+            payload["gear"] = int(command.gear)
+        elif "manual_control_gear" in beamng_options:
             payload["gear"] = int(beamng_options["manual_control_gear"])
         if "manual_control_clutch" in beamng_options:
             payload["clutch"] = float(beamng_options["manual_control_clutch"])
@@ -1134,6 +1136,7 @@ class BeamNGBackend(OffroadSimBackend):
             steer=_clamp(float(action.steer), -1.0, 1.0),
             throttle=_clamp(float(action.throttle), 0.0, 1.0),
             brake=_clamp(float(action.brake), 0.0, 1.0),
+            gear=action.gear,
         )
 
     def _read_damage(self) -> float:

@@ -96,3 +96,48 @@ def test_tiny_learned_world_model_uses_recorded_transition_actions() -> None:
     assert prediction.final_state is not None
     assert prediction.final_state.x > 0.2
     assert model.metadata["recorded_action_sample_count"] == 2
+
+
+def test_tiny_learned_world_model_records_gear_feature() -> None:
+    sequence = DatasetSequence(
+        dataset_id="beamng_episode",
+        dataset_type="beamng_episode",
+        sequence_id="reverse_actions",
+        root=".",
+        frames=[
+            DatasetFrame("000000", 0.0, VehicleState(x=0.0, y=0.0, yaw=0.0, speed=0.0), action=Action(throttle=0.0, gear=1)),
+            DatasetFrame("000001", 1.0, VehicleState(x=-0.5, y=0.0, yaw=0.0, speed=0.3), action=Action(throttle=0.5, gear=-1)),
+            DatasetFrame("000002", 2.0, VehicleState(x=0.2, y=0.0, yaw=0.0, speed=0.5), action=Action(throttle=0.6, gear=1)),
+        ],
+    )
+
+    model = TinyLearnedWorldModel.fit([sequence], ridge=1e-4)
+
+    assert "gear" in model.metadata["feature_names"]
+    assert model.weights.shape[0] == len(model.metadata["feature_names"])
+
+
+def test_tiny_learned_world_model_loads_legacy_weights_without_gear(tmp_path) -> None:
+    model_dir = tmp_path / "legacy_tiny"
+    model_dir.mkdir()
+    np.savez(model_dir / "weights.npz", weights=np.zeros((7, 4), dtype=np.float64))
+    (model_dir / "model.json").write_text(
+        """
+{
+  "model_type": "tiny_learned",
+  "config": {
+    "dt": 1.0,
+    "ridge": 0.0001,
+    "metadata": {"feature_names": ["bias", "speed", "yaw_sin", "yaw_cos", "steer", "throttle", "brake"]}
+  },
+  "weights": "weights.npz"
+}
+""",
+        encoding="utf-8",
+    )
+
+    loaded = TinyLearnedWorldModel.load(model_dir)
+
+    assert loaded.weights.shape == (8, 4)
+    assert np.allclose(loaded.weights[-1], 0.0)
+    assert "gear" in loaded.metadata["feature_names"]

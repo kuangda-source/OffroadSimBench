@@ -6,8 +6,10 @@ import threading
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+from offroad_sim.core import Action, Observation, VehicleState
 from offroad_sim.datasets import create_mock_orfd_dataset
-from offroad_sim.tasks import load_navigation_region_task
+from offroad_sim.replay import EpisodeRecorder
+from offroad_sim.tasks import NavigationRegionTask, load_navigation_region_task
 from offroad_sim.utils.yaml_io import load_yaml_file
 
 from desktop_app import services
@@ -58,6 +60,43 @@ def test_desktop_catalog_snapshot_exposes_runtime_choices() -> None:
     assert "training_configs" in catalog
     assert "training_presets" in catalog
     assert "training_runs" in catalog
+
+
+def test_episode_trace_preserves_action_gear_for_training(tmp_path: Path) -> None:
+    recorder = EpisodeRecorder()
+    recorder.start_episode({"episode_id": "reverse_episode", "backend": "beamng"})
+    for index, gear in enumerate([-1, 1]):
+        recorder.record_step(
+            observation=Observation(
+                timestamp=float(index),
+                vehicle_state=VehicleState(x=float(index), y=0.0, z=1.0, yaw=0.0, speed=0.2),
+                goal=(10.0, 0.0),
+            ),
+            action=Action(throttle=0.5, gear=gear),
+            reward=0.0,
+            done=False,
+            info={},
+        )
+    recorder.end_episode({"steps": 2})
+    episode_path = recorder.save(tmp_path / "reverse_episode")
+    task = NavigationRegionTask(
+        task_id="reverse_task",
+        map_id="johnson_valley",
+        level="johnson_valley",
+        region_polygon=[(-1.0, -1.0), (12.0, -1.0), (12.0, 2.0), (-1.0, 2.0)],
+        start_pos=(0.0, 0.0, 1.0),
+        start_yaw=0.0,
+        goal_pos=(10.0, 0.0),
+        goal_radius=2.0,
+        expert_route=[(0.0, 0.0), (10.0, 0.0)],
+    )
+
+    trace = services.load_episode_trace(episode_path)
+    sequence = services._episode_trace_to_dataset_sequence(episode_path, task)
+
+    assert trace[0]["gear"] == -1
+    assert sequence.frames[0].action is not None
+    assert sequence.frames[0].action.gear == -1
 
 
 def test_import_dataset_manifest_rewrites_relative_roots_and_registers_dataset(tmp_path) -> None:

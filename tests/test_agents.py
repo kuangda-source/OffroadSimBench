@@ -307,7 +307,8 @@ def test_world_model_direct_agent_recovers_from_low_speed_no_progress() -> None:
         action, stuck = agent._progress_filter(Action(steer=-0.75, throttle=0.4, brake=0.0), Action(steer=-0.9, throttle=0.45, brake=0.0), observation)
 
     assert stuck is True
-    assert action.throttle == 1.0
+    assert action.gear == -1
+    assert 0.4 <= action.throttle <= 0.65
     assert action.brake == 0.0
     assert abs(action.steer) <= 0.1
 
@@ -325,6 +326,7 @@ def test_world_model_direct_agent_turns_again_after_straight_recovery_burst() ->
         action, stuck = agent._progress_filter(Action(steer=-0.75, throttle=0.4, brake=0.0), Action(steer=-0.9, throttle=0.45, brake=0.0), observation)
 
     assert stuck is True
+    assert action.gear == 1
     assert 0.4 <= action.throttle <= 0.65
     assert action.brake == 0.0
     assert action.steer <= -0.65
@@ -399,7 +401,8 @@ def test_model_mpc_agent_recovers_from_low_speed_stuck_turn() -> None:
     for _ in range(14):
         action = agent._execution_filter(Action(steer=-1.0, throttle=0.45), Action(steer=-1.0, throttle=0.25), observation)
 
-    assert action.throttle == 1.0
+    assert action.gear == -1
+    assert 0.4 <= action.throttle <= 0.65
     assert abs(action.steer) <= 0.1
     assert agent.diagnostics().get("stuck_recovery") is True
 
@@ -416,6 +419,7 @@ def test_model_mpc_agent_turns_after_straight_recovery_burst() -> None:
     for _ in range(26):
         action = agent._execution_filter(Action(steer=-1.0, throttle=0.45), Action(steer=-1.0, throttle=0.25), observation)
 
+    assert action.gear == 1
     assert 0.45 <= action.throttle <= 0.75
     assert action.steer <= -0.65
     assert agent.diagnostics().get("stuck_recovery") is True
@@ -433,7 +437,8 @@ def test_model_mpc_agent_recovers_from_low_speed_no_progress() -> None:
     for _ in range(14):
         action = agent._execution_filter(Action(steer=0.0, throttle=0.55), Action(steer=0.0, throttle=0.55), observation)
 
-    assert action.throttle == 1.0
+    assert action.gear == -1
+    assert 0.4 <= action.throttle <= 0.65
     assert action.brake == 0.0
     assert agent.diagnostics().get("stuck_recovery") is True
 

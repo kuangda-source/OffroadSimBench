@@ -2576,6 +2576,7 @@ def _episode_trace_to_dataset_sequence(episode_path: str | Path, task: Navigatio
                     steer=_finite_or_default(row.get("steer"), 0.0),
                     throttle=_finite_or_default(row.get("throttle"), 0.0),
                     brake=_finite_or_default(row.get("brake"), 0.0),
+                    gear=_int_or_none(row.get("gear")),
                 ),
                 metadata={"source_step_index": row.get("step_index")},
             )
@@ -2979,6 +2980,7 @@ def load_episode_trace(episode_path: str | Path, *, limit: int = 5000) -> list[d
                     "steer": _float_or_nan(action.get("steer")),
                     "throttle": _float_or_nan(action.get("throttle")),
                     "brake": _float_or_nan(action.get("brake")),
+                    "gear": _int_or_none(action.get("gear")),
                     "goal": observation.get("goal") if isinstance(observation, dict) else None,
                 }
             )
@@ -3256,6 +3258,15 @@ def _float_or_nan(value: Any) -> float:
         return float(value)
     except (TypeError, ValueError):
         return math.nan
+
+
+def _int_or_none(value: Any) -> int | None:
+    try:
+        if value is None or (isinstance(value, float) and math.isnan(value)):
+            return None
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
 
 
 def _finite_or_default(value: Any, default: float) -> float:
