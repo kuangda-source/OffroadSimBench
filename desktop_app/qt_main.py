@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QSpinBox,
     QSplitter,
@@ -1000,7 +1001,6 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("OffroadSimBench Desktop")
-        self.resize(1380, 880)
         self.settings = GuiSettings()
         self.catalog: dict[str, list[dict[str, Any]]] = {}
         self.threads: list[QThread] = []
@@ -1025,6 +1025,7 @@ class MainWindow(QMainWindow):
         root_layout.addWidget(self._build_main_area(), 1)
         self.refresh_catalogs()
         self.select_page(0)
+        self._resize_to_available_screen()
 
     def _init_shared_controls(self) -> None:
         self.backend_combo = self._combo()
@@ -1187,7 +1188,22 @@ class MainWindow(QMainWindow):
         self.page_stack.addWidget(self._build_beamng_simulation_page())
         self.page_stack.addWidget(self._build_records_page())
         layout.addWidget(self.page_stack, 1)
-        return area
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setWidget(area)
+        return scroll
+
+    def _resize_to_available_screen(self) -> None:
+        target_width = 1380
+        target_height = 840
+        screen = QApplication.primaryScreen()
+        if screen is not None:
+            available = screen.availableGeometry()
+            target_width = min(target_width, max(480, available.width() - 40), available.width())
+            target_height = min(target_height, max(360, available.height() - 80), available.height())
+        self.resize(int(target_width), int(target_height))
 
     def _build_overview_page(self) -> QWidget:
         page, layout = self._page()

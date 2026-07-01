@@ -372,6 +372,20 @@ def test_beamng_backend_uses_high_follow_camera(fake_beamngpy: SimpleNamespace) 
     assert not hasattr(fake_beamngpy, "camera_request")
 
 
+def test_standard_johnson_valley_demo_uses_rear_high_45_camera(fake_beamngpy: SimpleNamespace) -> None:
+    from offroad_sim.tasks import load_navigation_region_task
+
+    task = load_navigation_region_task("configs/tasks/beamng_johnson_valley_nav_001.yaml")
+    scenario = task.to_beamng_scenario(mode="evaluation")
+    backend = BeamNGBackend(connection=BeamNGConnectionConfig(launch=False))
+
+    backend.reset(scenario)
+
+    assert fake_beamngpy.player_camera_request[0] == "ego"
+    assert fake_beamngpy.player_camera_request[1] == "orbit"
+    assert fake_beamngpy.player_camera_request[2]["rotation"] == (0.0, -45.0, 0.0)
+
+
 def test_beamng_backend_updates_navigation_preview_without_reloading(fake_beamngpy: SimpleNamespace) -> None:
     scenario = {
         "scenario_id": "beamng_preview_update",

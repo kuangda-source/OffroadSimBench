@@ -61,7 +61,11 @@ cost:
   boundary_margin_m: 3.0
 beamng:
   vehicle_model: pickup
-  camera_mode: orbit
+  camera_mode: follow
+  camera_distance_m: 14.0
+  camera_height_m: 13.0
+  camera_lookahead_m: 2.0
+  camera_pitch_deg: 45.0
   draw_route: true
   drive_mode: ai_line
   collection_drive_mode: ai_line

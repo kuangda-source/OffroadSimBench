@@ -4,7 +4,7 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication, QComboBox, QGroupBox, QLabel, QLineEdit, QPushButton, QSpinBox
+from PySide6.QtWidgets import QApplication, QComboBox, QGroupBox, QLabel, QLineEdit, QPushButton, QScrollArea, QSpinBox
 
 from desktop_app.qt_main import MainWindow, _training_run_overview_text
 
@@ -34,6 +34,19 @@ def test_desktop_pages_use_consistent_layout_rhythm() -> None:
         layout = group.layout()
         assert _margins_tuple(layout) == (16, 20, 16, 16)
         assert layout.spacing() == 12
+
+    window.close()
+
+
+def test_desktop_main_window_fits_available_screen_and_scrolls_content() -> None:
+    app = _ensure_app()
+    window = MainWindow()
+    screen = app.primaryScreen()
+    available_height = screen.availableGeometry().height() if screen else 880
+    scroll_areas = window.findChildren(QScrollArea)
+
+    assert window.height() <= available_height
+    assert any(area.widgetResizable() for area in scroll_areas)
 
     window.close()
 

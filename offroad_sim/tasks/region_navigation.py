@@ -107,6 +107,9 @@ class NavigationRegionTask:
             "ai_line_speed": float(self.beamng.get("ai_line_speed", 8.0)),
             "steps_per_action": int(self.beamng.get("steps_per_action", 6)),
         }
+        for key in ("camera_distance_m", "camera_height_m", "camera_lookahead_m", "camera_pitch_deg", "camera_fov_deg"):
+            if key in self.beamng:
+                beamng[key] = float(self.beamng[key])
         if uses_route:
             beamng["route"] = [list(point) for point in self.expert_route]
         return {
