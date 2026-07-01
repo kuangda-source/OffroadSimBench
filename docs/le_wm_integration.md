@@ -93,7 +93,7 @@ the local smoke cost model:
 
 ```powershell
 python -m offroad_sim.cli algorithms inspect stablewm_lewm --json
-python scripts\run_region_navigation_loop.py --task configs\tasks\beamng_johnson_valley_nav_test.yaml --algorithm stablewm_lewm --algorithm-model-path D:\models\lewm\orfd\lewm_object.ckpt --eval-steps 520 --keep-beamng-open
+python scripts\run_region_navigation_loop.py --task configs\tasks\beamng_johnson_valley_nav_001.yaml --algorithm stablewm_lewm --algorithm-model-path D:\models\lewm\orfd\lewm_object.ckpt --eval-steps 520 --keep-beamng-open
 ```
 
 `stablewm_lewm` accepts either a run directory containing `*_object.ckpt`, a
@@ -111,7 +111,7 @@ python scripts\convert_lewm_hf_checkpoint.py D:\models\lewm_hf\pusht D:\models\l
 Region navigation tasks are the preferred path for start/goal experiments:
 
 ```powershell
-python scripts\run_region_navigation_loop.py --task configs\tasks\beamng_johnson_valley_nav_test.yaml --algorithm local_lewm_cost --collect-steps 240 --eval-steps 520 --output-dir outputs\region_navigation\johnson_valley_nav_test_train
+python scripts\run_region_navigation_loop.py --task configs\tasks\beamng_johnson_valley_nav_001.yaml --algorithm local_lewm_cost --collect-steps 240 --eval-steps 520 --output-dir outputs\region_navigation\johnson_valley_nav_test_train
 ```
 
 The task is defined as `navigation_region_v1`: region polygon, start pose, goal,

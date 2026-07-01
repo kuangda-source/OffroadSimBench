@@ -40,8 +40,10 @@ def test_scenario_config_loads_from_yaml() -> None:
 
 
 def test_johnson_valley_demo_uses_stable_manual_control_timing() -> None:
-    task = load_navigation_region_task(ROOT / "configs" / "tasks" / "beamng_johnson_valley_nav_test.yaml")
+    task = load_navigation_region_task(ROOT / "configs" / "tasks" / "beamng_johnson_valley_nav_001.yaml")
 
-    assert task.max_steps >= 900
-    assert int(task.beamng["steps_per_action"]) <= 8
-    assert float(task.beamng["ai_line_speed"]) <= 8.0
+    assert task.max_steps == 520
+    assert task.beamng["evaluation_drive_mode"] == "manual"
+    assert task.beamng["evaluation_route_mode"] == "expert"
+    assert int(task.beamng["steps_per_action"]) == 18
+    assert float(task.beamng["ai_line_speed"]) <= 10.0

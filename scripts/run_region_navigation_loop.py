@@ -16,7 +16,7 @@ from desktop_app.services import RegionNavigationClosedLoopRequest, run_region_n
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--task", default="configs/tasks/beamng_johnson_valley_nav_test.yaml")
+    parser.add_argument("--task", default="configs/tasks/beamng_johnson_valley_nav_001.yaml")
     parser.add_argument("--algorithm", default="local_lewm_cost")
     parser.add_argument("--algorithm-model-path", default="", help="Use an existing algorithm/checkpoint path and skip collection/training.")
     parser.add_argument("--vehicle", default="configs/vehicles/ugv_medium.yaml")

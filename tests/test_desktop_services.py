@@ -6,6 +6,8 @@ import threading
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+import pytest
+
 from offroad_sim.core import Action, Observation, VehicleState
 from offroad_sim.datasets import create_mock_orfd_dataset
 from offroad_sim.replay import EpisodeRecorder
@@ -317,6 +319,54 @@ def test_import_world_model_config_accepts_model_directory(tmp_path) -> None:
     assert row["model_path"] == str(model_dir.resolve())
 
 
+def test_register_training_run_artifact_promotes_world_model_config(tmp_path) -> None:
+    config_path = tmp_path / "world_model_configs.json"
+    model_dir = tmp_path / "trained_tiny"
+    model_dir.mkdir()
+    (model_dir / "model.json").write_text('{"model_type": "tiny_learned", "weights": "weights.npz"}', encoding="utf-8")
+    record = services.write_training_run_record(
+        tmp_path / "run",
+        preset_id="tiny_world_model",
+        status="completed",
+        artifact_path=str(model_dir),
+        artifact_type="world_model",
+        metrics={"loss": 0.05},
+        summary={"goal_success": True, "collision_count": 0},
+    )
+
+    row = services.register_training_run_artifact_as_world_model_config(
+        record["path"],
+        label="Promoted Tiny",
+        path=config_path,
+    )
+
+    assert row["id"] == "Promoted_Tiny"
+    assert row["algorithm"] == "world_model_direct"
+    assert row["world_model"] == "tiny_learned"
+    assert row["model_path"] == str(model_dir.resolve())
+    assert row["validation"]["goal_success"] is True
+    assert row["validation"]["loss"] == 0.05
+    saved = services.world_model_config_entries(config_path)
+    assert any(item["id"] == "Promoted_Tiny" for item in saved)
+    refreshed = json.loads(Path(record["path"]).read_text(encoding="utf-8"))
+    assert refreshed["summary"]["world_model_config"]["id"] == "Promoted_Tiny"
+
+
+def test_register_training_run_artifact_rejects_hdf5_export(tmp_path) -> None:
+    hdf5 = tmp_path / "dataset.h5"
+    hdf5.write_bytes(b"hdf5")
+    record = services.write_training_run_record(
+        tmp_path / "run",
+        preset_id="export_stablewm_hdf5",
+        status="completed",
+        artifact_path=str(hdf5),
+        artifact_type="hdf5",
+    )
+
+    with pytest.raises(ValueError, match="not runnable"):
+        services.register_training_run_artifact_as_world_model_config(record["path"], path=tmp_path / "configs.json")
+
+
 def test_import_world_model_config_defaults_checkpoint_to_lewm(tmp_path) -> None:
     config_path = tmp_path / "world_model_configs.json"
     checkpoint = tmp_path / "custom_lewm_object.ckpt"
@@ -615,6 +665,76 @@ def test_desktop_services_list_navigation_tasks_and_checkpoints(tmp_path) -> Non
     assert tasks[0]["path"] == str(task_path.resolve())
     assert checkpoints[0]["path"] == str(checkpoint.resolve())
     assert checkpoints[0]["label"] == "runs/model/lewm_cost_object.ckpt"
+
+
+def test_demo_config_entries_use_standard_johnson_valley_task() -> None:
+    rows = services.demo_config_entries()
+
+    assert rows[0]["id"] == services.DEFAULT_DEMO_CONFIG_ID
+    assert rows[0]["task_path"].replace("\\", "/").endswith("configs/tasks/beamng_johnson_valley_nav_001.yaml")
+    assert rows[0]["world_model_config_id"] == services.DEFAULT_WORLD_MODEL_CONFIG_ID
+    assert rows[0]["planner"] == "navigation_mpc"
+
+
+def test_demo_acceptance_runs_multiple_trials_and_summarizes_metrics(tmp_path, monkeypatch) -> None:
+    episode_a = _write_trace_episode(
+        tmp_path / "episode_a",
+        [(1329.0, -109.0, 2.0, False), (1280.0, -145.0, 5.0, True), (1246.0, -189.0, 1.5, False)],
+    )
+    episode_b = _write_trace_episode(
+        tmp_path / "episode_b",
+        [(1329.0, -109.0, 1.0, False), (1290.0, -140.0, 2.5, False), (1247.0, -188.5, 1.0, False)],
+    )
+    episodes = [episode_a, episode_b]
+    captured: list[services.RegionNavigationClosedLoopRequest] = []
+
+    def fake_run_region_navigation(request: services.RegionNavigationClosedLoopRequest) -> dict[str, object]:
+        captured.append(request)
+        episode = episodes[len(captured) - 1]
+        task = load_navigation_region_task(request.task_path)
+        evaluation = {
+            "episode_path": str(episode),
+            "metrics": {
+                "collision_count": 0,
+                "drive_mode": "manual",
+                "steps": 3,
+                "agent_diagnostics": {"stuck_recovery": False},
+            },
+        }
+        return {"status": "completed", "evaluation": evaluation, "acceptance": services._navigation_acceptance(evaluation, task)}
+
+    monkeypatch.setattr(services, "run_region_navigation_closed_loop", fake_run_region_navigation)
+
+    report = services.run_demo_acceptance(services.DemoAcceptanceRequest(runs=2, max_steps=30, step_delay_sec=0.0, post_run_hold_sec=0.0))
+
+    assert report["status"] == "accepted"
+    assert report["run_count"] == 2
+    assert report["all_goal_success"] is True
+    assert report["summary"]["collision_count"] == 0
+    assert report["summary"]["recovery_triggered"] is True
+    assert report["runs"][0]["goal_reached"] is True
+    assert report["runs"][0]["trajectory_length_m"] > 0.0
+    assert report["runs"][0]["average_speed"] > 0.0
+    assert captured[0].task_path.endswith("beamng_johnson_valley_nav_001.yaml")
+
+
+def _write_trace_episode(path: Path, points: list[tuple[float, float, float, bool]]) -> Path:
+    recorder = EpisodeRecorder()
+    recorder.start_episode({"episode_id": path.name, "backend": "beamng", "agent": "model_mpc"})
+    for index, (x, y, speed, recovery) in enumerate(points):
+        recorder.record_step(
+            observation=Observation(
+                timestamp=float(index),
+                vehicle_state=VehicleState(x=x, y=y, z=115.0, speed=speed),
+                goal=(1245.995, -189.268),
+            ),
+            action=Action(throttle=0.2, steer=0.1),
+            reward=0.0,
+            done=False,
+            info={"agent_diagnostics": {"stuck_recovery": recovery}},
+        )
+    recorder.end_episode({"steps": len(points), "collision_count": 0, "drive_mode": "manual"})
+    return recorder.save(path)
 
 
 def test_desktop_request_builds_dataset_and_planner_options() -> None:

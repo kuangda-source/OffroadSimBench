@@ -138,14 +138,13 @@ powershell -ExecutionPolicy Bypass -File scripts\phase4_visible_beamng_acceptanc
 
 ### Johnson Valley 闭环验收补充
 
-当前仓库提供 `configs\tasks\beamng_johnson_valley_nav_test.yaml` 作为
+当前仓库提供 `configs\tasks\beamng_johnson_valley_nav_001.yaml` 作为
 Johnson Valley 原生越野地形上的当前验证区域/起终点任务。桌面 GUI 首页现在是
-引导式 demo launcher：选择 demo preset、BeamNG region task、世界模型配置和 planner
-后即可运行可视演示。具体的模型 checkpoint、算法和 world model 在
-`数据集与训练` 工作台里选择并保存，`BeamNG 仿真` 工作台也可以读取同一套配置。
+引导式 demo launcher：选择 `Demo config`，点击 `Start demo`，然后查看结果摘要。
+Demo config 内部绑定 BeamNG region task、世界模型配置、planner 和可视运行默认参数。
 默认配置指向这条已验证任务和
 `outputs\region_navigation\johnson_valley_nav_test_train_v2_validated\model\lewm_cost_object.ckpt`；
-点击首页 `Run guided demo` 会进入
+点击首页 `Start demo` 会进入
 `stablewm_lewm + navigation_mpc + model_mpc` 的 BeamNG 手动控车评估，默认规划参数为
 horizon=6、samples=32、iterations=3；其他 Backend 会按当前 Backend/Scenario/Agent
 运行普通 episode。桌面 GUI 的 BeamNG 页面只保留通用操作入口，固定 Johnson Valley 单次演示按钮已移除。
@@ -169,7 +168,7 @@ BeamNG 窗口左键点击或短按地面，GUI 会以 50ms 轮询通过 Tech 通
 LE-WM-compatible cost adapter 或世界模型预测为候选动作评分，再叠加目标距离、区域越界、
 边界距离、动作平滑和低速恢复代价，最后只执行最优序列的第一步动作。`route_world_model`
 仍保留为路线跟踪基线。2026-05-21 当前 checkpoint 在
-`beamng_johnson_valley_nav_test.yaml` 上本地验收通过：272 步进入 12 m 目标半径，
+`beamng_johnson_valley_nav_001.yaml` 上本地验收通过：272 步进入 12 m 目标半径，
 最终距离 11.217 m，碰撞数为 0，评估阶段保持在区域内。运行时相机默认使用车辆后上方
 约 45 度的 `follow` 视角，避免只看到车后尘土。
 
@@ -234,9 +233,9 @@ OffroadSimBench is a local off-road autonomous-driving simulation, dataset repla
 
 ### Dataset And Training Workbench
 
-The desktop GUI `Dataset and Training` page is now a standalone training-visualization workbench. It can register manifest datasets from ordinary folders, inspect and preview registered datasets, choose a reusable training/export config, review the current training config summary and latest metric curve, run StableWM HDF5 export, train the local LE-WM-compatible cost model, run imported trainer scripts, or train the tiny world model. Successful training/export actions write a `training_run.json` record next to the produced artifact, and the GUI `Training results` tab indexes those records so users can review artifact paths, parameters, logs, and metrics. `LE-WM full self-supervised`, `TD-MPC2`, and `DreamerV3` are exposed as unfinished pluggable presets without fabricating results.
+The desktop GUI `Dataset and Training` page is now a standalone training-visualization workbench. It can register manifest datasets from ordinary folders, inspect and preview registered datasets, choose a reusable training/export config, review the current training config summary and latest metric curve, run StableWM HDF5 export, train the local LE-WM-compatible cost model, run imported trainer scripts, or train the tiny world model. Successful training/export actions write a `training_run.json` record next to the produced artifact, and the GUI `Training results` tab indexes those records so users can review artifact paths, parameters, logs, and metrics. A successful run with a runnable checkpoint or `model.json` artifact can be promoted with `Register latest training artifact`, which saves a world-model config and writes the promoted config back into `training_run.json`. `LE-WM full self-supervised`, `TD-MPC2`, and `DreamerV3` are exposed as unfinished pluggable presets without fabricating results.
 
-Training configs combine a dataset root, adapter, sequence, training preset, output path, and JSON parameters into one reusable GUI selection. Built-in configs include `ORFD StableWM HDF5 export` and `ORFD tiny world model`; users can edit the current fields and click `Save training config` to persist a new entry in `configs/training_configs.json`. `Start training/export` now runs the current training config through a single service boundary, whether the preset is built in or backed by an imported trainer manifest. The `Validate config` action performs a dry run before training: it checks dataset availability, resolves the selected trainer manifest, coerces parameter types, reports missing required parameters, and shows the external command preview when the preset is backed by a local script.
+Training configs combine a dataset root, adapter, sequence, training preset, output path, and JSON parameters into one reusable GUI selection. Built-in configs include `ORFD StableWM HDF5 export`, `ORFD tiny world model`, and `Smoke tiny world model`. The smoke config creates a tiny ORFD-style dataset under `outputs/training_studio_smoke/datasets/mock_orfd`, trains a local tiny model, writes a `training_run.json`, and provides metric history for the GUI curves. Users can edit the current fields and click `Save training config` to persist a new entry in `configs/training_configs.json`. `Start training/export` now runs the current training config through a single service boundary, whether the preset is built in or backed by an imported trainer manifest. The `Validate config` action performs a dry run before training: it checks dataset availability, resolves the selected trainer manifest, coerces parameter types, reports missing required parameters, and shows the external command preview when the preset is backed by a local script.
 
 Training records support a `history` field for loss, RMSE, frame count, or other curve data. The GUI plots the primary available metric in the training results tab, lists the available curve names, and falls back to single-point metrics or NaN when no real history exists.
 
@@ -383,7 +382,7 @@ python scripts\run_beamng_lewm_closed_loop.py --collect-steps 160 --eval-steps 1
 Run the region self-supervised world-model scaffold:
 
 ```powershell
-python scripts\run_region_self_supervised_world_model.py configs\tasks\beamng_johnson_valley_nav_test.yaml --evaluation-agent world_model_direct --evaluation-route-mode route_free --collect-steps 1000 --eval-steps 1200
+python scripts\run_region_self_supervised_world_model.py configs\tasks\beamng_johnson_valley_nav_001.yaml --evaluation-agent world_model_direct --evaluation-route-mode route_free --collect-steps 1000 --eval-steps 1200
 ```
 
 The GUI uses this route-free mode for its region self-supervised action: it
@@ -400,18 +399,17 @@ vehicle enters the configured goal radius, and the summary reports both final
 and minimum goal distance:
 
 ```powershell
-python scripts\run_region_navigation_loop.py --task configs\tasks\beamng_johnson_valley_nav_test.yaml --algorithm local_lewm_cost --collect-steps 240 --eval-steps 520 --output-dir outputs\region_navigation\johnson_valley_nav_test_train
+python scripts\run_region_navigation_loop.py --task configs\tasks\beamng_johnson_valley_nav_001.yaml --algorithm local_lewm_cost --collect-steps 240 --eval-steps 520 --output-dir outputs\region_navigation\johnson_valley_nav_test_train
 ```
 
 Johnson Valley now has a repeatable stock-terrain route task at
-`configs\tasks\beamng_johnson_valley_nav_test.yaml`. The desktop GUI overview
-page is now a guided demo launcher: choose the demo preset, BeamNG region task,
-world-model config, and planner, then run the visible demo. The checkpoint path,
-algorithm, and world-model type are selected and saved from the Dataset and
-Training workbench; the BeamNG Simulation workbench reads the same saved config.
-The default config points at this validated task and
+`configs\tasks\beamng_johnson_valley_nav_001.yaml`. The desktop GUI overview
+page is now a guided demo launcher: choose a `Demo config`, click `Start demo`,
+and review the result summary. The selected demo config owns the BeamNG region
+task, saved world-model config, planner, and visible runtime defaults. The
+default demo config points at this validated task and
 `outputs\region_navigation\johnson_valley_nav_test_train_v2_validated\model\lewm_cost_object.ckpt`.
-Clicking `Run guided demo` runs the selected task through
+Clicking `Start demo` runs the selected task through
 `stablewm_lewm + navigation_mpc + model_mpc` in BeamNG with default planner
 settings `horizon=6`, `samples=32`, and `iterations=3`. The BeamNG Simulation
 workbench keeps generic operations such as region editing, runtime checks, model
@@ -426,8 +424,18 @@ adapter or a world-model rollout, adds goal progress and region-boundary costs,
 and sends only the first action of the best sequence to BeamNG. `route_world_model`
 remains available as a route-tracking baseline.
 
+Run the standard demo acceptance from the command line:
+
 ```powershell
-python scripts\run_region_navigation_loop.py --task configs\tasks\beamng_johnson_valley_nav_test.yaml --algorithm stablewm_lewm --algorithm-model-path outputs\region_navigation\johnson_valley_nav_test_train_v2_validated\model\lewm_cost_object.ckpt --eval-steps 520 --planner navigation_mpc --planner-horizon 6 --planner-samples 32 --planner-iterations 3 --keep-beamng-open
+python scripts\demo_acceptance.py --demo-config johnson_valley_standard_demo --runs 1
+```
+
+The JSON report includes goal reached, collision count, final distance,
+trajectory length, average speed, and whether recovery logic was triggered.
+Use `--runs 2` or `--runs 3` to check repeatability.
+
+```powershell
+python scripts\run_region_navigation_loop.py --task configs\tasks\beamng_johnson_valley_nav_001.yaml --algorithm stablewm_lewm --algorithm-model-path outputs\region_navigation\johnson_valley_nav_test_train_v2_validated\model\lewm_cost_object.ckpt --eval-steps 520 --planner navigation_mpc --planner-horizon 6 --planner-samples 32 --planner-iterations 3 --keep-beamng-open
 ```
 
 Local acceptance on 2026-05-21 passed the current Johnson Valley checkpoint
@@ -499,13 +507,13 @@ directly and exposes it as an action-cost scorer for `model_mpc`.
 Train and validate the Johnson Valley region task saved from the GUI:
 
 ```powershell
-python scripts\run_region_navigation_loop.py --task configs\tasks\beamng_johnson_valley_nav_test.yaml --algorithm local_lewm_cost --collect-steps 240 --eval-steps 520 --planner navigation_mpc --output-dir outputs\region_navigation\johnson_valley_nav_test_train
+python scripts\run_region_navigation_loop.py --task configs\tasks\beamng_johnson_valley_nav_001.yaml --algorithm local_lewm_cost --collect-steps 240 --eval-steps 520 --planner navigation_mpc --output-dir outputs\region_navigation\johnson_valley_nav_test_train
 ```
 
 Use a real checkpoint without retraining the local smoke model:
 
 ```powershell
-python scripts\run_region_navigation_loop.py --task configs\tasks\beamng_johnson_valley_nav_test.yaml --algorithm stablewm_lewm --algorithm-model-path D:\models\lewm\orfd\lewm_object.ckpt --eval-steps 520 --planner navigation_mpc --planner-horizon 6 --planner-samples 32 --planner-iterations 3 --keep-beamng-open
+python scripts\run_region_navigation_loop.py --task configs\tasks\beamng_johnson_valley_nav_001.yaml --algorithm stablewm_lewm --algorithm-model-path D:\models\lewm\orfd\lewm_object.ckpt --eval-steps 520 --planner navigation_mpc --planner-horizon 6 --planner-samples 32 --planner-iterations 3 --keep-beamng-open
 ```
 
 If the upstream checkpoint was downloaded as HuggingFace `weights.pt` +

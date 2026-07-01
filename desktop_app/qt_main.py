@@ -1033,8 +1033,8 @@ class MainWindow(QMainWindow):
         self.world_model_combo = self._combo()
         self.planner_combo = self._combo()
         self.algorithm_combo = self._combo()
-        self.demo_preset_combo = self._combo()
-        self.demo_preset_combo.addItem("Johnson Valley LE-WM navigation", "johnson_valley_lewm_navigation")
+        self.demo_config_combo = self._combo()
+        self.demo_config_combo.currentIndexChanged.connect(lambda _: self._refresh_demo_status())
         self.training_config_combo = self._combo()
         self.training_preset_combo = self._combo()
         self.training_preset_summary = QTextEdit()
@@ -1195,43 +1195,25 @@ class MainWindow(QMainWindow):
         body = self._row_layout()
         launcher_box, launcher_layout = self._new_group("Guided demo launcher")
         guide = QLabel(
-            "按步骤检查 demo 配置，然后运行 BeamNG 可视自动驾驶。复杂的数据集、训练和任务编辑放到对应工作台。"
+            "选择一个标准 demo 配置，点击开始运行，然后在结果区查看验收指标。复杂的数据集、训练和任务编辑放到对应工作台。"
         )
         guide.setObjectName("mutedText")
         guide.setWordWrap(True)
         launcher_layout.addWidget(guide)
-        launcher_layout.addWidget(self._field("Demo preset", self.demo_preset_combo))
-        launcher_layout.addWidget(self._field("BeamNG region task", self.home_task_combo))
-        launcher_layout.addWidget(self._field("World model config", self.world_model_config_combo))
-        launcher_layout.addWidget(self._field("Planner", self.planner_combo))
+        launcher_layout.addWidget(self._field("Demo config", self.demo_config_combo))
 
-        run_button = QPushButton("Run guided demo")
+        run_button = QPushButton("Start demo")
         self._configure_button(run_button, primary=True)
         run_button.clicked.connect(self.run_guided_demo)
         launcher_layout.addWidget(run_button)
-
-        shortcut_row = self._row_layout(spacing=8)
-        dataset_button = QPushButton("Open Dataset & Training")
-        self._configure_button(dataset_button)
-        dataset_button.clicked.connect(lambda: self.select_page(1))
-        beamng_button = QPushButton("Open BeamNG Simulation")
-        self._configure_button(beamng_button)
-        beamng_button.clicked.connect(lambda: self.select_page(2))
-        records_button = QPushButton("Open Records")
-        self._configure_button(records_button)
-        records_button.clicked.connect(lambda: self.select_page(3))
-        shortcut_row.addWidget(dataset_button)
-        shortcut_row.addWidget(beamng_button)
-        shortcut_row.addWidget(records_button)
-        launcher_layout.addLayout(shortcut_row)
         body.addWidget(launcher_box, 2)
 
-        status_box, status_layout = self._new_group("Demo status")
-        self.demo_status_summary = QTextEdit()
-        self.demo_status_summary.setReadOnly(True)
-        self.demo_status_summary.setPlaceholderText("Demo status: NaN")
-        status_layout.addWidget(self.demo_status_summary, 1)
-        body.addWidget(status_box, 1)
+        result_box, result_layout = self._new_group("Demo result")
+        self.demo_result_summary = QTextEdit()
+        self.demo_result_summary.setReadOnly(True)
+        self.demo_result_summary.setPlaceholderText("Demo result: NaN")
+        result_layout.addWidget(self.demo_result_summary, 1)
+        body.addWidget(result_box, 1)
         layout.addLayout(body)
 
         metrics_box, metrics_layout = self._new_group("Demo metrics")
@@ -1383,6 +1365,12 @@ class MainWindow(QMainWindow):
         self.latest_metric_summary.setWordWrap(True)
         output_layout.addWidget(self.latest_metric_summary)
         output_layout.addWidget(self.latest_training_curve)
+        self.latest_training_log = QTextEdit()
+        self.latest_training_log.setReadOnly(True)
+        self.latest_training_log.setMaximumHeight(100)
+        self.latest_training_log.setPlaceholderText("Training logs: NaN")
+        output_layout.addWidget(self._section_label("Training logs"))
+        output_layout.addWidget(self.latest_training_log)
         output_layout.addWidget(self._section_label("Training output"))
         output_layout.addWidget(self.model_summary, 1)
         registry_box = self._group(
@@ -1395,6 +1383,7 @@ class MainWindow(QMainWindow):
                 model_dir_import,
                 self._field("Algorithm", self.algorithm_combo),
                 self._field("World model", self.world_model_combo),
+                self._action_button("Register latest training artifact", self.register_latest_training_artifact_model),
                 self._action_button("Save world model config", self.save_world_model_config, primary=True),
             ],
         )
@@ -1572,6 +1561,7 @@ class MainWindow(QMainWindow):
         self._fill_combo(self.algorithm_combo, self.catalog["algorithms"], "name", default="stablewm_lewm")
         self._fill_combo(self.world_model_combo, self.catalog["world_models"], "name", default="le_wm")
         self._fill_combo(self.planner_combo, [{"name": ""}] + self.catalog["planners"], "name", default="navigation_mpc")
+        self._fill_demo_config_combo()
         self._fill_path_combo(
             self.home_task_combo,
             self.catalog.get("navigation_tasks", []),
@@ -1610,7 +1600,7 @@ class MainWindow(QMainWindow):
         self._refresh_planner_summary()
         beamng = _find_named(self.catalog["backends"], "beamng")
         self.runtime_label.setText(f"BeamNG: {services.display_value(beamng.get('available') if beamng else None)}")
-        if hasattr(self, "demo_status_summary"):
+        if hasattr(self, "demo_result_summary"):
             self._refresh_demo_status()
         self.log("状态已刷新")
 
@@ -1707,9 +1697,21 @@ class MainWindow(QMainWindow):
         super().closeEvent(event)
 
     def run_guided_demo(self) -> None:
+        demo = self._combo_config_row(self.demo_config_combo)
+        agent = "model_mpc"
+        planner = "navigation_mpc"
+        if demo:
+            task_path = str(demo.get("task_path") or "")
+            if task_path:
+                self._select_path_combo_value(self.home_task_combo, task_path)
+                self.task_path_edit.setText(task_path)
+            config_id = str(demo.get("world_model_config_id") or services.DEFAULT_WORLD_MODEL_CONFIG_ID)
+            self._select_world_model_config(config_id)
+            agent = str(demo.get("evaluation_agent") or agent)
+            planner = str(demo.get("planner") or planner)
         self._select_combo_value(self.backend_combo, "beamng")
-        self._select_combo_value(self.agent_combo, "model_mpc")
-        self._select_combo_value(self.planner_combo, "navigation_mpc")
+        self._select_combo_value(self.agent_combo, agent)
+        self._select_combo_value(self.planner_combo, planner)
         self._refresh_demo_status()
         self.run_home_region_model_test()
 
@@ -2139,6 +2141,29 @@ class MainWindow(QMainWindow):
         self.refresh_catalogs()
         self._select_world_model_config(str(row["id"]))
 
+    def register_latest_training_artifact_model(self) -> None:
+        run = getattr(self, "latest_training_run_record", {})
+        path = str(run.get("path") or run.get("training_run_path") or "").strip()
+        if not path:
+            payload = {"status": "register_failed", "message": "No completed training run is selected."}
+            self.model_summary.setText(_compact_json(payload))
+            self.log("World model config registration failed: no selected training run.")
+            return
+        label = self.model_config_name_edit.text().strip()
+        if not label:
+            label = str(run.get("preset_label") or run.get("run_id") or "Training Model")
+        try:
+            row = services.register_training_run_artifact_as_world_model_config(path, label=label)
+        except Exception as exc:
+            payload = {"status": "register_failed", "message": str(exc)}
+            self.model_summary.setText(_compact_json(payload))
+            self.log(f"World model config registration failed: {exc}")
+            return
+        self.model_summary.setText(_compact_json({"status": "registered", "world_model_config": row}))
+        self.log(f"World model config registered: {row.get('label', row.get('id', services.NAN_TEXT))}")
+        self.refresh_catalogs()
+        self._select_world_model_config(str(row.get("id") or ""))
+
     def save_training_config(self) -> None:
         label = self.training_config_name_edit.text().strip()
         selected = self.training_config_combo.currentData()
@@ -2428,6 +2453,8 @@ class MainWindow(QMainWindow):
             self.trajectory.set_trace(services.load_episode_trace(path) if path else [])
         self.model_summary.setText(_compact_json(payload))
         self._set_training_run_views(payload)
+        if hasattr(self, "demo_result_summary"):
+            self.demo_result_summary.setText(_compact_json(_demo_result_payload(payload)))
         region_summary = _region_world_model_summary_text(payload)
         if region_summary and hasattr(self, "beamng_summary"):
             self.beamng_summary.setText(region_summary)
@@ -2834,6 +2861,7 @@ class MainWindow(QMainWindow):
 
     def _set_training_run_views(self, payload: dict[str, Any]) -> dict[str, Any]:
         run = _training_run_record_from_payload(payload)
+        self.latest_training_run_record = dict(run)
         if hasattr(self, "training_run_overview"):
             self.training_run_overview.setText(_training_run_overview_text(run))
         if hasattr(self, "training_run_summary"):
@@ -2844,6 +2872,8 @@ class MainWindow(QMainWindow):
             self.training_run_metric_summary.setText(metric_summary)
         if hasattr(self, "latest_metric_summary"):
             self.latest_metric_summary.setText(metric_summary)
+        if hasattr(self, "latest_training_log"):
+            self.latest_training_log.setText(_training_log_summary(run))
         if hasattr(self, "training_curve"):
             self.training_curve.set_history(history)
         if hasattr(self, "latest_training_curve"):
@@ -2873,20 +2903,24 @@ class MainWindow(QMainWindow):
         self.planner_summary.setText(_compact_json(payload))
 
     def _refresh_demo_status(self) -> None:
-        if not hasattr(self, "demo_status_summary"):
+        if not hasattr(self, "demo_result_summary"):
             return
         beamng = _find_named(self.catalog.get("backends", []), "beamng") if self.catalog else None
-        config = self._combo_config_row(self.world_model_config_combo)
+        demo = self._combo_config_row(self.demo_config_combo)
+        world_model_config_id = str(demo.get("world_model_config_id") or services.DEFAULT_WORLD_MODEL_CONFIG_ID)
+        model_config = next(
+            (row for row in self.catalog.get("world_model_configs", []) if str(row.get("id") or "") == world_model_config_id),
+            {},
+        )
         payload = {
-            "demo_preset": self.demo_preset_combo.currentText() or "NaN",
+            "demo_config": demo.get("label") or services.NAN_TEXT,
             "beamng_available": beamng.get("available") if beamng else None,
-            "region_task": self._path_combo_value(self.home_task_combo) or services.NAN_TEXT,
-            "world_model_config": config.get("label") or services.NAN_TEXT,
-            "model_path": config.get("model_path") or services.NAN_TEXT,
-            "planner": self.planner_combo.currentData() or self.planner_combo.currentText() or services.NAN_TEXT,
+            "region_task": demo.get("task_relative_path") or demo.get("task_path") or services.NAN_TEXT,
+            "world_model_config": model_config.get("label") or services.NAN_TEXT,
+            "planner": demo.get("planner") or services.NAN_TEXT,
             "last_result": services.NAN_TEXT,
         }
-        self.demo_status_summary.setText(_compact_json(payload))
+        self.demo_result_summary.setText(_compact_json(payload))
 
     def _current_request(self) -> services.RunRequest:
         config = self._combo_config_row(self.world_model_config_combo)
@@ -3021,6 +3055,24 @@ class MainWindow(QMainWindow):
             if value == (current or default):
                 selected_index = combo.count() - 1
         combo.setCurrentIndex(selected_index)
+
+    def _fill_demo_config_combo(self) -> None:
+        current = self.demo_config_combo.currentData()
+        current_id = current.get("id") if isinstance(current, dict) else ""
+        self.demo_config_combo.blockSignals(True)
+        self.demo_config_combo.clear()
+        selected_index = 0
+        for row in self.catalog.get("demo_configs", []):
+            config_id = str(row.get("id") or "")
+            if not config_id:
+                continue
+            label = str(row.get("label") or config_id)
+            self.demo_config_combo.addItem(label, dict(row))
+            if config_id == (current_id or services.DEFAULT_DEMO_CONFIG_ID):
+                selected_index = self.demo_config_combo.count() - 1
+        if self.demo_config_combo.count():
+            self.demo_config_combo.setCurrentIndex(selected_index)
+        self.demo_config_combo.blockSignals(False)
 
     def _fill_world_model_config_combo(self, combo: QComboBox, rows: list[dict[str, Any]], *, default_id: str) -> None:
         current = combo.currentData()
@@ -3322,6 +3374,22 @@ def _metric_history_summary(history: dict[str, list[float]]) -> str:
     return "Metric curves: " + (", ".join(parts) if parts else services.NAN_TEXT)
 
 
+def _demo_result_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    acceptance = payload.get("acceptance") if isinstance(payload.get("acceptance"), dict) else {}
+    evaluation = payload.get("evaluation") if isinstance(payload.get("evaluation"), dict) else {}
+    metrics = evaluation.get("metrics") if isinstance(evaluation.get("metrics"), dict) else {}
+    return {
+        "status": payload.get("status") or services.NAN_TEXT,
+        "goal_success": acceptance.get("goal_success", services.NAN_TEXT),
+        "goal_reached": acceptance.get("goal_reached", services.NAN_TEXT),
+        "collision_count": acceptance.get("collision_count", metrics.get("collision_count", services.NAN_TEXT)),
+        "final_distance": acceptance.get("final_goal_distance", services.NAN_TEXT),
+        "steps": metrics.get("steps", payload.get("steps", services.NAN_TEXT)),
+        "episode_path": evaluation.get("episode_path") or payload.get("episode_path") or services.NAN_TEXT,
+        "summary_path": payload.get("summary_path") or services.NAN_TEXT,
+    }
+
+
 def _training_run_overview_text(run: dict[str, Any]) -> str:
     run_id = str(run.get("run_id") or services.NAN_TEXT)
     pretty_run_id = run_id.replace("_", " ").replace("-", " ").title() if run_id and run_id != services.NAN_TEXT else services.NAN_TEXT
@@ -3380,6 +3448,16 @@ def _training_run_overview_text(run: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _training_log_summary(run: dict[str, Any]) -> str:
+    logs = run.get("logs") if isinstance(run.get("logs"), dict) else {}
+    lines: list[str] = []
+    for key in ("stdout", "stderr"):
+        path = str(logs.get(key) or "").strip()
+        if path:
+            lines.append(f"{key}: {path}")
+    return "\n".join(lines) if lines else f"Training logs: {services.NAN_TEXT}"
+
+
 def _region_world_model_summary_text(payload: dict[str, Any]) -> str:
     acceptance = payload.get("acceptance") if isinstance(payload.get("acceptance"), dict) else {}
     region = payload.get("region_navigation") if isinstance(payload.get("region_navigation"), dict) else {}
@@ -3418,13 +3496,14 @@ def _region_world_model_summary_text(payload: dict[str, Any]) -> str:
 
 
 def _training_run_record_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    path = str(payload.get("training_run_path") or "").strip()
+    path = str(payload.get("training_run_path") or payload.get("path") or "").strip()
     if path:
         try:
             record = json.loads(Path(path).read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             record = {}
         if isinstance(record, dict) and record:
+            record["path"] = str(Path(path).resolve())
             return record
     return dict(payload)
 

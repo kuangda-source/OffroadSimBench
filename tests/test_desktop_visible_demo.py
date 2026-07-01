@@ -158,7 +158,8 @@ def test_gui_overview_uses_world_model_config_selector() -> None:
     overview = window.page_stack.widget(0)
     labels = [label.text() for label in overview.findChildren(QLabel)]
 
-    assert "World model config" in labels
+    assert "Demo config" in labels
+    assert "World model config" not in labels
     assert "Model path" not in labels
     assert "Algorithm" not in labels
     assert "World model" not in labels
@@ -183,15 +184,54 @@ def test_gui_overview_is_guided_demo_launcher() -> None:
     labels = [label.text() for label in overview.findChildren(QLabel)]
     buttons = [button.text() for button in overview.findChildren(QPushButton)]
 
-    assert "Demo preset" in labels
-    assert "BeamNG region task" in labels
-    assert "World model config" in labels
-    assert "Run guided demo" in buttons
-    assert "Open Dataset & Training" in buttons
-    assert "Open BeamNG Simulation" in buttons
+    assert "Demo config" in labels
+    assert "BeamNG region task" not in labels
+    assert "World model config" not in labels
+    assert "Start demo" in buttons
+    assert "Open Dataset & Training" not in buttons
+    assert "Open BeamNG Simulation" not in buttons
     assert "Backend" not in labels
     assert "Scenario" not in labels
     assert "Agent" not in labels
+    window.close()
+
+
+def test_gui_overview_only_exposes_demo_config_run_and_results() -> None:
+    _ensure_app()
+    window = MainWindow()
+
+    overview = window.page_stack.widget(0)
+    labels = [label.text() for label in overview.findChildren(QLabel)]
+    buttons = [button.text() for button in overview.findChildren(QPushButton)]
+
+    assert "Demo config" in labels
+    assert "BeamNG region task" not in labels
+    assert "World model config" not in labels
+    assert "Planner" not in labels
+    assert buttons == ["Start demo"]
+    assert hasattr(window, "demo_result_summary")
+    window.close()
+
+
+def test_gui_start_demo_uses_standard_demo_config(monkeypatch) -> None:
+    _ensure_app()
+    window = MainWindow()
+    window.settings.max_steps = 12
+    captured: dict[str, services.RegionNavigationClosedLoopRequest] = {}
+
+    monkeypatch.setattr(services, "run_region_navigation_closed_loop", lambda request: captured.setdefault("request", request))
+    monkeypatch.setattr(window, "_run_task", lambda task, callback, label, **kwargs: task())
+
+    window.run_guided_demo()
+
+    request = captured["request"]
+    assert request.task_path.endswith("configs\\tasks\\beamng_johnson_valley_nav_001.yaml")
+    assert request.algorithm == "stablewm_lewm"
+    assert request.algorithm_model_path.endswith("lewm_cost_object.ckpt")
+    assert request.planner == "navigation_mpc"
+    assert request.evaluation_agent == "model_mpc"
+    assert request.close_beamng is False
+    assert window.demo_config_combo.currentData()["id"] == services.DEFAULT_DEMO_CONFIG_ID
     window.close()
 
 
@@ -855,6 +895,65 @@ def test_gui_training_finished_loads_training_run_record_overview(tmp_path) -> N
     window.close()
 
 
+def test_gui_training_finished_shows_latest_training_logs(tmp_path) -> None:
+    _ensure_app()
+    run_dir = tmp_path / "run_logs"
+    stdout = run_dir / "stdout.log"
+    stderr = run_dir / "stderr.log"
+    run_dir.mkdir(parents=True)
+    stdout.write_text("epoch=1 loss=0.5\n", encoding="utf-8")
+    stderr.write_text("", encoding="utf-8")
+    record = services.write_training_run_record(
+        run_dir,
+        preset_id="tiny_world_model",
+        status="completed",
+        artifact_path=str(run_dir / "model"),
+        artifact_type="world_model",
+        metrics={"loss": 0.1},
+        logs={"stdout": str(stdout), "stderr": str(stderr)},
+    )
+    window = MainWindow()
+
+    window._training_finished({"output_dir": str(run_dir / "model"), "training_run_path": record["path"]})
+
+    text = window.latest_training_log.toPlainText()
+    assert "stdout:" in text
+    assert str(stdout.resolve()) in text
+    assert "stderr:" in text
+    window.close()
+
+
+def test_gui_registers_latest_training_artifact_as_world_model_config(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(services, "WORLD_MODEL_CONFIGS_PATH", tmp_path / "world_model_configs.json")
+    _ensure_app()
+    model_dir = tmp_path / "tiny_model"
+    model_dir.mkdir()
+    (model_dir / "model.json").write_text('{"model_type": "tiny_learned", "weights": "weights.npz"}', encoding="utf-8")
+    record = services.write_training_run_record(
+        tmp_path / "run_promote",
+        preset_id="tiny_world_model",
+        status="completed",
+        artifact_path=str(model_dir),
+        artifact_type="world_model",
+        metrics={"loss": 0.12},
+    )
+    window = MainWindow()
+
+    window._training_finished({"output_dir": str(model_dir), "training_run_path": record["path"]})
+    window.model_config_name_edit.setText("Latest Tiny")
+    window.register_latest_training_artifact_model()
+
+    row = window.world_model_config_combo.currentData()
+    buttons = [button.text() for button in window.page_stack.widget(1).findChildren(QPushButton)]
+    assert "Register latest training artifact" in buttons
+    assert row["id"] == "Latest_Tiny"
+    assert row["algorithm"] == "world_model_direct"
+    assert row["world_model"] == "tiny_learned"
+    assert row["model_path"] == str(model_dir.resolve())
+    assert "registered" in window.model_summary.toPlainText()
+    window.close()
+
+
 def test_gui_training_finished_shows_available_metric_curves(tmp_path) -> None:
     _ensure_app()
     run_dir = tmp_path / "run_metrics"
@@ -1075,7 +1174,7 @@ def test_gui_region_navigation_loop_uses_task_path(monkeypatch) -> None:
     _ensure_app()
     window = MainWindow()
     window.settings.max_steps = 5
-    window.task_path_edit.setText("configs/tasks/beamng_johnson_valley_nav_test.yaml")
+    window.task_path_edit.setText("configs/tasks/beamng_johnson_valley_nav_001.yaml")
     captured: dict[str, services.RegionNavigationClosedLoopRequest] = {}
 
     monkeypatch.setattr(services, "run_region_navigation_closed_loop", lambda request: captured.setdefault("request", request))
@@ -1083,7 +1182,7 @@ def test_gui_region_navigation_loop_uses_task_path(monkeypatch) -> None:
 
     window.run_region_navigation_loop()
 
-    assert captured["request"].task_path == "configs/tasks/beamng_johnson_valley_nav_test.yaml"
+    assert captured["request"].task_path == "configs/tasks/beamng_johnson_valley_nav_001.yaml"
     assert captured["request"].collect_steps >= 160
     assert captured["request"].close_beamng is False
     window.close()
@@ -1093,7 +1192,7 @@ def test_gui_exposes_region_self_supervised_training(monkeypatch) -> None:
     _ensure_app()
     window = MainWindow()
     window.settings.max_steps = 5
-    window.task_path_edit.setText("configs/tasks/beamng_johnson_valley_nav_test.yaml")
+    window.task_path_edit.setText("configs/tasks/beamng_johnson_valley_nav_001.yaml")
     captured: dict[str, services.RegionSelfSupervisedWorldModelRequest] = {}
 
     monkeypatch.setattr(services, "run_region_self_supervised_world_model", lambda request: captured.setdefault("request", request))
@@ -1103,7 +1202,7 @@ def test_gui_exposes_region_self_supervised_training(monkeypatch) -> None:
     button_texts = [button.text() for button in window.page_stack.widget(2).findChildren(QPushButton)]
 
     assert "区域自监督训练 world model" in button_texts
-    assert captured["request"].task_path == "configs/tasks/beamng_johnson_valley_nav_test.yaml"
+    assert captured["request"].task_path == "configs/tasks/beamng_johnson_valley_nav_001.yaml"
     assert captured["request"].world_model_type == "tiny_learned"
     assert captured["request"].evaluation_agent == "world_model_direct"
     assert captured["request"].evaluation_route_mode == "route_free"
@@ -1130,7 +1229,7 @@ def test_gui_home_start_uses_selected_task_and_checkpoint(tmp_path, monkeypatch)
     _ensure_app()
     window = MainWindow()
     window.settings.max_steps = 9
-    window.home_task_combo.setCurrentText("configs/tasks/beamng_johnson_valley_nav_test.yaml")
+    window.home_task_combo.setCurrentText("configs/tasks/beamng_johnson_valley_nav_001.yaml")
     window._select_world_model_config("test_home_lewm")
     captured: dict[str, services.RegionNavigationClosedLoopRequest] = {}
 
@@ -1139,7 +1238,7 @@ def test_gui_home_start_uses_selected_task_and_checkpoint(tmp_path, monkeypatch)
 
     window.run_home_region_model_test()
 
-    assert captured["request"].task_path == "configs/tasks/beamng_johnson_valley_nav_test.yaml"
+    assert captured["request"].task_path == "configs/tasks/beamng_johnson_valley_nav_001.yaml"
     assert captured["request"].algorithm == "stablewm_lewm"
     assert captured["request"].algorithm_model_path == "outputs/region_navigation/model/lewm_cost_object.ckpt"
     assert captured["request"].planner == "navigation_mpc"
@@ -1162,7 +1261,7 @@ def test_gui_home_start_uses_direct_world_model_evaluation_for_tiny_model(tmp_pa
     _ensure_app()
     window = MainWindow()
     window.settings.max_steps = 9
-    window.home_task_combo.setCurrentText("configs/tasks/beamng_johnson_valley_nav_test.yaml")
+    window.home_task_combo.setCurrentText("configs/tasks/beamng_johnson_valley_nav_001.yaml")
     window._select_world_model_config("tiny_direct")
     captured: dict[str, services.RegionWorldModelEvaluationRequest] = {}
 
@@ -1173,7 +1272,7 @@ def test_gui_home_start_uses_direct_world_model_evaluation_for_tiny_model(tmp_pa
     window.run_home_region_model_test()
 
     assert "wrong_request" not in captured
-    assert captured["request"].task_path == "configs/tasks/beamng_johnson_valley_nav_test.yaml"
+    assert captured["request"].task_path == "configs/tasks/beamng_johnson_valley_nav_001.yaml"
     assert captured["request"].world_model_type == "tiny_learned"
     assert captured["request"].world_model_path == "outputs/region_self_supervised/model"
     assert captured["request"].eval_steps >= 900
@@ -1223,9 +1322,9 @@ def test_gui_navigation_preview_uses_editor_callback(monkeypatch) -> None:
     monkeypatch.setattr(window.navigation_preview_session, "update", fake_preview)
     monkeypatch.setattr(window, "_run_task", lambda task, callback, label, **kwargs: callback(task()))
 
-    window._preview_task_from_editor("configs/tasks/beamng_johnson_valley_nav_test.yaml", "topdown", 120.0)
+    window._preview_task_from_editor("configs/tasks/beamng_johnson_valley_nav_001.yaml", "topdown", 120.0)
 
-    assert captured["task_path"] == "configs/tasks/beamng_johnson_valley_nav_test.yaml"
+    assert captured["task_path"] == "configs/tasks/beamng_johnson_valley_nav_001.yaml"
     assert captured["camera_mode"] == "topdown"
     assert captured["camera_height_m"] == 120.0
     assert "preview" in window.beamng_summary.toPlainText()
@@ -1247,8 +1346,8 @@ def test_gui_navigation_preview_coalesces_requests_while_loading(monkeypatch) ->
         lambda task_path, **kwargs: {"task_path": task_path, "kwargs": kwargs, "analysis": {}},
     )
 
-    window._preview_task_from_editor("configs/tasks/beamng_johnson_valley_nav_test.yaml", "topdown", 90.0)
-    window._preview_task_from_editor("configs/tasks/beamng_johnson_valley_nav_test.yaml", "orbit", 150.0)
+    window._preview_task_from_editor("configs/tasks/beamng_johnson_valley_nav_001.yaml", "topdown", 90.0)
+    window._preview_task_from_editor("configs/tasks/beamng_johnson_valley_nav_001.yaml", "orbit", 150.0)
 
     assert len(started) == 1
 

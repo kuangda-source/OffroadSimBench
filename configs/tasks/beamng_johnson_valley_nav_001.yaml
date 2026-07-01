@@ -1,33 +1,64 @@
 task_id: beamng_johnson_valley_nav_001
 task_type: navigation_region_v1
-map_id: johnson_valley_dirt_route_002
-backend_targets: [beamng]
+map_id: johnson_valley_manual
+backend_targets:
+- beamng
 level: johnson_valley
 region:
   polygon:
-    - [1276.581, -230.112]
-    - [1276.581, -116.361]
-    - [1187.09, -116.361]
-    - [1187.09, -230.112]
+  - - 1173.822
+    - -138.863
+  - - 1217.423
+    - -222.645
+  - - 1376.998
+    - -124.37
+  - - 1311.841
+    - -37.816
 start_pose:
-  pos: [1211.09, -140.361, 115.5]
-  yaw: -0.498659
+  pos:
+  - 1329.1773681641
+  - -109.39748382568
+  - 115.369
+  yaw: -0.499
 goal:
-  pos: [1252.365, -206.112]
+  pos:
+  - 1245.995
+  - -189.268
   radius: 12.0
 expert_route:
-  - [1211.09, -140.361]
-  - [1227.378, -149.23]
-  - [1245.434, -172.248]
-  - [1252.581, -190.692]
-  - [1252.365, -206.112]
+- - 1329.4456787109
+  - -109.368019104
+- - 1320.5875244141
+  - -90.040718078613
+- - 1304.7421875
+  - -84.664413452148
+- - 1293.6867675781
+  - -100.22645568848
+- - 1281.0656738281
+  - -110.71189117432
+- - 1264.6890869141
+  - -115.5481262207
+- - 1246.1564941406
+  - -111.78608703613
+- - 1232.9798583984
+  - -121.45986938477
+- - 1226.9887695313
+  - -133.03266906738
+- - 1227.4246826172
+  - -150.98196411133
+- - 1233.2299804688
+  - -165.27005004883
+- - 1239.1387939453
+  - -179.78622436523
+- - 1245.1680908203
+  - -189.88800048828
 constraints:
   max_steps: 520
   max_collision_count: 0
 cost:
-  out_of_region_weight: 320.0
-  boundary_weight: 10.0
-  boundary_margin_m: 5.0
+  out_of_region_weight: 250.0
+  boundary_weight: 8.0
+  boundary_margin_m: 3.0
 beamng:
   vehicle_model: pickup
   camera_mode: orbit
@@ -36,6 +67,6 @@ beamng:
   collection_drive_mode: ai_line
   evaluation_drive_mode: manual
   evaluation_route_mode: expert
-  ai_line_speed: 8.0
-  steps_per_action: 12
+  ai_line_speed: 10.0
+  steps_per_action: 18
   weather: sunny

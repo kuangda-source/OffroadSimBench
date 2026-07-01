@@ -18,7 +18,7 @@ from offroad_sim.agents import default_agent_registry
 from offroad_sim.algorithms import DataPrepRequest, TrainRequest, default_algorithm_registry
 from offroad_sim.backends import BeamNGBackend, BeamNGConnectionConfig, default_backend_registry
 from offroad_sim.core import Action, VehicleState
-from offroad_sim.datasets import default_dataset_registry
+from offroad_sim.datasets import create_mock_orfd_dataset, default_dataset_registry
 from offroad_sim.datasets import DatasetFrame, DatasetSequence
 from offroad_sim.evaluation import run_episode
 from offroad_sim.evaluation.runner import DEFAULT_OUTPUT_ROOT
@@ -31,7 +31,7 @@ from offroad_sim.world_models import TinyLearnedWorldModel, default_world_model_
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_ROOT = ROOT / "configs"
-DEFAULT_NAVIGATION_TASK_PATH = CONFIG_ROOT / "tasks" / "beamng_johnson_valley_nav_test.yaml"
+DEFAULT_NAVIGATION_TASK_PATH = CONFIG_ROOT / "tasks" / "beamng_johnson_valley_nav_001.yaml"
 DEFAULT_LEWM_CHECKPOINT_PATH = (
     ROOT
     / "outputs"
@@ -42,7 +42,11 @@ DEFAULT_LEWM_CHECKPOINT_PATH = (
 )
 WORLD_MODEL_CONFIGS_PATH = CONFIG_ROOT / "world_model_configs.json"
 DEFAULT_WORLD_MODEL_CONFIG_ID = "johnson_valley_lewm_validated"
+DEFAULT_DEMO_CONFIG_ID = "johnson_valley_standard_demo"
 TRAINING_CONFIGS_PATH = CONFIG_ROOT / "training_configs.json"
+SMOKE_TRAINING_DATASET_ROOT = ROOT / "outputs" / "training_studio_smoke" / "datasets" / "mock_orfd"
+SMOKE_TINY_MODEL_OUTPUT_DIR = ROOT / "outputs" / "training_studio_smoke" / "models" / "tiny_world_model"
+SMOKE_TRAINING_SEQUENCE_ID = "training/seq_0001"
 TRAINING_RUN_FILENAME = "training_run.json"
 DATASET_MANIFEST_FILENAMES = ("dataset_manifest.yaml", "dataset_manifest.yml")
 DATASET_MANIFEST_DIRS = (CONFIG_ROOT / "datasets",)
@@ -203,6 +207,22 @@ class RegionWorldModelEvaluationRequest:
 
 
 @dataclass(slots=True)
+class DemoAcceptanceRequest:
+    demo_config_id: str = DEFAULT_DEMO_CONFIG_ID
+    runs: int = 1
+    max_steps: int = 1000
+    seed: int = 7
+    planner_horizon: int = 6
+    planner_samples: int = 32
+    planner_iterations: int = 3
+    beamng_gfx: str = "vk"
+    close_beamng: bool = True
+    step_delay_sec: float = 0.0
+    pre_run_hold_sec: float = 0.0
+    post_run_hold_sec: float = 0.0
+
+
+@dataclass(slots=True)
 class ManualNavigationTaskRequest:
     output_path: str
     task_id: str = "manual_region_nav"
@@ -249,6 +269,7 @@ def catalog_snapshot() -> dict[str, list[dict[str, Any]]]:
         "planners": _registry_rows(default_planner_registry()),
         "algorithms": _algorithm_rows(),
         "navigation_tasks": navigation_task_entries(),
+        "demo_configs": demo_config_entries(),
         "model_checkpoints": model_checkpoint_entries(),
         "world_model_configs": world_model_config_entries(),
         "dataset_manifests": dataset_manifest_entries(),
@@ -856,6 +877,7 @@ def validate_training_config_setup(
     """
 
     row = _resolve_training_config(training_config, config_path=config_path)
+    _materialize_training_config_assets(row)
     preset_id = str(row.get("training_preset_id") or "")
     presets = {str(item.get("id") or ""): dict(item) for item in training_preset_entries(trainer_root)}
     preset = presets.get(preset_id, {})
@@ -1030,6 +1052,8 @@ def _trainer_result_payload(manifest: dict[str, Any], output_dir: Path, stdout: 
             history.setdefault(key, []).extend(values)
 
     normalized_history = _normalize_metric_history(history)
+    if not normalized_history:
+        normalized_history = {key: [value] for key, value in _numeric_metric_items(metrics)}
     for key, values in normalized_history.items():
         if key.lower() in {"step", "epoch", "iteration", "global_step"}:
             continue
@@ -1170,6 +1194,36 @@ def navigation_task_entries(root: str | Path | None = None) -> list[dict[str, An
     return sorted(rows, key=lambda row: (0 if _same_path(row["path"], DEFAULT_NAVIGATION_TASK_PATH) else 1, str(row["id"])))
 
 
+def demo_config_entries() -> list[dict[str, Any]]:
+    """Return runnable GUI demo presets.
+
+    A demo config is intentionally higher level than task/model/planner fields:
+    it is the one thing a new user selects before pressing Start.
+    """
+
+    return [
+        {
+            "id": DEFAULT_DEMO_CONFIG_ID,
+            "label": "Johnson Valley standard demo",
+            "description": "BeamNG Johnson Valley region navigation with the validated LE-WM-compatible checkpoint.",
+            "task_path": str(DEFAULT_NAVIGATION_TASK_PATH.resolve()),
+            "task_relative_path": _relative_to_root(DEFAULT_NAVIGATION_TASK_PATH),
+            "world_model_config_id": DEFAULT_WORLD_MODEL_CONFIG_ID,
+            "planner": "navigation_mpc",
+            "evaluation_agent": "model_mpc",
+            "beamng_gfx": "vk",
+        }
+    ]
+
+
+def resolve_demo_config(config_id: str = "") -> dict[str, Any]:
+    requested = str(config_id or DEFAULT_DEMO_CONFIG_ID)
+    for row in demo_config_entries():
+        if str(row.get("id") or "") == requested:
+            return dict(row)
+    raise ValueError(f"Unknown demo config: {requested}")
+
+
 def model_checkpoint_entries(root: str | Path | None = None) -> list[dict[str, Any]]:
     output_root = Path(root or ROOT / "outputs")
     if not output_root.exists():
@@ -1224,6 +1278,14 @@ def world_model_config_entries(path: str | Path | None = None) -> list[dict[str,
                 row = _world_model_config_row(raw)
                 rows[row["id"]] = row
     return list(rows.values())
+
+
+def _world_model_config_by_id(config_id: str) -> dict[str, Any]:
+    requested = str(config_id or DEFAULT_WORLD_MODEL_CONFIG_ID)
+    for row in world_model_config_entries():
+        if str(row.get("id") or "") == requested:
+            return dict(row)
+    raise ValueError(f"Unknown world model config: {requested}")
 
 
 def save_world_model_config(
@@ -1281,6 +1343,56 @@ def import_world_model_config(
         model_path=str(source),
         path=path,
     )
+
+
+def register_training_run_artifact_as_world_model_config(
+    training_run_path: str | Path,
+    *,
+    label: str = "",
+    config_id: str = "",
+    path: str | Path | None = None,
+) -> dict[str, Any]:
+    """Promote a completed training run artifact into a selectable model config."""
+
+    record_path = Path(training_run_path)
+    if record_path.is_dir():
+        record_path = record_path / TRAINING_RUN_FILENAME
+    if not record_path.exists():
+        raise FileNotFoundError(f"Training run record not found: {record_path}")
+    record = _read_json(record_path)
+    if not isinstance(record, dict):
+        raise ValueError(f"Invalid training run record: {record_path}")
+    if str(record.get("status") or "").lower() not in {"completed", "ok", "success"}:
+        raise ValueError("Only successful training runs can be registered as model configs.")
+
+    artifact_path = _training_record_artifact_path(record)
+    if not artifact_path:
+        raise ValueError("Training run has no model artifact path.")
+    artifact_type = str(record.get("artifact_type") or "").lower()
+    if artifact_type == "hdf5":
+        raise ValueError("HDF5 exports are dataset artifacts, not runnable world-model configs.")
+
+    source = Path(artifact_path).resolve()
+    if not source.exists():
+        raise FileNotFoundError(f"Training artifact not found: {source}")
+    world_model = _infer_world_model_type(source)
+    if not world_model:
+        raise ValueError(f"Cannot infer runnable world-model type from artifact: {source}")
+    algorithm = "world_model_direct" if world_model == "tiny_learned" else "stablewm_lewm"
+    default_label = str(label or record.get("preset_label") or record.get("run_id") or source.stem or "Training Model")
+    validation = _training_record_validation(record)
+    row = save_world_model_config(
+        config_id=config_id or default_label,
+        label=default_label,
+        algorithm=algorithm,
+        world_model=world_model,
+        model_path=str(source),
+        source_training_run_path=str(record_path.resolve()),
+        validation=validation,
+        path=path,
+    )
+    _attach_world_model_config_to_training_run(str(record_path.resolve()), row)
+    return row
 
 
 def _register_region_self_supervised_world_model_config(
@@ -1344,9 +1456,54 @@ def _attach_world_model_config_to_training_run(training_run_path: str, config: d
     path.write_text(json.dumps(record, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
 
 
+def _training_record_artifact_path(record: dict[str, Any]) -> str:
+    for key in ("artifact_path", "model_path", "checkpoint_path", "model_dir", "output_dir"):
+        value = str(record.get(key) or "").strip()
+        if value:
+            return value
+    summary = record.get("summary") if isinstance(record.get("summary"), dict) else {}
+    for key in ("artifact_path", "model_path", "checkpoint_path", "model_dir", "output_dir"):
+        value = str(summary.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _training_record_validation(record: dict[str, Any]) -> dict[str, Any]:
+    validation: dict[str, Any] = {}
+    summary = record.get("summary") if isinstance(record.get("summary"), dict) else {}
+    metrics = record.get("metrics") if isinstance(record.get("metrics"), dict) else {}
+    for source in (summary, metrics):
+        for key in (
+            "goal_success",
+            "goal_reached",
+            "collision_count",
+            "final_goal_distance",
+            "min_goal_distance",
+            "average_speed",
+            "loss",
+            "rmse",
+        ):
+            if key in source and key not in validation:
+                validation[key] = source[key]
+    return validation
+
+
 def training_config_entries(path: str | Path | None = None) -> list[dict[str, Any]]:
     config_path = Path(path or TRAINING_CONFIGS_PATH)
     rows: dict[str, dict[str, Any]] = {
+        "smoke_tiny_world_model": _training_config_row(
+            {
+                "id": "smoke_tiny_world_model",
+                "label": "Smoke tiny world model",
+                "training_preset_id": "tiny_world_model_script",
+                "dataset_root": str(SMOKE_TRAINING_DATASET_ROOT),
+                "adapter": "orfd",
+                "sequence_id": SMOKE_TRAINING_SEQUENCE_ID,
+                "output_path": str(SMOKE_TINY_MODEL_OUTPUT_DIR),
+                "parameters": {"ridge": 0.0001},
+            }
+        ),
         "orfd_stablewm_hdf5": _training_config_row(
             {
                 "id": "orfd_stablewm_hdf5",
@@ -2075,6 +2232,75 @@ def run_region_navigation_closed_loop(request: RegionNavigationClosedLoopRequest
     summary_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
     payload["summary_path"] = str(summary_path.resolve())
     return payload
+
+
+def run_demo_acceptance(request: DemoAcceptanceRequest) -> dict[str, Any]:
+    demo = resolve_demo_config(request.demo_config_id)
+    runs = min(3, max(1, int(request.runs)))
+    world_model_config = _world_model_config_by_id(str(demo.get("world_model_config_id") or DEFAULT_WORLD_MODEL_CONFIG_ID))
+    algorithm = str(world_model_config.get("algorithm") or "stablewm_lewm")
+    world_model = str(world_model_config.get("world_model") or "le_wm")
+    model_path = str(world_model_config.get("model_path") or "")
+    task_path = str(demo.get("task_path") or DEFAULT_NAVIGATION_TASK_PATH)
+    planner = str(demo.get("planner") or "navigation_mpc")
+    run_rows: list[dict[str, Any]] = []
+
+    for index in range(runs):
+        seed = int(request.seed) + index
+        if algorithm == "world_model_direct" or world_model == "tiny_learned":
+            payload = run_region_world_model_evaluation(
+                RegionWorldModelEvaluationRequest(
+                    task_path=task_path,
+                    world_model_type=world_model,
+                    world_model_path=model_path,
+                    eval_steps=max(1, int(request.max_steps)),
+                    seed=seed,
+                    planner=planner,
+                    planner_horizon=request.planner_horizon,
+                    planner_samples=request.planner_samples,
+                    planner_iterations=request.planner_iterations,
+                    beamng_gfx=request.beamng_gfx or str(demo.get("beamng_gfx") or "vk"),
+                    close_beamng=request.close_beamng,
+                    step_delay_sec=request.step_delay_sec,
+                    pre_run_hold_sec=request.pre_run_hold_sec,
+                    post_run_hold_sec=request.post_run_hold_sec,
+                )
+            )
+        else:
+            payload = run_region_navigation_closed_loop(
+                RegionNavigationClosedLoopRequest(
+                    task_path=task_path,
+                    algorithm=algorithm,
+                    algorithm_model_path=model_path,
+                    collect_steps=max(1, int(request.max_steps)),
+                    eval_steps=max(1, int(request.max_steps)),
+                    seed=seed,
+                    planner=planner,
+                    planner_horizon=request.planner_horizon,
+                    planner_samples=request.planner_samples,
+                    planner_iterations=request.planner_iterations,
+                    evaluation_agent=str(demo.get("evaluation_agent") or "model_mpc"),
+                    beamng_gfx=request.beamng_gfx or str(demo.get("beamng_gfx") or "vk"),
+                    close_beamng=request.close_beamng,
+                    step_delay_sec=request.step_delay_sec,
+                    pre_run_hold_sec=request.pre_run_hold_sec,
+                    post_run_hold_sec=request.post_run_hold_sec,
+                )
+            )
+        run_rows.append(_demo_acceptance_run_summary(index + 1, seed, payload))
+
+    accepted = bool(run_rows) and all(bool(row.get("goal_success")) for row in run_rows)
+    summary = _demo_acceptance_summary(run_rows)
+    return {
+        "status": "accepted" if accepted else "failed",
+        "accepted": accepted,
+        "run_count": len(run_rows),
+        "all_goal_success": accepted,
+        "demo_config": demo,
+        "world_model_config": world_model_config,
+        "summary": summary,
+        "runs": run_rows,
+    }
 
 
 def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldModelRequest) -> dict[str, Any]:
@@ -2905,6 +3131,96 @@ def _navigation_acceptance(evaluation: dict[str, Any], task: NavigationRegionTas
     }
 
 
+def _demo_acceptance_run_summary(run_index: int, seed: int, payload: dict[str, Any]) -> dict[str, Any]:
+    evaluation = payload.get("evaluation") if isinstance(payload.get("evaluation"), dict) else {}
+    acceptance = payload.get("acceptance") if isinstance(payload.get("acceptance"), dict) else {}
+    metrics = evaluation.get("metrics") if isinstance(evaluation.get("metrics"), dict) else {}
+    trace = load_episode_trace(evaluation.get("episode_path", ""))
+    return {
+        "run_index": int(run_index),
+        "seed": int(seed),
+        "status": str(payload.get("status") or "completed"),
+        "goal_success": bool(acceptance.get("goal_success")),
+        "goal_reached": bool(acceptance.get("goal_reached")),
+        "final_goal_reached": bool(acceptance.get("final_goal_reached")),
+        "collision_count": int(acceptance.get("collision_count", metrics.get("collision_count", 0)) or 0),
+        "final_distance": _float_or_nan(acceptance.get("final_goal_distance")),
+        "min_distance": _float_or_nan(acceptance.get("min_goal_distance")),
+        "trajectory_length_m": _trajectory_length(trace),
+        "trajectory_step_count": len(trace),
+        "average_speed": _average_trace_speed(trace),
+        "recovery_triggered": _recovery_triggered(trace, metrics),
+        "episode_path": str(evaluation.get("episode_path") or ""),
+        "summary_path": str(payload.get("summary_path") or ""),
+    }
+
+
+def _demo_acceptance_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    if not rows:
+        return {
+            "goal_reached": False,
+            "collision_count": 0,
+            "final_distance": math.nan,
+            "trajectory_length_m": math.nan,
+            "average_speed": math.nan,
+            "recovery_triggered": False,
+        }
+    final_distances = [_float_or_nan(row.get("final_distance")) for row in rows]
+    trajectory_lengths = [_float_or_nan(row.get("trajectory_length_m")) for row in rows]
+    average_speeds = [_float_or_nan(row.get("average_speed")) for row in rows]
+    return {
+        "goal_reached": all(bool(row.get("goal_reached")) for row in rows),
+        "goal_success": all(bool(row.get("goal_success")) for row in rows),
+        "collision_count": sum(int(row.get("collision_count", 0) or 0) for row in rows),
+        "final_distance": _mean_finite(final_distances),
+        "best_final_distance": _min_finite(final_distances),
+        "trajectory_length_m": _mean_finite(trajectory_lengths),
+        "average_speed": _mean_finite(average_speeds),
+        "recovery_triggered": any(bool(row.get("recovery_triggered")) for row in rows),
+    }
+
+
+def _trajectory_length(trace: list[dict[str, Any]]) -> float:
+    distance = 0.0
+    previous: tuple[float, float] | None = None
+    for row in trace:
+        x = _float_or_nan(row.get("x"))
+        y = _float_or_nan(row.get("y"))
+        if not math.isfinite(x) or not math.isfinite(y):
+            continue
+        current = (x, y)
+        if previous is not None:
+            distance += math.hypot(current[0] - previous[0], current[1] - previous[1])
+        previous = current
+    return float(distance) if previous is not None else math.nan
+
+
+def _average_trace_speed(trace: list[dict[str, Any]]) -> float:
+    speeds = [_float_or_nan(row.get("speed")) for row in trace]
+    return _mean_finite(speeds)
+
+
+def _recovery_triggered(trace: list[dict[str, Any]], metrics: dict[str, Any]) -> bool:
+    diagnostics = metrics.get("agent_diagnostics") if isinstance(metrics.get("agent_diagnostics"), dict) else {}
+    if bool(diagnostics.get("stuck_recovery")):
+        return True
+    for row in trace:
+        row_diagnostics = row.get("agent_diagnostics") if isinstance(row.get("agent_diagnostics"), dict) else {}
+        if bool(row_diagnostics.get("stuck_recovery")):
+            return True
+    return False
+
+
+def _mean_finite(values: list[float]) -> float:
+    finite = [float(value) for value in values if math.isfinite(float(value))]
+    return float(sum(finite) / len(finite)) if finite else math.nan
+
+
+def _min_finite(values: list[float]) -> float:
+    finite = [float(value) for value in values if math.isfinite(float(value))]
+    return float(min(finite)) if finite else math.nan
+
+
 def _collection_quality_gate(
     task: NavigationRegionTask,
     collection_acceptance: dict[str, Any],
@@ -3128,6 +3444,7 @@ def load_episode_trace(episode_path: str | Path, *, limit: int = 5000) -> list[d
             observation = record.get("observation", {})
             state = observation.get("vehicle_state", {}) if isinstance(observation, dict) else {}
             action = record.get("action", {}) or {}
+            info = record.get("info", {}) if isinstance(record.get("info"), dict) else {}
             rows.append(
                 {
                     "step_index": record.get("step_index"),
@@ -3145,6 +3462,7 @@ def load_episode_trace(episode_path: str | Path, *, limit: int = 5000) -> list[d
                     "brake": _float_or_nan(action.get("brake")),
                     "gear": _int_or_none(action.get("gear")),
                     "goal": observation.get("goal") if isinstance(observation, dict) else None,
+                    "agent_diagnostics": dict(info.get("agent_diagnostics") if isinstance(info.get("agent_diagnostics"), dict) else {}),
                 }
             )
     return rows
@@ -3261,6 +3579,20 @@ def _resolve_training_config(training_config: str | dict[str, Any], *, config_pa
         if row["id"] == config_id or row["label"] == config_id:
             return row
     raise ValueError(f"Training config not found: {config_id}")
+
+
+def _materialize_training_config_assets(row: dict[str, Any]) -> None:
+    if str(row.get("id") or "") != "smoke_tiny_world_model":
+        return
+    dataset_root = Path(str(row.get("dataset_root") or SMOKE_TRAINING_DATASET_ROOT))
+    if dataset_root.exists():
+        return
+    create_mock_orfd_dataset(
+        dataset_root,
+        split="training",
+        sequence_id="seq_0001",
+        frame_count=8,
+    )
 
 
 def _read_json(path: Path) -> dict[str, Any]:

@@ -78,7 +78,7 @@ same pluggable adapter contract instead of changing BeamNG backend code.
 For an explicit region/start/goal task, use:
 
 ```powershell
-python scripts\run_region_navigation_loop.py --task configs\tasks\beamng_johnson_valley_nav_test.yaml --algorithm local_lewm_cost --collect-steps 240 --eval-steps 520 --output-dir outputs\region_navigation\johnson_valley_nav_test_train
+python scripts\run_region_navigation_loop.py --task configs\tasks\beamng_johnson_valley_nav_001.yaml --algorithm local_lewm_cost --collect-steps 240 --eval-steps 520 --output-dir outputs\region_navigation\johnson_valley_nav_test_train
 ```
 
 The task YAML contains a polygonal region, start pose, goal radius, and expert

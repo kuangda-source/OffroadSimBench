@@ -183,6 +183,24 @@ def test_run_training_config_job_executes_external_trainer_config(tmp_path) -> N
     assert record["parameters"]["epochs"] == 6
 
 
+def test_smoke_tiny_training_config_creates_dataset_and_records_run(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(services, "SMOKE_TRAINING_DATASET_ROOT", tmp_path / "smoke_orfd")
+    monkeypatch.setattr(services, "SMOKE_TINY_MODEL_OUTPUT_DIR", tmp_path / "tiny_model")
+    config = next(row for row in services.training_config_entries(tmp_path / "training_configs.json") if row["id"] == "smoke_tiny_world_model")
+
+    report = services.validate_training_config_setup(config, trainer_root=services.CONFIG_ROOT / "trainers")
+    payload = services.run_training_config_job(config, trainer_root=services.CONFIG_ROOT / "trainers")
+
+    record = json.loads((tmp_path / "tiny_model" / services.TRAINING_RUN_FILENAME).read_text(encoding="utf-8"))
+    assert report["ready"] is True
+    assert Path(config["dataset_root"]).exists()
+    assert payload["training_config"]["id"] == "smoke_tiny_world_model"
+    assert payload["artifact_type"] == "world_model"
+    assert record["preset_id"] == "tiny_world_model_script"
+    assert "train_rmse" in record["metrics"]
+    assert record["history"]["train_rmse"]
+
+
 def test_validate_training_config_setup_previews_external_trainer_command(tmp_path) -> None:
     manifest = _write_echo_trainer(tmp_path)
     config = services.save_training_config(

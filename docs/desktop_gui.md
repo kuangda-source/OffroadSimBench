@@ -15,9 +15,12 @@ offroad-sim-gui
 
 - Left navigation is organized by workflow: guided overview, Dataset and
   Training, BeamNG Simulation, and episode records.
-- The overview page is a guided demo launcher: select a demo preset, confirm
-  the BeamNG region task, world-model config, and planner, then run the visible
-  demo.
+- The overview page is a guided demo launcher: select a single `Demo config`,
+  click `Start demo`, and review the result summary. The selected demo config
+  owns the BeamNG region task, saved world-model config, planner, and visible
+  runtime defaults.
+- The standard demo config is `johnson_valley_standard_demo`, backed by
+  `configs/tasks/beamng_johnson_valley_nav_001.yaml`.
 - The Dataset and Training workbench owns dataset import/preview, HDF5 export,
   checkpoint path, algorithm, world-model type, model training, and saved
   world-model configs.
@@ -49,6 +52,10 @@ offroad-sim-gui
   `metrics.json`, `history.json`, or `events.jsonl` in the output directory.
 - Training run details show the recorded artifact, key metrics, available curve
   names, curve history, and stdout/stderr log paths for imported trainers.
+- A completed training run with a runnable checkpoint or `model.json` artifact
+  can be promoted directly from the Dataset and Training page with `Register
+  latest training artifact`. The GUI writes a saved world-model config and
+  records the promoted config back into `training_run.json`.
 - Existing model checkpoints, lightweight `model.json` files, or model folders
   containing `model.json` can be imported as saved world-model configs, then
   reused by the overview launcher and BeamNG simulation page without editing
@@ -76,6 +83,22 @@ offroad-sim-gui
   preview frame, terrain grid size, and recording flags.
 
 ## External Training Bundle
+
+For a quick end-to-end smoke test, select the built-in `Smoke tiny world model`
+training config. It materializes a tiny ORFD-style dataset under
+`outputs/training_studio_smoke/datasets/mock_orfd`, trains the local tiny world
+model, writes `training_run.json`, and provides real metric history for the GUI
+curves.
+
+The standard demo can also be checked without opening the GUI:
+
+```powershell
+python scripts\demo_acceptance.py --demo-config johnson_valley_standard_demo --runs 1
+```
+
+The acceptance report is JSON and includes goal status, collision count, final
+distance, trajectory length, average speed, and whether recovery logic was
+triggered. Use `--runs 2` or `--runs 3` for repeatability checks.
 
 For a new autonomous-driving dataset or model trainer, the preferred handoff is
 three small files. Put paths relative to `training_config.yaml` so the bundle can
