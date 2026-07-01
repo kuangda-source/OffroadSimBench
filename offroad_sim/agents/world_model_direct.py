@@ -116,7 +116,7 @@ class WorldModelDirectAgent(OffroadAgent):
                     steer=max(min(reference_steer, 0.45), -0.45),
                     throttle=0.75,
                     brake=0.0,
-                    gear=1,
+                    gear=None,
                 ),
                 True,
             )
@@ -126,7 +126,7 @@ class WorldModelDirectAgent(OffroadAgent):
                     steer=max(min(reference_steer, 0.9), -0.9),
                     throttle=min(max(float(reference_action.throttle), 0.55), 0.7),
                     brake=0.0,
-                    gear=1,
+                    gear=None,
                 ),
                 True,
             )
@@ -136,7 +136,7 @@ class WorldModelDirectAgent(OffroadAgent):
                     steer=max(min(reference_steer, 0.65), -0.65),
                     throttle=min(max(float(reference_action.throttle), 0.65), 0.8),
                     brake=0.0,
-                    gear=1,
+                    gear=None,
                 ),
                 True,
             )
@@ -147,7 +147,7 @@ class WorldModelDirectAgent(OffroadAgent):
                 steer=max(min(reference_steer, 0.25), -0.25),
                 throttle=1.0,
                 brake=0.0,
-                gear=1,
+                gear=None,
             ),
             True,
         )
@@ -164,7 +164,7 @@ class WorldModelDirectAgent(OffroadAgent):
             return None
         self._stuck_steps = 0
         self._last_goal_distance = distance
-        return Action(steer=0.0, throttle=0.0, brake=1.0, gear=1)
+        return Action(steer=0.0, throttle=0.0, brake=1.0, gear=0)
 
 
 def _stabilize_action(action: Action, reference_action: Action, obs: Observation) -> Action:
@@ -172,7 +172,7 @@ def _stabilize_action(action: Action, reference_action: Action, obs: Observation
     steer = max(min(float(action.steer), 1.0), -1.0)
     throttle = max(min(float(action.throttle), 1.0), 0.0)
     brake = max(min(float(action.brake), 1.0), 0.0)
-    gear = int(action.gear) if action.gear is not None else 1
+    gear = int(action.gear) if action.gear is not None else None
     reference_steer = max(min(float(reference_action.steer), 1.0), -1.0)
     turn_demand = max(abs(steer), abs(reference_steer))
     sharp_turn = abs(reference_steer) > 0.75

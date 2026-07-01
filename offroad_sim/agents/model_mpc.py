@@ -48,6 +48,7 @@ class ModelMPCAgent(OffroadAgent):
         self._stuck_steps = 0
         self._stuck_recovery = False
         self._goal_hold_latched = False
+        self._last_target_distance: float | None = None
 
     def reset(self, scenario_info: Any) -> None:
         if isinstance(scenario_info, dict):
@@ -61,6 +62,7 @@ class ModelMPCAgent(OffroadAgent):
         self._stuck_steps = 0
         self._stuck_recovery = False
         self._goal_hold_latched = False
+        self._last_target_distance = None
 
     def act(self, obs: Observation) -> Action:
         terminal_action = self._terminal_stop_action(obs)
@@ -140,23 +142,45 @@ class ModelMPCAgent(OffroadAgent):
             return None
         self._stuck_steps = 0
         self._stuck_recovery = False
-        return Action(steer=0.0, throttle=0.0, brake=1.0, gear=1)
+        self._last_target_distance = distance
+        return Action(steer=0.0, throttle=0.0, brake=1.0, gear=0)
 
     def _execution_filter(self, action: Action, reference_action: Action, obs: Observation) -> Action:
         speed = max(0.0, float(obs.vehicle_state.speed))
         steer = max(min(float(action.steer), 1.0), -1.0)
         throttle = max(min(float(action.throttle), 1.0), 0.0)
         brake = max(min(float(action.brake), 1.0), 0.0)
-        gear = int(action.gear) if action.gear is not None else 1
+        gear = int(action.gear) if action.gear is not None else None
         reference_steer = float(reference_action.steer)
         sharp_turn = abs(reference_steer) > 0.75
         low_speed_turn = speed < 0.35 and abs(reference_steer) > 0.5
         low_speed_no_progress = speed < 0.25 and max(throttle, float(reference_action.throttle)) > 0.4
-        if low_speed_turn or low_speed_no_progress:
+        target_distance = math.hypot(float(obs.vehicle_state.x) - float(obs.goal[0]), float(obs.vehicle_state.y) - float(obs.goal[1]))
+        target_progress = (
+            0.0
+            if self._last_target_distance is None
+            else float(self._last_target_distance) - target_distance
+        )
+        target_improving = self._last_target_distance is not None and target_progress > 1e-3
+        self._last_target_distance = target_distance
+        if target_improving:
+            self._stuck_steps = max(0, self._stuck_steps - (4 if target_progress >= 0.05 else 2))
+        elif low_speed_turn or low_speed_no_progress:
             self._stuck_steps += 1
         elif speed > 0.8:
             self._stuck_steps = 0
         self._stuck_recovery = self._stuck_steps >= 12
+        if speed < 2.0 and abs(reference_steer) > 0.35 and steer * reference_steer < -0.05:
+            steer_limit = 0.9 if speed < 1.0 else _speed_steer_limit(speed, sharp_turn=sharp_turn)
+            steer = max(min(reference_steer, steer_limit), -steer_limit)
+            throttle_cap = 0.65 if abs(reference_steer) > 0.5 else 0.75
+            throttle = min(max(throttle, float(reference_action.throttle), 0.45), throttle_cap)
+            brake = 0.0
+        elif speed < 0.8 and abs(reference_steer) < 0.2 and abs(steer) > 0.35:
+            steer_limit = 0.22 if speed < 0.3 else 0.35
+            steer = max(min(steer, steer_limit), -steer_limit)
+            throttle = max(throttle, float(reference_action.throttle), 0.62)
+            brake = 0.0
         if speed < 0.25 and throttle <= 0.45:
             throttle = max(0.65, min(1.0, float(reference_action.throttle)))
             brake = 0.0
@@ -174,11 +198,11 @@ class ModelMPCAgent(OffroadAgent):
                     elif phase == 1:
                         steer = max(min(reference_steer, 0.9), -0.9)
                         throttle = min(max(float(reference_action.throttle), 0.55), 0.75)
-                        gear = 1
+                        gear = None
                     else:
                         steer = max(min(reference_steer, 0.45), -0.45)
                         throttle = 0.75
-                        gear = 1
+                        gear = None
                 else:
                     phase = _recovery_phase(self._stuck_steps)
                     if phase == 0:
@@ -187,11 +211,11 @@ class ModelMPCAgent(OffroadAgent):
                         gear = -1
                     else:
                         steer = _recovery_steer(reference_steer, self._stuck_steps)
-                        gear = 1
+                        gear = None
             else:
                 recovery_steer_limit = 1.0 if sharp_turn else 0.55
                 steer = max(min(reference_steer, recovery_steer_limit), -recovery_steer_limit)
-                gear = 1
+                gear = None
         else:
             steer_limit = _speed_steer_limit(speed, sharp_turn=sharp_turn)
             if abs(steer) > steer_limit:
@@ -237,6 +261,10 @@ class ModelMPCAgent(OffroadAgent):
             target_index = index + 1
             if distance >= self.route_lookahead_m:
                 break
+            if index + 2 < len(self.route):
+                c = self.route[index + 2]
+                if _route_corner_angle(a, b, c) >= 1.05:
+                    break
         return target_index
 
 
@@ -285,6 +313,24 @@ def _recovery_steer(reference_steer: float, stuck_steps: int) -> float:
 
 def _recovery_phase(stuck_steps: int) -> int:
     return ((max(0, int(stuck_steps)) - 12) // 12) % 3
+
+
+def _route_corner_angle(
+    a: tuple[float, float],
+    b: tuple[float, float],
+    c: tuple[float, float],
+) -> float:
+    heading_in = math.atan2(float(b[1]) - float(a[1]), float(b[0]) - float(a[0]))
+    heading_out = math.atan2(float(c[1]) - float(b[1]), float(c[0]) - float(b[0]))
+    return abs(_wrap_angle(heading_out - heading_in))
+
+
+def _wrap_angle(angle: float) -> float:
+    while angle > math.pi:
+        angle -= 2.0 * math.pi
+    while angle < -math.pi:
+        angle += 2.0 * math.pi
+    return angle
 
 
 def _goal_radius_from_info(info: dict[str, Any]) -> float:

@@ -190,7 +190,25 @@ def test_world_model_direct_agent_brakes_inside_navigation_goal_radius() -> None
     assert action.steer == 0.0
     assert action.throttle == 0.0
     assert action.brake == 1.0
+    assert action.gear == 0
     assert diagnostics["goal_stop"] is True
+
+
+def test_world_model_direct_agent_leaves_forward_gear_to_backend_shift_mode() -> None:
+    observation = Observation(
+        timestamp=0.0,
+        vehicle_state=VehicleState(x=0.0, y=0.0, yaw=0.0, speed=1.5),
+        goal=(20.0, 0.0),
+        info={},
+    )
+
+    action = _stabilize_action(
+        Action(steer=0.0, throttle=0.5, brake=0.0),
+        Action(steer=0.0, throttle=0.5, brake=0.0),
+        observation,
+    )
+
+    assert action.gear is None
 
 
 def test_world_model_direct_agent_latches_goal_hold_after_overshoot() -> None:
@@ -214,6 +232,7 @@ def test_world_model_direct_agent_latches_goal_hold_after_overshoot() -> None:
 
     assert action.throttle == 0.0
     assert action.brake == 1.0
+    assert action.gear == 0
     assert diagnostics["goal_hold_latched"] is True
 
 
@@ -326,7 +345,7 @@ def test_world_model_direct_agent_turns_again_after_straight_recovery_burst() ->
         action, stuck = agent._progress_filter(Action(steer=-0.75, throttle=0.4, brake=0.0), Action(steer=-0.9, throttle=0.45, brake=0.0), observation)
 
     assert stuck is True
-    assert action.gear == 1
+    assert action.gear is None
     assert 0.4 <= action.throttle <= 0.65
     assert action.brake == 0.0
     assert action.steer <= -0.65
@@ -362,7 +381,26 @@ def test_model_mpc_agent_brakes_inside_navigation_goal_radius() -> None:
 
     assert action.throttle == 0.0
     assert action.brake == 1.0
+    assert action.gear == 0
     assert diagnostics["terminal_stop"] is True
+
+
+def test_model_mpc_agent_leaves_forward_gear_to_backend_shift_mode() -> None:
+    agent = ModelMPCAgent(route=[(0.0, 0.0), (20.0, 0.0)], planner_config={"horizon": 4, "num_samples": 12, "seed": 2})
+    observation = Observation(
+        timestamp=0.0,
+        vehicle_state=VehicleState(x=0.0, y=0.0, yaw=0.0, speed=1.0),
+        goal=(20.0, 0.0),
+        info={},
+    )
+
+    action = agent._execution_filter(
+        Action(steer=0.0, throttle=0.55, brake=0.0),
+        Action(steer=0.0, throttle=0.55, brake=0.0),
+        observation,
+    )
+
+    assert action.gear is None
 
 
 def test_model_mpc_agent_latches_goal_hold_after_overshoot() -> None:
@@ -386,6 +424,7 @@ def test_model_mpc_agent_latches_goal_hold_after_overshoot() -> None:
 
     assert action.throttle == 0.0
     assert action.brake == 1.0
+    assert action.gear == 0
     assert diagnostics["goal_hold_latched"] is True
 
 
@@ -419,7 +458,7 @@ def test_model_mpc_agent_turns_after_straight_recovery_burst() -> None:
     for _ in range(26):
         action = agent._execution_filter(Action(steer=-1.0, throttle=0.45), Action(steer=-1.0, throttle=0.25), observation)
 
-    assert action.gear == 1
+    assert action.gear is None
     assert 0.45 <= action.throttle <= 0.75
     assert action.steer <= -0.65
     assert agent.diagnostics().get("stuck_recovery") is True
@@ -443,6 +482,80 @@ def test_model_mpc_agent_recovers_from_low_speed_no_progress() -> None:
     assert agent.diagnostics().get("stuck_recovery") is True
 
 
+def test_model_mpc_agent_does_not_recover_when_low_speed_progresses_to_target() -> None:
+    agent = ModelMPCAgent(route=[(0.0, 0.0), (20.0, 0.0)], planner_config={"horizon": 4, "num_samples": 12, "seed": 2})
+
+    for step in range(18):
+        observation = Observation(
+            timestamp=step * 0.1,
+            vehicle_state=VehicleState(x=step * 0.04, y=0.0, yaw=0.0, speed=0.08),
+            goal=(20.0, 0.0),
+            info={},
+        )
+        action = agent._execution_filter(Action(steer=0.0, throttle=0.55), Action(steer=0.0, throttle=0.55), observation)
+
+    assert action.gear is None
+    assert agent.diagnostics().get("stuck_recovery") is False
+    assert agent.diagnostics().get("stuck_steps") < 12
+
+
+def test_model_mpc_agent_resets_recovery_after_target_progress_resumes() -> None:
+    agent = ModelMPCAgent(route=[(0.0, 0.0), (20.0, 0.0)], planner_config={"horizon": 4, "num_samples": 12, "seed": 2})
+    stationary = Observation(
+        timestamp=0.0,
+        vehicle_state=VehicleState(x=0.0, y=0.0, yaw=0.0, speed=0.02),
+        goal=(20.0, 0.0),
+        info={},
+    )
+    for _ in range(14):
+        agent._execution_filter(Action(steer=0.0, throttle=0.55), Action(steer=0.0, throttle=0.55), stationary)
+    assert agent.diagnostics().get("stuck_recovery") is True
+
+    for step in range(8):
+        moving = Observation(
+            timestamp=1.0 + step * 0.1,
+            vehicle_state=VehicleState(x=1.0 + step * 0.2, y=0.0, yaw=0.0, speed=0.2),
+            goal=(20.0, 0.0),
+            info={},
+        )
+        action = agent._execution_filter(Action(steer=0.0, throttle=0.55), Action(steer=0.0, throttle=0.55), moving)
+
+    assert action.gear is None
+    assert agent.diagnostics().get("stuck_recovery") is False
+
+
+def test_model_mpc_agent_follows_reference_steer_when_low_speed_plan_conflicts() -> None:
+    agent = ModelMPCAgent(route=[(0.0, 0.0), (0.0, 20.0)], planner_config={"horizon": 4, "num_samples": 12, "seed": 2})
+    observation = Observation(
+        timestamp=0.0,
+        vehicle_state=VehicleState(x=0.0, y=0.0, yaw=0.0, speed=0.4),
+        goal=(0.0, 20.0),
+        info={},
+    )
+
+    action = agent._execution_filter(Action(steer=-0.9, throttle=0.75), Action(steer=0.9, throttle=0.45), observation)
+
+    assert action.steer > 0.4
+    assert action.throttle <= 0.65
+    assert action.gear is None
+
+
+def test_model_mpc_agent_suppresses_low_speed_oversteer_when_reference_is_aligned() -> None:
+    agent = ModelMPCAgent(route=[(0.0, 0.0), (20.0, 0.0)], planner_config={"horizon": 4, "num_samples": 12, "seed": 2})
+    observation = Observation(
+        timestamp=0.0,
+        vehicle_state=VehicleState(x=0.0, y=0.0, yaw=0.0, speed=0.08),
+        goal=(20.0, 0.0),
+        info={},
+    )
+
+    action = agent._execution_filter(Action(steer=-0.8, throttle=0.65), Action(steer=0.04, throttle=0.55), observation)
+
+    assert abs(action.steer) <= 0.25
+    assert action.throttle >= 0.6
+    assert action.brake == 0.0
+
+
 def test_model_mpc_agent_uses_route_lookahead_for_dense_waypoints() -> None:
     agent = ModelMPCAgent(
         route=[(0.0, 0.0), (-8.0, 19.0), (-24.0, 25.0), (-36.0, 10.0)],
@@ -460,6 +573,25 @@ def test_model_mpc_agent_uses_route_lookahead_for_dense_waypoints() -> None:
 
     assert target == (-24.0, 25.0)
     assert agent.cursor == 2
+
+
+def test_model_mpc_agent_keeps_local_target_before_sharp_route_corner() -> None:
+    agent = ModelMPCAgent(
+        route=[(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (10.0, 20.0)],
+        route_lookahead_m=24.0,
+        planner_config={"horizon": 4, "num_samples": 12, "seed": 2},
+    )
+    observation = Observation(
+        timestamp=0.0,
+        vehicle_state=VehicleState(x=0.0, y=0.0, yaw=0.0, speed=1.0),
+        goal=(10.0, 20.0),
+        info={},
+    )
+
+    target = agent._target_for(observation)
+
+    assert target == (10.0, 0.0)
+    assert agent.cursor == 1
 
 
 def test_model_mpc_agent_slows_before_high_speed_sharp_turn() -> None:
