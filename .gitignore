@@ -13,6 +13,7 @@ dist/
 build/
 outputs/
 /datasets/
+configs/world_model_configs.json
 node_modules/
 BeamNG/
 .superpowers/

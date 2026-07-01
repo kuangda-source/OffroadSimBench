@@ -2400,11 +2400,48 @@ class MainWindow(QMainWindow):
         )
 
     def run_region_navigation_loop(self) -> None:
-        algorithm = self.algorithm_combo.currentData() or self.algorithm_combo.currentText() or "local_lewm_cost"
+        config = self._combo_config_row(self.beamng_model_config_combo)
+        if config:
+            self._apply_world_model_config(config, sync_editor=True)
+        task_path = self.task_path_edit.text().strip() or str(services.DEFAULT_NAVIGATION_TASK_PATH)
+        algorithm = str(config.get("algorithm") or self.algorithm_combo.currentData() or self.algorithm_combo.currentText() or "local_lewm_cost")
+        world_model = str(config.get("world_model") or self.world_model_combo.currentData() or self.world_model_combo.currentText() or "le_wm")
+        model_path = str(config.get("model_path") or self.model_path_edit.text().strip()).strip()
+        if algorithm == "world_model_direct" or world_model == "tiny_learned":
+            if not model_path:
+                self.log("direct world-model evaluation requires a model path.")
+                return
+            self.task_path_edit.setText(task_path)
+            self.model_path_edit.setText(model_path)
+            self._select_combo_value(self.agent_combo, "world_model_direct")
+            self._select_combo_value(self.world_model_combo, world_model)
+            self._select_combo_value(self.planner_combo, "navigation_mpc")
+            request = services.RegionWorldModelEvaluationRequest(
+                task_path=task_path,
+                world_model_type=world_model,
+                world_model_path=model_path,
+                eval_steps=max(int(self.settings.max_steps), 1000),
+                seed=self.settings.seed,
+                planner="navigation_mpc",
+                planner_horizon=self.settings.planner_horizon,
+                planner_samples=self.settings.planner_samples,
+                planner_iterations=self.settings.planner_iterations,
+                close_beamng=False,
+                step_delay_sec=0.02,
+                post_run_hold_sec=20.0,
+            )
+            self.log("区域导航评估：按当前 direct world model 配置运行 BeamNG start/goal 控车")
+            self._run_task(
+                lambda: services.run_region_world_model_evaluation(request),
+                self._pipeline_finished,
+                "direct world-model evaluation failed",
+                task_label="direct world-model evaluation",
+            )
+            return
         request = services.RegionNavigationClosedLoopRequest(
-            task_path=self.task_path_edit.text().strip() or str(services.DEFAULT_NAVIGATION_TASK_PATH),
+            task_path=task_path,
             algorithm=algorithm,
-            algorithm_model_path=self.model_path_edit.text().strip() if algorithm == "stablewm_lewm" else "",
+            algorithm_model_path=model_path if algorithm == "stablewm_lewm" else "",
             collect_steps=max(int(self.settings.max_steps), 1000),
             eval_steps=max(int(self.settings.max_steps), 1000),
             seed=self.settings.seed,

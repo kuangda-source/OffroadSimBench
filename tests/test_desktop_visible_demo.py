@@ -1381,6 +1381,41 @@ def test_gui_home_start_uses_direct_world_model_evaluation_for_tiny_model(tmp_pa
     window.close()
 
 
+def test_gui_beamng_start_uses_direct_world_model_evaluation_for_tiny_model(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(services, "WORLD_MODEL_CONFIGS_PATH", tmp_path / "world_model_configs.json")
+    services.save_world_model_config(
+        config_id="beamng_tiny_direct",
+        label="BeamNG Tiny Direct",
+        algorithm="world_model_direct",
+        world_model="tiny_learned",
+        model_path="outputs/beamng_region_world_models/run/model",
+    )
+    _ensure_app()
+    window = MainWindow()
+    window.settings.max_steps = 9
+    window.beamng_task_combo.setCurrentText("configs/tasks/beamng_johnson_valley_nav_001.yaml")
+    window._select_world_model_config("beamng_tiny_direct")
+    captured: dict[str, services.RegionWorldModelEvaluationRequest] = {}
+
+    monkeypatch.setattr(services, "run_region_world_model_evaluation", lambda request: captured.setdefault("request", request))
+    monkeypatch.setattr(
+        services,
+        "run_region_navigation_closed_loop",
+        lambda request: (_ for _ in ()).throw(AssertionError("BeamNG start should use direct world-model evaluation")),
+    )
+    monkeypatch.setattr(window, "_run_task", lambda task, callback, label, **kwargs: task())
+
+    window.run_region_navigation_loop()
+
+    assert captured["request"].task_path == "configs/tasks/beamng_johnson_valley_nav_001.yaml"
+    assert captured["request"].world_model_type == "tiny_learned"
+    assert captured["request"].world_model_path == "outputs/beamng_region_world_models/run/model"
+    assert captured["request"].eval_steps >= 900
+    assert captured["request"].step_delay_sec == 0.02
+    assert captured["request"].close_beamng is False
+    window.close()
+
+
 def test_gui_home_start_respects_non_beamng_backend(monkeypatch) -> None:
     _ensure_app()
     window = MainWindow()
