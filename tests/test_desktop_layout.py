@@ -4,7 +4,7 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication, QComboBox, QGroupBox, QLabel, QLineEdit, QPushButton, QScrollArea, QSpinBox
+from PySide6.QtWidgets import QApplication, QComboBox, QGroupBox, QLabel, QLineEdit, QPushButton, QScrollArea, QSpinBox, QWidget
 
 from desktop_app.qt_main import MainWindow, _training_run_overview_text
 
@@ -113,6 +113,25 @@ def test_dataset_training_page_separates_dataset_trainer_config_and_results() ->
     assert "Training config" in group_titles
     assert "Latest training result" in group_titles
     assert "Trained model registry" in group_titles
+
+    window.close()
+
+
+def test_beamng_run_page_uses_compact_config_and_action_toolbar() -> None:
+    _ensure_app()
+    window = MainWindow()
+    beamng_page = window.page_stack.widget(2)
+    group_titles = {group.title() for group in beamng_page.findChildren(QGroupBox)}
+    action_toolbars = [widget for widget in beamng_page.findChildren(QWidget) if widget.objectName() == "beamngActionToolbar"]
+    compact_fields = [widget for widget in beamng_page.findChildren(QWidget) if widget.objectName() == "compactField"]
+
+    assert "Run configuration" in group_titles
+    assert "Actions" in group_titles
+    assert "BeamNG task and model" not in group_titles
+    assert action_toolbars
+    assert len(compact_fields) >= 3
+    for field in compact_fields:
+        assert field.maximumHeight() <= 64
 
     window.close()
 

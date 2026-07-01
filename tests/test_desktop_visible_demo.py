@@ -88,8 +88,10 @@ def test_beamng_page_uses_generic_actions_only() -> None:
 
     texts = [button.text() for button in window.findChildren(QPushButton)]
 
-    assert "编辑/预览区域与起终点" in texts
-    assert "运行当前区域任务" in texts
+    assert "编辑/预览区域" in texts
+    assert "开始评估" in texts
+    assert "训练 world model" in texts
+    assert "检查 BeamNG" in texts
     assert "Johnson Valley LE-WM 演示" not in texts
     assert "启动 BeamNG 可视自动驾驶" not in texts
     assert "BeamNG LE-WM 闭环训练评估" not in texts
@@ -1201,7 +1203,7 @@ def test_gui_exposes_region_self_supervised_training(monkeypatch) -> None:
     window.train_region_self_supervised_world_model()
     button_texts = [button.text() for button in window.page_stack.widget(2).findChildren(QPushButton)]
 
-    assert "区域自监督训练 world model" in button_texts
+    assert "训练 world model" in button_texts
     assert captured["request"].task_path == "configs/tasks/beamng_johnson_valley_nav_001.yaml"
     assert captured["request"].world_model_type == "tiny_learned"
     assert captured["request"].evaluation_agent == "world_model_direct"

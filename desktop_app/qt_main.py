@@ -1471,19 +1471,34 @@ class MainWindow(QMainWindow):
         setup_layout = QHBoxLayout(setup_tab)
         setup_layout.setContentsMargins(0, 0, 0, 0)
         setup_layout.setSpacing(PAGE_SPACING)
-        controls = self._group(
-            "BeamNG task and model",
+        config_box = self._group(
+            "Run configuration",
             [
-                self._field("Region task", self.beamng_task_combo),
-                self._field("World model config", self.beamng_model_config_combo),
-                self._field("Resolved task path", self.task_path_edit),
-                self._action_button("区域自监督训练 world model", self.train_region_self_supervised_world_model),
-                self._action_button("编辑/预览区域与起终点", self.open_region_task_editor),
-                self._action_button("运行当前区域任务", self.run_region_navigation_loop, primary=True),
-                self._action_button("检查 BeamNG", self.check_beamng),
+                self._compact_field("Region task", self.beamng_task_combo),
+                self._compact_field("World model config", self.beamng_model_config_combo),
+                self._compact_field("Resolved task path", self.task_path_edit),
             ],
         )
-        setup_layout.addWidget(controls, 1)
+        actions_box, actions_layout = self._new_group("Actions")
+        actions_layout.addWidget(
+            self._action_toolbar(
+                [
+                    self._action_button("编辑/预览区域", self.open_region_task_editor),
+                    self._action_button("开始评估", self.run_region_navigation_loop, primary=True),
+                    self._action_button("检查 BeamNG", self.check_beamng),
+                    self._action_button("训练 world model", self.train_region_self_supervised_world_model),
+                ],
+                object_name="beamngActionToolbar",
+            )
+        )
+        left_column = QWidget()
+        left_layout = QVBoxLayout(left_column)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(PAGE_SPACING)
+        left_layout.addWidget(config_box)
+        left_layout.addWidget(actions_box)
+        left_layout.addStretch(1)
+        setup_layout.addWidget(left_column, 1)
         summary_box, summary_layout = self._new_group("Simulation status")
         self.beamng_summary = QTextEdit()
         self.beamng_summary.setReadOnly(True)
@@ -1496,13 +1511,17 @@ class MainWindow(QMainWindow):
         map_layout = QHBoxLayout(map_tab)
         map_layout.setContentsMargins(0, 0, 0, 0)
         map_layout.setSpacing(PAGE_SPACING)
-        map_controls = self._group(
-            "Map and terrain tools",
-            [
-                self._action_button("编辑/预览区域与起终点", self.open_region_task_editor),
-                self._action_button("导出 BeamNG 地形草案", self.export_beamng_terrain_draft),
-            ],
+        map_controls, map_controls_layout = self._new_group("Map and terrain tools")
+        map_controls_layout.addWidget(
+            self._action_toolbar(
+                [
+                    self._action_button("编辑/预览区域", self.open_region_task_editor),
+                    self._action_button("导出地形草案", self.export_beamng_terrain_draft),
+                ],
+                object_name="beamngMapActionToolbar",
+            )
         )
+        map_controls_layout.addStretch(1)
         map_layout.addWidget(map_controls, 1)
         preview_box, preview_layout = self._new_group("Terrain draft preview")
         self.terrain_preview = self._preview_label("Terrain: NaN")
@@ -3246,6 +3265,24 @@ class MainWindow(QMainWindow):
         layout.addWidget(widget)
         return frame
 
+    def _compact_field(self, label: str, widget: QWidget) -> QWidget:
+        frame = QWidget()
+        frame.setObjectName("compactField")
+        frame.setMaximumHeight(58)
+        frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        layout = QHBoxLayout(frame)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
+        caption = QLabel(label)
+        caption.setObjectName("fieldLabel")
+        caption.setFixedWidth(128)
+        caption.setWordWrap(False)
+        if isinstance(widget, (QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox)):
+            self._configure_control(widget)
+        layout.addWidget(caption)
+        layout.addWidget(widget, 1)
+        return frame
+
     def _with_button(self, widget: QWidget, button: QPushButton) -> QWidget:
         frame = QWidget()
         layout = QHBoxLayout(frame)
@@ -3263,6 +3300,19 @@ class MainWindow(QMainWindow):
         self._configure_button(button, primary=primary)
         button.clicked.connect(slot)
         return button
+
+    def _action_toolbar(self, buttons: list[QPushButton], *, object_name: str, columns: int = 2) -> QWidget:
+        frame = QWidget()
+        frame.setObjectName(object_name)
+        frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        layout = QGridLayout(frame)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setHorizontalSpacing(8)
+        layout.setVerticalSpacing(8)
+        for index, button in enumerate(buttons):
+            button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            layout.addWidget(button, index // columns, index % columns)
+        return frame
 
     def _tab_header(self, title: str, subtitle: str) -> QWidget:
         frame = QWidget()
