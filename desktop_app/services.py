@@ -53,6 +53,7 @@ DATASET_MANIFEST_DIRS = (CONFIG_ROOT / "datasets",)
 TRAINER_MANIFEST_FILENAMES = ("trainer.yaml", "trainer.yml")
 TRAINER_MANIFEST_DIRS = (CONFIG_ROOT / "trainers", ROOT / "trainers")
 NAN_TEXT = "NaN"
+REGION_TRAINING_COLLECTION_FILENAME = "region_training_collection.json"
 UNFINISHED_TEXT = "未完成"
 
 
@@ -182,6 +183,37 @@ class RegionSelfSupervisedWorldModelRequest:
     pre_run_hold_sec: float = 0.0
     post_run_hold_sec: float = 0.0
     register_world_model_config: bool = False
+    world_model_config_path: str = ""
+
+
+@dataclass(slots=True)
+class RegionTrainingDataCollectionRequest:
+    task_path: str
+    vehicle: str = "configs/vehicles/ugv_medium.yaml"
+    output_dir: str = ""
+    collect_steps: int = 1000
+    collect_rollouts: int = 3
+    seed: int = 7
+    min_collection_goal_progress_ratio: float = 0.0
+    collection_goal_bias_interval: int = 1
+    collection_goal_corridor_interval: int = 1
+    collection_goal_corridor_lateral_m: float = 2.0
+    collection_coverage_grid_size: int = 4
+    collection_coverage_target_interval: int = 1
+    collection_max_target_steps: int = 40
+    beamng_gfx: str = "vk"
+    close_beamng: bool = True
+    step_delay_sec: float = 0.0
+    pre_run_hold_sec: float = 0.0
+    post_run_hold_sec: float = 0.0
+
+
+@dataclass(slots=True)
+class RegionWorldModelTrainingRequest:
+    collection_manifest_path: str
+    world_model_type: str = "tiny_learned"
+    output_dir: str = ""
+    register_world_model_config: bool = True
     world_model_config_path: str = ""
 
 
@@ -566,6 +598,22 @@ def training_preset_entries(trainer_root: str | Path | None = None) -> list[dict
             "available": True,
             "status": "available",
             "description": "Fit the built-in tiny learned dynamics model for quick dataset sanity checks.",
+        },
+        {
+            "id": "beamng_region_training_data",
+            "label": "Collect BeamNG region training data",
+            "kind": "collection",
+            "available": True,
+            "status": "available",
+            "description": "Collect reusable BeamNG region episodes for simulator-trained world models.",
+        },
+        {
+            "id": "region_world_model_training",
+            "label": "Train BeamNG region world model",
+            "kind": "training",
+            "available": True,
+            "status": "available",
+            "description": "Train the built-in tiny learned world model from collected BeamNG region episodes.",
         },
         {
             "id": "lewm_full_self_supervised",
@@ -2303,6 +2351,233 @@ def run_demo_acceptance(request: DemoAcceptanceRequest) -> dict[str, Any]:
     }
 
 
+def collect_region_training_data(request: RegionTrainingDataCollectionRequest) -> dict[str, Any]:
+    task = load_navigation_region_task(request.task_path)
+    stamp = time.strftime("%Y%m%dT%H%M%S")
+    output_dir = Path(request.output_dir or ROOT / "outputs" / "beamng_region_training_data" / _safe_name(task.task_id) / stamp)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    collection_scenario = _route_free_region_scenario(task.to_beamng_scenario(mode="evaluation"))
+
+    collections: list[dict[str, Any]] = []
+    collection_acceptances: list[dict[str, Any]] = []
+    collection_distances: list[float] = []
+    episode_paths: list[str] = []
+    rollout_count = max(1, int(request.collect_rollouts))
+    for rollout_index in range(rollout_count):
+        collection = _run_region_beamng_episode(
+            scenario=collection_scenario,
+            vehicle=request.vehicle,
+            max_steps=min(max(1, int(request.collect_steps)), task.max_steps),
+            seed=int(request.seed) + rollout_index,
+            agent_name="region_explorer",
+            agent_options={
+                "goal_bias_interval": max(0, int(request.collection_goal_bias_interval)),
+                "goal_corridor_interval": max(0, int(request.collection_goal_corridor_interval)),
+                "goal_corridor_lateral_m": max(0.0, float(request.collection_goal_corridor_lateral_m)),
+                "coverage_grid_size": max(0, int(request.collection_coverage_grid_size)),
+                "coverage_target_interval": max(0, int(request.collection_coverage_target_interval)),
+                "max_target_steps": max(1, int(request.collection_max_target_steps)),
+            },
+            world_model_type="simple_kinematic",
+            world_model_path="",
+            planner="",
+            planner_horizon=1,
+            planner_samples=4,
+            planner_iterations=1,
+            record=True,
+            beamng_gfx=request.beamng_gfx,
+            pre_run_hold_sec=request.pre_run_hold_sec if rollout_index == 0 else 0.0,
+            step_delay_sec=request.step_delay_sec,
+            post_run_hold_sec=request.post_run_hold_sec,
+            close_beamng=request.close_beamng,
+        )
+        episode_path = collection.get("episode_path")
+        if not episode_path:
+            raise RuntimeError("BeamNG region data collection did not produce an episode path.")
+        collections.append(collection)
+        episode_paths.append(str(Path(episode_path).resolve()))
+        collection_acceptances.append(_navigation_acceptance(collection, task))
+        collection_metrics = collection.get("metrics", {}) if isinstance(collection.get("metrics"), dict) else {}
+        collection_distance = _float_or_nan(collection_metrics.get("horizontal_distance_traveled"))
+        if math.isfinite(collection_distance):
+            collection_distances.append(collection_distance)
+
+    best_acceptance = min(collection_acceptances, key=lambda row: _finite_or_inf(row.get("min_goal_distance")))
+    collection_distance_total = float(sum(collection_distances)) if collection_distances else math.nan
+    quality_gate = _collection_quality_gate(task, best_acceptance, min_progress_ratio=request.min_collection_goal_progress_ratio)
+    metrics = {
+        "collection_rollout_count": rollout_count,
+        "collection_distance_traveled": collection_distance_total,
+        "collection_goal_reached": bool(best_acceptance.get("goal_reached")),
+        "collection_min_goal_distance": best_acceptance.get("min_goal_distance"),
+        "collection_final_goal_distance": best_acceptance.get("final_goal_distance"),
+        "collection_collision_count": best_acceptance.get("collision_count"),
+        "collection_progress_ratio": quality_gate.get("progress_ratio"),
+        "required_collection_progress_ratio": quality_gate.get("required_progress_ratio"),
+    }
+    payload: dict[str, Any] = {
+        "status": "completed",
+        "task": task.to_dict(),
+        "task_path": str(Path(request.task_path).resolve()),
+        "output_dir": str(output_dir.resolve()),
+        "collections": collections,
+        "episode_paths": episode_paths,
+        "collection_acceptance": best_acceptance,
+        "collection_acceptances": collection_acceptances,
+        "quality_gate": quality_gate,
+        "metrics": metrics,
+        "parameters": {
+            "collect_steps": min(max(1, int(request.collect_steps)), task.max_steps),
+            "collect_rollouts": rollout_count,
+            "seed": int(request.seed),
+            "collection_goal_bias_interval": max(0, int(request.collection_goal_bias_interval)),
+            "collection_goal_corridor_interval": max(0, int(request.collection_goal_corridor_interval)),
+            "collection_goal_corridor_lateral_m": max(0.0, float(request.collection_goal_corridor_lateral_m)),
+            "collection_coverage_grid_size": max(0, int(request.collection_coverage_grid_size)),
+            "collection_coverage_target_interval": max(0, int(request.collection_coverage_target_interval)),
+            "collection_max_target_steps": max(1, int(request.collection_max_target_steps)),
+        },
+    }
+    manifest_path = output_dir / REGION_TRAINING_COLLECTION_FILENAME
+    payload["collection_manifest_path"] = str(manifest_path.resolve())
+    training_run = write_training_run_record(
+        output_dir,
+        preset_id="beamng_region_training_data",
+        status="completed",
+        dataset_root=episode_paths[0],
+        adapter="beamng_episode",
+        sequence_id=task.task_id,
+        artifact_path=str(manifest_path.resolve()),
+        artifact_type="beamng_collection",
+        metrics=metrics,
+        history={
+            "collection_min_goal_distance": [best_acceptance.get("min_goal_distance")],
+            "collection_progress_ratio": [quality_gate.get("progress_ratio")],
+            "collection_distance_traveled": [collection_distance_total],
+        },
+        parameters=payload["parameters"],
+        summary={
+            "task_path": str(Path(request.task_path).resolve()),
+            "quality_gate": quality_gate,
+            "collection_acceptance": best_acceptance,
+            "collection_acceptances": collection_acceptances,
+            "episode_paths": episode_paths,
+        },
+    )
+    payload["training_run_path"] = training_run["path"]
+    manifest_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    return payload
+
+
+def train_region_world_model_from_collection(request: RegionWorldModelTrainingRequest) -> dict[str, Any]:
+    if request.world_model_type != "tiny_learned":
+        raise ValueError("BeamNG region training currently supports world_model_type='tiny_learned'.")
+    manifest_path = Path(request.collection_manifest_path)
+    if not manifest_path.exists():
+        raise FileNotFoundError(f"Collection manifest not found: {manifest_path}")
+    collection = _read_json(manifest_path)
+    if not isinstance(collection, dict) or str(collection.get("status") or "") != "completed":
+        raise ValueError("Collection manifest must be a completed BeamNG region collection.")
+    task = _navigation_task_from_collection_manifest(collection, manifest_path)
+    episode_paths = [str(Path(path).resolve()) for path in collection.get("episode_paths", []) if str(path or "").strip()]
+    if not episode_paths:
+        raise ValueError("Collection manifest has no episode paths.")
+    sequences = [_episode_trace_to_dataset_sequence(path, task) for path in episode_paths]
+
+    stamp = time.strftime("%Y%m%dT%H%M%S")
+    output_dir = Path(request.output_dir or ROOT / "outputs" / "beamng_region_world_models" / _safe_name(task.task_id) / stamp)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    model = TinyLearnedWorldModel.fit(sequences)
+    model.metadata.update(
+        {
+            "training_source": "beamng_region_collection",
+            "task_id": task.task_id,
+            "collection_manifest_path": str(manifest_path.resolve()),
+            "episode_paths": episode_paths,
+            "collection_rollout_count": len(episode_paths),
+        }
+    )
+    model_dir = output_dir / "model"
+    metadata_path = model.save(model_dir)
+    training = {
+        "status": "completed",
+        "model_type": model.model_type,
+        "model_path": str(model_dir.resolve()),
+        "metadata_path": str(metadata_path.resolve()),
+        "metrics": model.metadata,
+    }
+    collection_metrics = collection.get("metrics") if isinstance(collection.get("metrics"), dict) else {}
+    metrics = {
+        "train_rmse": model.metadata.get("train_rmse"),
+        "train_mse": model.metadata.get("train_mse"),
+        "sequence_count": model.metadata.get("sequence_count"),
+        "transition_count": model.metadata.get("transition_count"),
+        "collection_rollout_count": len(episode_paths),
+        "collection_distance_traveled": collection_metrics.get("collection_distance_traveled"),
+        "collection_min_goal_distance": collection_metrics.get("collection_min_goal_distance"),
+        "collection_collision_count": collection_metrics.get("collection_collision_count"),
+    }
+    training_run = write_training_run_record(
+        output_dir,
+        preset_id="region_world_model_training",
+        status="completed",
+        dataset_root=str(manifest_path.resolve()),
+        adapter="beamng_episode_collection",
+        sequence_id=task.task_id,
+        artifact_path=str(model_dir.resolve()),
+        artifact_type="world_model",
+        metrics=metrics,
+        history={
+            "train_rmse": [model.metadata.get("train_rmse")],
+            "train_mse": [model.metadata.get("train_mse")],
+            "collection_min_goal_distance": [collection_metrics.get("collection_min_goal_distance")],
+        },
+        parameters={
+            "world_model_type": request.world_model_type,
+            "collection_manifest_path": str(manifest_path.resolve()),
+        },
+        summary={
+            "task": task.to_dict(),
+            "collection_manifest_path": str(manifest_path.resolve()),
+            "collection_metrics": collection_metrics,
+        },
+    )
+    payload: dict[str, Any] = {
+        "status": "completed",
+        "task": task.to_dict(),
+        "output_dir": str(output_dir.resolve()),
+        "model_dir": str(model_dir.resolve()),
+        "collection_manifest_path": str(manifest_path.resolve()),
+        "episode_paths": episode_paths,
+        "training": training,
+        "training_run_path": training_run["path"],
+    }
+    if request.register_world_model_config:
+        validation = {
+            "train_rmse": model.metadata.get("train_rmse"),
+            "train_mse": model.metadata.get("train_mse"),
+            "collection_rollout_count": len(episode_paths),
+            "collection_min_goal_distance": collection_metrics.get("collection_min_goal_distance"),
+            "collection_collision_count": collection_metrics.get("collection_collision_count"),
+        }
+        config = save_world_model_config(
+            config_id=f"{task.task_id}_beamng_trained_world_model",
+            label=f"{task.task_id} BeamNG trained world model",
+            algorithm="world_model_direct",
+            world_model=model.model_type,
+            model_path=str(model_dir.resolve()),
+            source_training_run_path=str(training_run["path"]),
+            validation=validation,
+            path=request.world_model_config_path or None,
+        )
+        _attach_world_model_config_to_training_run(str(training_run["path"]), config)
+        payload["world_model_config"] = config
+    summary_path = output_dir / "region_world_model_training_summary.json"
+    summary_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    payload["summary_path"] = str(summary_path.resolve())
+    return payload
+
+
 def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldModelRequest) -> dict[str, Any]:
     task = load_navigation_region_task(request.task_path)
     if request.world_model_type != "tiny_learned":
@@ -2938,6 +3213,16 @@ def _route_free_region_scenario(scenario: dict[str, Any]) -> dict[str, Any]:
         beamng["drive_mode"] = "manual"
         beamng["evaluation_route_mode"] = "none"
     return cleaned
+
+
+def _navigation_task_from_collection_manifest(collection: dict[str, Any], manifest_path: Path) -> NavigationRegionTask:
+    raw_task = collection.get("task")
+    if isinstance(raw_task, dict) and raw_task:
+        return NavigationRegionTask.from_dict(raw_task)
+    task_path = str(collection.get("task_path") or "").strip()
+    if task_path:
+        return load_navigation_region_task(task_path)
+    raise ValueError(f"Collection manifest has no task data: {manifest_path}")
 
 
 def _episode_trace_to_dataset_sequence(episode_path: str | Path, task: NavigationRegionTask) -> DatasetSequence:

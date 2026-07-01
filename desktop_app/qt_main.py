@@ -1081,6 +1081,8 @@ class MainWindow(QMainWindow):
         self.model_path_edit = QLineEdit()
         self.model_path_edit.setPlaceholderText(str(services.DEFAULT_LEWM_CHECKPOINT_PATH))
         self.task_path_edit = QLineEdit(str(services.DEFAULT_NAVIGATION_TASK_PATH))
+        self.region_collection_manifest_edit = QLineEdit()
+        self.region_collection_manifest_edit.setPlaceholderText(r"outputs\beamng_region_training_data\...\region_training_collection.json")
         self.home_task_combo = self._combo(editable=True)
         self.beamng_task_combo = self._combo(editable=True)
         self.home_model_combo = self._combo(editable=True)
@@ -1104,6 +1106,7 @@ class MainWindow(QMainWindow):
             self.trainer_entrypoint_edit,
             self.model_config_name_edit,
             self.task_path_edit,
+            self.region_collection_manifest_edit,
         ):
             self._configure_control(edit)
 
@@ -1477,6 +1480,7 @@ class MainWindow(QMainWindow):
                 self._compact_field("Region task", self.beamng_task_combo),
                 self._compact_field("World model config", self.beamng_model_config_combo),
                 self._compact_field("Resolved task path", self.task_path_edit),
+                self._compact_field("Collection manifest", self.region_collection_manifest_edit),
             ],
         )
         actions_box, actions_layout = self._new_group("Actions")
@@ -1484,9 +1488,10 @@ class MainWindow(QMainWindow):
             self._action_toolbar(
                 [
                     self._action_button("编辑/预览区域", self.open_region_task_editor),
+                    self._action_button("采集训练数据", self.collect_region_training_data),
+                    self._action_button("训练模型", self.train_region_world_model_from_collection),
                     self._action_button("开始评估", self.run_region_navigation_loop, primary=True),
                     self._action_button("检查 BeamNG", self.check_beamng),
-                    self._action_button("训练 world model", self.train_region_self_supervised_world_model),
                 ],
                 object_name="beamngActionToolbar",
             )
@@ -2420,6 +2425,50 @@ class MainWindow(QMainWindow):
             task_label="运行区域导航",
         )
 
+    def collect_region_training_data(self) -> None:
+        task_path = self.task_path_edit.text().strip() or self._path_combo_value(self.beamng_task_combo).strip()
+        if not task_path:
+            self.log("采集训练数据需要先选择 BeamNG region task。")
+            return
+        request = services.RegionTrainingDataCollectionRequest(
+            task_path=task_path,
+            collect_steps=max(int(self.settings.max_steps), 1000),
+            collect_rollouts=3,
+            min_collection_goal_progress_ratio=0.25,
+            collection_coverage_grid_size=4,
+            collection_coverage_target_interval=1,
+            collection_max_target_steps=40,
+            seed=self.settings.seed,
+            close_beamng=False,
+            step_delay_sec=0.02,
+            post_run_hold_sec=2.0,
+        )
+        self.log("开始采集 BeamNG 区域训练数据：region_explorer -> recorded episodes")
+        self._run_task(
+            lambda: services.collect_region_training_data(request),
+            self._region_training_data_collected,
+            "region training data collection failed",
+            task_label="采集 BeamNG 训练数据",
+        )
+
+    def train_region_world_model_from_collection(self) -> None:
+        manifest_path = self.region_collection_manifest_edit.text().strip()
+        if not manifest_path:
+            self.log("训练模型需要先采集训练数据，或手动填写 collection manifest。")
+            return
+        request = services.RegionWorldModelTrainingRequest(
+            collection_manifest_path=manifest_path,
+            world_model_type="tiny_learned",
+            register_world_model_config=True,
+        )
+        self.log("开始从 BeamNG collection manifest 训练 tiny world model")
+        self._run_task(
+            lambda: services.train_region_world_model_from_collection(request),
+            self._region_world_model_training_finished,
+            "region world model training failed",
+            task_label="训练 BeamNG world model",
+        )
+
     def train_region_self_supervised_world_model(self) -> None:
         task_path = self.task_path_edit.text().strip() or self._path_combo_value(self.beamng_task_combo).strip()
         if not task_path:
@@ -2497,6 +2546,47 @@ class MainWindow(QMainWindow):
         self.refresh_catalogs()
         if saved_config_id:
             self._select_world_model_config(saved_config_id)
+
+    def _region_training_data_collected(self, payload: dict[str, Any]) -> None:
+        manifest_path = str(payload.get("collection_manifest_path") or "").strip()
+        if manifest_path:
+            self.region_collection_manifest_edit.setText(manifest_path)
+        view_payload = dict(payload)
+        view_payload.setdefault("preset_id", "beamng_region_training_data")
+        view_payload.setdefault("preset_label", "Collect BeamNG region training data")
+        view_payload.setdefault("artifact_type", "beamng_collection")
+        view_payload.setdefault("artifact_path", manifest_path)
+        metrics = view_payload.get("metrics") if isinstance(view_payload.get("metrics"), dict) else {}
+        view_payload.setdefault("history", {key: [value] for key, value in metrics.items() if isinstance(value, (int, float))})
+        self.beamng_summary.setText(_compact_json(view_payload))
+        self.model_summary.setText(_compact_json(view_payload))
+        self._set_training_run_views(view_payload)
+        self.log(f"BeamNG 训练数据采集完成: {manifest_path or services.NAN_TEXT}")
+        self.refresh_catalogs()
+
+    def _region_world_model_training_finished(self, payload: dict[str, Any]) -> None:
+        model_dir = str(payload.get("model_dir") or "").strip()
+        if model_dir:
+            self.model_path_edit.setText(model_dir)
+            self.home_model_combo.setCurrentText(model_dir)
+        view_payload = dict(payload)
+        view_payload.setdefault("preset_id", "region_world_model_training")
+        view_payload.setdefault("preset_label", "Train BeamNG region world model")
+        view_payload.setdefault("artifact_type", "world_model")
+        view_payload.setdefault("artifact_path", model_dir)
+        training = view_payload.get("training") if isinstance(view_payload.get("training"), dict) else {}
+        metrics = training.get("metrics") if isinstance(training.get("metrics"), dict) else {}
+        view_payload.setdefault("metrics", metrics)
+        view_payload.setdefault("history", {key: [value] for key, value in metrics.items() if isinstance(value, (int, float))})
+        self.model_summary.setText(_compact_json(view_payload))
+        self.beamng_summary.setText(_compact_json(view_payload))
+        self._set_training_run_views(view_payload)
+        self.log(f"BeamNG world model 训练完成: {model_dir or services.NAN_TEXT}")
+        self.refresh_catalogs()
+        config = payload.get("world_model_config") if isinstance(payload.get("world_model_config"), dict) else {}
+        config_id = str(config.get("id") or "").strip()
+        if config_id:
+            self._select_world_model_config(config_id)
 
     def _register_pipeline_world_model_config(self, payload: dict[str, Any]) -> str:
         existing = payload.get("world_model_config") if isinstance(payload.get("world_model_config"), dict) else {}

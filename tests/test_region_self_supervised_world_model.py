@@ -204,6 +204,110 @@ def test_region_self_supervised_world_model_trains_from_multiple_collection_roll
     assert training_record["metrics"]["collection_min_goal_distance"] <= 10.0
 
 
+def test_region_training_data_collection_writes_reusable_collection_manifest(tmp_path: Path) -> None:
+    task_path = tmp_path / "task.yaml"
+    _write_task(task_path)
+    collection_a = _save_episode(
+        tmp_path / "collection_a",
+        [(2.0, 2.0, 0.0, 0.5), (8.0, 4.0, 0.2, 1.2), (15.0, 8.0, 0.35, 1.5)],
+    )
+    collection_b = _save_episode(
+        tmp_path / "collection_b",
+        [(2.0, 2.0, 0.0, 0.5), (12.0, 18.0, 0.4, 1.5), (28.0, 30.0, 0.55, 1.8)],
+    )
+    episodes = [collection_a, collection_b]
+    seen_agents: list[str] = []
+
+    def fake_run_episode(**kwargs):
+        seen_agents.append(kwargs["agent_name"])
+        index = len(seen_agents) - 1
+
+        class Result:
+            def to_dict(self):
+                return {
+                    "episode_id": f"collection_{index}",
+                    "episode_path": str(episodes[index]),
+                    "metrics": {"horizontal_distance_traveled": 20.0 + index, "collision_count": 0, "drive_mode": "manual"},
+                }
+
+        return Result()
+
+    with patch("desktop_app.services.run_episode", side_effect=fake_run_episode):
+        payload = services.collect_region_training_data(
+            services.RegionTrainingDataCollectionRequest(
+                task_path=str(task_path),
+                output_dir=str(tmp_path / "collection_run"),
+                collect_steps=20,
+                collect_rollouts=2,
+                close_beamng=True,
+            )
+        )
+
+    manifest_path = Path(payload["collection_manifest_path"])
+    training_record = json.loads(Path(payload["training_run_path"]).read_text(encoding="utf-8"))
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    assert seen_agents == ["region_explorer", "region_explorer"]
+    assert payload["status"] == "completed"
+    assert manifest_path.exists()
+    assert len(payload["episode_paths"]) == 2
+    assert manifest["episode_paths"] == payload["episode_paths"]
+    assert manifest["task"]["task_id"] == "self_supervised_region_test"
+    assert training_record["preset_id"] == "beamng_region_training_data"
+    assert training_record["artifact_type"] == "beamng_collection"
+    assert training_record["artifact_path"] == str(manifest_path.resolve())
+    assert training_record["metrics"]["collection_rollout_count"] == 2
+    assert training_record["metrics"]["collection_distance_traveled"] == 41.0
+
+
+def test_region_world_model_training_from_collection_registers_model_config(tmp_path: Path) -> None:
+    task_path = tmp_path / "task.yaml"
+    _write_task(task_path)
+    collection_episode = _save_episode(
+        tmp_path / "collection",
+        [(2.0, 2.0, 0.0, 0.5), (12.0, 12.0, 0.2, 1.2), (25.0, 25.0, 0.45, 1.5)],
+    )
+    collection_payload = {
+        "status": "completed",
+        "task": services.load_navigation_region_task(str(task_path)).to_dict(),
+        "task_path": str(task_path),
+        "output_dir": str(tmp_path / "collection_run"),
+        "episode_paths": [str(collection_episode.resolve())],
+        "collection_acceptances": [{"min_goal_distance": 14.0, "final_goal_distance": 14.0, "collision_count": 0}],
+        "metrics": {"collection_rollout_count": 1, "collection_distance_traveled": 25.0},
+    }
+    manifest_path = tmp_path / "collection_run" / "region_training_collection.json"
+    manifest_path.parent.mkdir(parents=True)
+    manifest_path.write_text(json.dumps(collection_payload, indent=2), encoding="utf-8")
+
+    payload = services.train_region_world_model_from_collection(
+        services.RegionWorldModelTrainingRequest(
+            collection_manifest_path=str(manifest_path),
+            output_dir=str(tmp_path / "trained_model"),
+            register_world_model_config=True,
+            world_model_config_path=str(tmp_path / "world_model_configs.json"),
+        )
+    )
+
+    training_record = json.loads(Path(payload["training_run_path"]).read_text(encoding="utf-8"))
+    saved_config = next(
+        row for row in services.world_model_config_entries(tmp_path / "world_model_configs.json") if row["id"] == payload["world_model_config"]["id"]
+    )
+
+    assert payload["status"] == "completed"
+    assert payload["training"]["model_type"] == "tiny_learned"
+    assert Path(payload["model_dir"], "model.json").exists()
+    assert training_record["preset_id"] == "region_world_model_training"
+    assert training_record["dataset_root"] == str(manifest_path.resolve())
+    assert training_record["artifact_type"] == "world_model"
+    assert training_record["artifact_path"] == payload["model_dir"]
+    assert training_record["metrics"]["train_rmse"] == payload["training"]["metrics"]["train_rmse"]
+    assert saved_config["algorithm"] == "world_model_direct"
+    assert saved_config["world_model"] == "tiny_learned"
+    assert saved_config["model_path"] == payload["model_dir"]
+    assert saved_config["source_training_run_path"] == payload["training_run_path"]
+
+
 def test_region_self_supervised_world_model_records_navigation_diagnostics_when_eval_misses_goal(tmp_path: Path) -> None:
     task_path = tmp_path / "task.yaml"
     _write_task(task_path)

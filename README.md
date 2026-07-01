@@ -466,6 +466,16 @@ higher-contrast translucent region mask, closed outline, and region point
 markers; region points are draggable in the editor, invalid regions only show
 blocking warnings when saving, and the GUI canvas preserves the same world-axis
 scale as the BeamNG map.
+
+BeamNG training v1 is exposed as an explicit two-step GUI workflow on the
+BeamNG Simulation page. Select a Johnson Valley region task, click
+`采集训练数据` to run `region_explorer` rollouts and save a reusable
+`region_training_collection.json`, then click `训练模型` to fit a
+`tiny_learned` world model from those recorded episodes. The training step
+writes `training_run.json`, registers the trained model as a selectable world
+model config, and updates the BeamNG page so `开始评估` can immediately run the
+same task with the trained model.
+
 Saved tasks default to `evaluation_drive_mode: manual`, which means
 the `OffroadAgent`/planner commands control the vehicle during evaluation.
 `evaluation_drive_mode: ai_line` remains available only for BeamNG-native

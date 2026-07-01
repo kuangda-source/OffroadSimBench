@@ -90,7 +90,8 @@ def test_beamng_page_uses_generic_actions_only() -> None:
 
     assert "编辑/预览区域" in texts
     assert "开始评估" in texts
-    assert "训练 world model" in texts
+    assert "采集训练数据" in texts
+    assert "训练模型" in texts
     assert "检查 BeamNG" in texts
     assert "Johnson Valley LE-WM 演示" not in texts
     assert "启动 BeamNG 可视自动驾驶" not in texts
@@ -1203,7 +1204,9 @@ def test_gui_exposes_region_self_supervised_training(monkeypatch) -> None:
     window.train_region_self_supervised_world_model()
     button_texts = [button.text() for button in window.page_stack.widget(2).findChildren(QPushButton)]
 
-    assert "训练 world model" in button_texts
+    assert "训练 world model" not in button_texts
+    assert "采集训练数据" in button_texts
+    assert "训练模型" in button_texts
     assert captured["request"].task_path == "configs/tasks/beamng_johnson_valley_nav_001.yaml"
     assert captured["request"].world_model_type == "tiny_learned"
     assert captured["request"].evaluation_agent == "world_model_direct"
@@ -1216,6 +1219,101 @@ def test_gui_exposes_region_self_supervised_training(monkeypatch) -> None:
     assert captured["request"].collection_max_target_steps <= 40
     assert captured["request"].eval_steps >= 1000
     assert captured["request"].close_beamng is False
+    window.close()
+
+
+def test_beamng_training_workflow_buttons_are_visible() -> None:
+    _ensure_app()
+    window = MainWindow()
+
+    button_texts = [button.text() for button in window.page_stack.widget(2).findChildren(QPushButton)]
+
+    assert "采集训练数据" in button_texts
+    assert "训练模型" in button_texts
+    assert "开始评估" in button_texts
+    assert "训练 world model" not in button_texts
+    window.close()
+
+
+def test_gui_collects_region_training_data_from_selected_task(monkeypatch) -> None:
+    _ensure_app()
+    window = MainWindow()
+    window.settings.max_steps = 5
+    window.task_path_edit.setText("configs/tasks/beamng_johnson_valley_nav_001.yaml")
+    captured: dict[str, services.RegionTrainingDataCollectionRequest] = {}
+
+    def fake_collect(request: services.RegionTrainingDataCollectionRequest) -> dict[str, object]:
+        captured["request"] = request
+        return {
+            "status": "completed",
+            "collection_manifest_path": "outputs/beamng_region_training_data/run/region_training_collection.json",
+            "training_run_path": "outputs/beamng_region_training_data/run/training_run.json",
+            "metrics": {"collection_rollout_count": 3, "collection_distance_traveled": 42.0},
+        }
+
+    def immediate(task, callback, label, **kwargs):
+        callback(task())
+
+    monkeypatch.setattr(services, "collect_region_training_data", fake_collect)
+    monkeypatch.setattr(window, "_run_task", immediate)
+
+    window.collect_region_training_data()
+
+    assert captured["request"].task_path == "configs/tasks/beamng_johnson_valley_nav_001.yaml"
+    assert captured["request"].collect_steps >= 1000
+    assert captured["request"].collect_rollouts >= 3
+    assert captured["request"].collection_coverage_grid_size >= 4
+    assert captured["request"].close_beamng is False
+    assert window.region_collection_manifest_edit.text() == "outputs/beamng_region_training_data/run/region_training_collection.json"
+    assert "collection_manifest_path" in window.beamng_summary.toPlainText()
+    assert window.latest_training_run_record["artifact_type"] == "beamng_collection"
+    window.close()
+
+
+def test_gui_trains_region_world_model_from_latest_collection(monkeypatch) -> None:
+    _ensure_app()
+    window = MainWindow()
+    window.region_collection_manifest_edit.setText("outputs/beamng_region_training_data/run/region_training_collection.json")
+    captured: dict[str, services.RegionWorldModelTrainingRequest] = {}
+    selected: dict[str, str] = {}
+
+    def fake_train(request: services.RegionWorldModelTrainingRequest) -> dict[str, object]:
+        captured["request"] = request
+        return {
+            "status": "completed",
+            "model_dir": "outputs/beamng_region_world_models/run/model",
+            "training_run_path": "outputs/beamng_region_world_models/run/training_run.json",
+            "training": {
+                "status": "completed",
+                "model_type": "tiny_learned",
+                "metrics": {"train_rmse": 0.12, "train_mse": 0.014},
+            },
+            "world_model_config": {
+                "id": "self_supervised_region_test_beamng_trained_world_model",
+                "label": "self_supervised_region_test BeamNG trained world model",
+                "algorithm": "world_model_direct",
+                "world_model": "tiny_learned",
+                "model_path": "outputs/beamng_region_world_models/run/model",
+            },
+        }
+
+    def immediate(task, callback, label, **kwargs):
+        callback(task())
+
+    monkeypatch.setattr(services, "train_region_world_model_from_collection", fake_train)
+    monkeypatch.setattr(window, "_run_task", immediate)
+    monkeypatch.setattr(window, "refresh_catalogs", lambda: None)
+    monkeypatch.setattr(window, "_select_world_model_config", lambda config_id: selected.setdefault("id", config_id))
+
+    window.train_region_world_model_from_collection()
+
+    assert captured["request"].collection_manifest_path == "outputs/beamng_region_training_data/run/region_training_collection.json"
+    assert captured["request"].world_model_type == "tiny_learned"
+    assert captured["request"].register_world_model_config is True
+    assert window.model_path_edit.text() == "outputs/beamng_region_world_models/run/model"
+    assert selected["id"] == "self_supervised_region_test_beamng_trained_world_model"
+    assert "train_rmse" in window.beamng_summary.toPlainText()
+    assert window.latest_training_run_record["artifact_type"] == "world_model"
     window.close()
 
 
