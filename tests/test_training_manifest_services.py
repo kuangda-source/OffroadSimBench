@@ -257,3 +257,92 @@ outputs:
     assert report["ready"] is False
     assert report["status"] == "invalid"
     assert "Missing required parameter: learning_rate" in report["issues"]
+
+
+def test_save_script_training_config_infers_schema_and_argument_template(tmp_path) -> None:
+    script = tmp_path / "train_any.py"
+    script.write_text("print('{}')\n", encoding="utf-8")
+    dataset_root = tmp_path / "dataset"
+    dataset_root.mkdir()
+
+    bundle = services.save_script_training_config(
+        label="Any Driving Model",
+        trainer_entrypoint=str(script),
+        dataset_root=str(dataset_root),
+        adapter="manifest_dataset",
+        sequence_id="clip_001",
+        output_path=str(tmp_path / "run"),
+        parameters={"epochs": 4, "learning_rate": 0.001, "use_amp": True, "model_name": "tiny"},
+        trainer_destination_root=tmp_path / "trainers",
+        training_config_path=tmp_path / "training_configs.json",
+    )
+
+    trainer = bundle["trainer"]
+    config = bundle["training_config"]
+    manifest = load_yaml_file(Path(trainer["manifest_path"]))
+
+    assert trainer["id"] == "any_driving_model"
+    assert config["training_preset_id"] == "any_driving_model"
+    assert config["dataset_root"] == str(dataset_root)
+    assert config["adapter"] == "manifest_dataset"
+    assert config["sequence_id"] == "clip_001"
+    assert config["parameters"]["epochs"] == 4
+    assert manifest["parameters"]["epochs"] == {"type": "int", "default": 4}
+    assert manifest["parameters"]["learning_rate"] == {"type": "float", "default": 0.001}
+    assert manifest["parameters"]["use_amp"] == {"type": "bool", "default": True}
+    assert manifest["parameters"]["model_name"] == {"type": "str", "default": "tiny"}
+    assert manifest["arguments"][:3] == ["{dataset_root}", "--output", "{output_dir}"]
+    assert "--epochs" in manifest["arguments"]
+    assert "{params.epochs}" in manifest["arguments"]
+
+
+def test_script_training_config_executes_and_records_metrics(tmp_path) -> None:
+    script = tmp_path / "train_any.py"
+    script.write_text(
+        """
+from __future__ import annotations
+import argparse
+import json
+from pathlib import Path
+
+parser = argparse.ArgumentParser()
+parser.add_argument("dataset_root")
+parser.add_argument("--output", required=True)
+parser.add_argument("--epochs", type=int, required=True)
+parser.add_argument("--learning-rate", type=float, required=True)
+parser.add_argument("--use-amp", required=True)
+args = parser.parse_args()
+output = Path(args.output)
+output.mkdir(parents=True, exist_ok=True)
+checkpoint = output / "model.ckpt"
+checkpoint.write_text("checkpoint", encoding="utf-8")
+print(json.dumps({
+    "checkpoint_path": str(checkpoint),
+    "artifact_type": "checkpoint",
+    "metrics": {"final_loss": 0.2, "epochs": args.epochs},
+    "history": {"loss": [0.7, 0.4, 0.2]},
+}, indent=2))
+""",
+        encoding="utf-8",
+    )
+    dataset_root = tmp_path / "dataset"
+    dataset_root.mkdir()
+    output_dir = tmp_path / "run"
+    bundle = services.save_script_training_config(
+        label="Script Runner",
+        trainer_entrypoint=str(script),
+        dataset_root=str(dataset_root),
+        output_path=str(output_dir),
+        parameters={"epochs": 3, "learning_rate": 0.01, "use_amp": False},
+        trainer_destination_root=tmp_path / "trainers",
+        training_config_path=tmp_path / "training_configs.json",
+    )
+
+    payload = services.run_training_config_job(bundle["training_config"], trainer_root=tmp_path / "trainers")
+
+    record = json.loads((output_dir / services.TRAINING_RUN_FILENAME).read_text(encoding="utf-8"))
+    assert payload["artifact_type"] == "checkpoint"
+    assert Path(payload["artifact_path"]).name == "model.ckpt"
+    assert payload["metrics"]["final_loss"] == 0.2
+    assert record["history"]["loss"] == [0.7, 0.4, 0.2]
+    assert record["parameters"]["learning_rate"] == 0.01

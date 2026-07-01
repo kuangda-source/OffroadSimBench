@@ -291,10 +291,16 @@ outputs:
 If an external algorithm does not already ship a `trainer.yaml`, the GUI can
 create one from the `Model training` tab: fill `Trainer entrypoint`, keep or
 edit the JSON `Trainer arguments` template, optionally add a JSON `Trainer
-parameter schema`, and click `Save trainer from script`. The saved trainer is
-installed under `configs/trainers/` and immediately appears in the `Training
-preset` selector. A `training_config.yaml` bundle can also inline the same
-trainer block under `trainer:` instead of referencing `trainer_manifest`.
+parameter schema`, and click `Save trainer from script`. For a quicker
+experiment, fill the dataset fields, script path, and `Training parameters`,
+then click `Run script now`; the GUI saves the generated trainer plus a reusable
+training config and launches the same training runner. When the argument
+template is left at the default dataset/output pair, parameter names are turned
+into command flags automatically, e.g. `{"epochs": 10}` becomes
+`--epochs {params.epochs}`. The saved trainer is installed under
+`configs/trainers/` and immediately appears in the `Training preset` selector.
+A `training_config.yaml` bundle can also inline the same trainer block under
+`trainer:` instead of referencing `trainer_manifest`.
 
 ### Environment
 

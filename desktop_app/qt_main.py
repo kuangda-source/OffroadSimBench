@@ -1329,6 +1329,12 @@ class MainWindow(QMainWindow):
         self.save_trainer_button = QPushButton("Save trainer from script")
         self._configure_button(self.save_trainer_button)
         self.save_trainer_button.clicked.connect(self.save_trainer_manifest_from_gui)
+        self.save_script_config_button = QPushButton("Save script training config")
+        self._configure_button(self.save_script_config_button)
+        self.save_script_config_button.clicked.connect(self.save_script_training_config_from_gui)
+        self.run_script_config_button = QPushButton("Run script now")
+        self._configure_button(self.run_script_config_button, primary=True)
+        self.run_script_config_button.clicked.connect(self.run_script_training_config)
         training_config_import = QPushButton("Import training config")
         self._configure_button(training_config_import)
         training_config_import.clicked.connect(self.import_training_config)
@@ -1356,6 +1362,8 @@ class MainWindow(QMainWindow):
                 self._field("Trainer arguments", self.trainer_arguments_edit),
                 self._field("Trainer parameter schema", self.trainer_schema_edit),
                 self.save_trainer_button,
+                self.save_script_config_button,
+                self.run_script_config_button,
             ],
         )
         left_column = QVBoxLayout()
@@ -1998,6 +2006,59 @@ class MainWindow(QMainWindow):
         self.log(f"Trainer manifest saved: {row.get('label', row.get('id', services.NAN_TEXT))}")
         self.refresh_catalogs()
         self._select_training_preset(str(row.get("id") or ""))
+
+    def save_script_training_config_from_gui(self) -> None:
+        try:
+            bundle = self._save_script_training_config_bundle()
+        except Exception as exc:
+            self.model_summary.setText(_compact_json({"status": "save_failed", "message": str(exc)}))
+            self.log(f"Script training config save failed: {exc}")
+            return
+        self.model_summary.setText(_compact_json({"status": "saved", **bundle}))
+        self.log(f"Script training config saved: {bundle['training_config'].get('label', services.NAN_TEXT)}")
+        self.refresh_catalogs()
+        self._select_training_config(str(bundle["training_config"].get("id") or ""))
+        self._select_training_preset(str(bundle["trainer"].get("id") or ""))
+
+    def run_script_training_config(self) -> None:
+        try:
+            bundle = self._save_script_training_config_bundle()
+        except Exception as exc:
+            self.model_summary.setText(_compact_json({"status": "save_failed", "message": str(exc)}))
+            self.log(f"Script training config save failed: {exc}")
+            return
+        trainer = bundle["trainer"]
+        config = bundle["training_config"]
+        manifest_path = str(trainer.get("manifest_path") or "").strip()
+        trainer_root = str(Path(manifest_path).parent.resolve()) if manifest_path else None
+        self.model_summary.setText(_compact_json({"status": "queued", **bundle}))
+        self.log(f"Starting script training config: {config.get('label', config.get('id', services.NAN_TEXT))}")
+        self._run_task(
+            lambda: services.run_training_config_job(config, trainer_root=trainer_root),
+            self._training_config_finished,
+            "script training config failed",
+            task_label=f"Train {trainer.get('label', trainer.get('id', 'script'))}",
+        )
+
+    def _save_script_training_config_bundle(self) -> dict[str, Any]:
+        entrypoint = self.trainer_entrypoint_edit.text().strip()
+        if not entrypoint:
+            raise ValueError("Trainer entrypoint is required.")
+        label = self.training_config_name_edit.text().strip() or Path(entrypoint).stem.replace("_", " ").title()
+        parameters = self._trainer_parameters_from_text()
+        schema = self._trainer_schema_from_text()
+        arguments = self._trainer_arguments_for_script_config()
+        return services.save_script_training_config(
+            label=label,
+            trainer_entrypoint=entrypoint,
+            dataset_root=self.dataset_root_edit.text().strip(),
+            adapter=self.adapter_edit.text().strip(),
+            sequence_id=self.sequence_combo.currentText().strip(),
+            output_path=self.training_output_edit.text().strip(),
+            parameters=parameters,
+            parameter_schema=schema or None,
+            arguments=arguments,
+        )
 
     def import_world_model_config(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -2728,6 +2789,11 @@ class MainWindow(QMainWindow):
         if not isinstance(payload, list) or not all(isinstance(item, str) for item in payload):
             raise ValueError("Expected trainer arguments to be a JSON list of strings.")
         return payload
+
+    def _trainer_arguments_for_script_config(self) -> list[str] | None:
+        arguments = self._trainer_arguments_from_text()
+        default_arguments = ["{dataset_root}", "--output", "{output_dir}"]
+        return None if arguments == default_arguments else arguments
 
     def _trainer_schema_from_text(self) -> dict[str, Any]:
         text = self.trainer_schema_edit.toPlainText().strip() if hasattr(self, "trainer_schema_edit") else ""

@@ -111,7 +111,13 @@ If a trainer does not ship with a manifest yet, the Model Training tab can
 create one directly from a local script path. Set `Trainer entrypoint`, edit the
 JSON `Trainer arguments` list such as `["{dataset_root}", "--output",
 "{output_dir}"]`, optionally declare a JSON parameter schema, then click `Save
-trainer from script`. Training bundles can also inline the same definition:
+trainer from script`. For the faster path, fill the dataset fields, the script
+path, and `Training parameters`, then click `Run script now`; the GUI will save
+both the generated `trainer.yaml` and reusable training config before launching
+the same unified training runner. If the argument template is still the default
+dataset/output pair, the GUI infers command flags from the parameter names, for
+example `{"epochs": 10}` becomes `--epochs {params.epochs}`. Training bundles
+can also inline the same definition:
 
 ```yaml
 trainer:

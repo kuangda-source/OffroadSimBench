@@ -1416,6 +1416,62 @@ def save_training_config(
     return row
 
 
+def save_script_training_config(
+    *,
+    label: str,
+    trainer_entrypoint: str,
+    dataset_root: str,
+    adapter: str = "",
+    sequence_id: str = "",
+    output_path: str = "",
+    parameters: dict[str, Any] | None = None,
+    parameter_schema: dict[str, Any] | None = None,
+    arguments: list[str] | None = None,
+    trainer_id: str = "",
+    runtime: str = "python",
+    input_spec: dict[str, Any] | None = None,
+    outputs: dict[str, Any] | None = None,
+    description: str = "",
+    trainer_destination_root: str | Path | None = None,
+    training_config_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """Create a reusable trainer and config from a local training script.
+
+    This is the simple GUI boundary for "bring a dataset, a script path, and
+    parameters": users can avoid hand-writing trainer.yaml unless they need a
+    custom command template.
+    """
+
+    values = dict(parameters or {})
+    schema = dict(parameter_schema or _infer_trainer_parameter_schema(values))
+    command_args = list(arguments or _default_trainer_arguments(schema))
+    trainer_label = label or Path(trainer_entrypoint).stem.replace("_", " ").title()
+    trainer = save_trainer_manifest(
+        trainer_id=trainer_id or trainer_label,
+        label=trainer_label,
+        entrypoint=trainer_entrypoint,
+        runtime=runtime,
+        arguments=command_args,
+        parameters=schema,
+        input_spec=input_spec or {"dataset_format": "any_registered_adapter"},
+        outputs=outputs or {"artifact_type": "checkpoint"},
+        description=description,
+        destination_root=trainer_destination_root,
+    )
+    config = save_training_config(
+        config_id=label or trainer_label,
+        label=label or trainer_label,
+        training_preset_id=str(trainer["id"]),
+        dataset_root=dataset_root,
+        adapter=adapter,
+        sequence_id=sequence_id,
+        output_path=output_path,
+        parameters=values,
+        path=training_config_path,
+    )
+    return {"trainer": trainer, "training_config": config}
+
+
 def import_training_config(
     source_path: str | Path,
     *,
@@ -3273,6 +3329,31 @@ def _trainer_parameters(schema: dict[str, Any], overrides: dict[str, Any]) -> di
         spec = schema.get(name) if isinstance(schema.get(name), dict) else {}
         values[str(name)] = _coerce_trainer_value(value, str(spec.get("type") or "str"))
     return values
+
+
+def _infer_trainer_parameter_schema(parameters: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    schema: dict[str, dict[str, Any]] = {}
+    for name, value in parameters.items():
+        key = str(name)
+        if isinstance(value, bool):
+            value_type = "bool"
+        elif isinstance(value, int):
+            value_type = "int"
+        elif isinstance(value, float):
+            value_type = "float"
+        else:
+            value_type = "str"
+        schema[key] = {"type": value_type, "default": value}
+    return schema
+
+
+def _default_trainer_arguments(schema: dict[str, Any]) -> list[str]:
+    arguments = ["{dataset_root}", "--output", "{output_dir}"]
+    for name in schema:
+        key = str(name)
+        flag = "--" + key.replace("_", "-")
+        arguments.extend([flag, "{params." + key + "}"])
+    return arguments
 
 
 def _coerce_trainer_value(value: Any, value_type: str) -> Any:

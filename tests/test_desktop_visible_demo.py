@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import threading
 import time
@@ -421,6 +422,99 @@ def test_gui_saves_and_applies_training_config(monkeypatch, tmp_path) -> None:
     assert window.sequence_combo.currentText() == "clip_001"
     assert window.home_model_combo.currentText() == "outputs/models/custom_tiny"
     assert '"epochs": 5' in window.trainer_params_edit.toPlainText()
+    window.close()
+
+
+def test_gui_can_start_training_from_script_path_without_manifest(monkeypatch, tmp_path) -> None:
+    _ensure_app()
+    script = tmp_path / "train_any.py"
+    script.write_text("print('{}')\n", encoding="utf-8")
+    dataset_root = tmp_path / "dataset"
+    dataset_root.mkdir()
+    output_dir = tmp_path / "run"
+    window = MainWindow()
+    window.training_config_name_edit.setText("Script Config")
+    window.dataset_root_edit.setText(str(dataset_root))
+    window.adapter_edit.setText("manifest_dataset")
+    window.sequence_combo.setCurrentText("clip_001")
+    window.training_output_edit.setText(str(output_dir))
+    window.trainer_entrypoint_edit.setText(str(script))
+    window.trainer_params_edit.setPlainText('{"epochs": 5, "learning_rate": 0.01}')
+    window.trainer_schema_edit.setPlainText("")
+    window.trainer_arguments_edit.setPlainText(json.dumps(["{dataset_root}", "--output", "{output_dir}"], indent=2))
+    saved = {
+        "trainer": {
+            "id": "script_config",
+            "label": "Script Config",
+            "manifest_path": str(tmp_path / "trainers" / "script_config.yaml"),
+        },
+        "training_config": {
+            "id": "script_config",
+            "label": "Script Config",
+            "training_preset_id": "script_config",
+            "dataset_root": str(dataset_root),
+            "adapter": "manifest_dataset",
+            "sequence_id": "clip_001",
+            "output_path": str(output_dir),
+            "parameters": {"epochs": 5, "learning_rate": 0.01},
+        },
+    }
+    captured: dict[str, object] = {}
+
+    def fake_save_script_training_config(**kwargs):
+        captured["save"] = kwargs
+        return saved
+
+    def fake_run_training_config_job(config, **kwargs):
+        captured["run_config"] = config
+        captured["run_kwargs"] = kwargs
+        return {"output_dir": str(output_dir), "training_run_path": str(output_dir / "training_run.json")}
+
+    monkeypatch.setattr(services, "save_script_training_config", fake_save_script_training_config)
+    monkeypatch.setattr(services, "run_training_config_job", fake_run_training_config_job)
+    monkeypatch.setattr(window, "_run_task", lambda task, callback, label, **kwargs: callback(task()))
+
+    window.run_script_training_config()
+
+    save_kwargs = captured["save"]
+    assert save_kwargs["trainer_entrypoint"] == str(script)
+    assert save_kwargs["dataset_root"] == str(dataset_root)
+    assert save_kwargs["adapter"] == "manifest_dataset"
+    assert save_kwargs["sequence_id"] == "clip_001"
+    assert save_kwargs["output_path"] == str(output_dir)
+    assert save_kwargs["parameters"] == {"epochs": 5, "learning_rate": 0.01}
+    assert save_kwargs["arguments"] is None
+    assert captured["run_config"]["training_preset_id"] == "script_config"
+    assert captured["run_kwargs"]["trainer_root"] == str((tmp_path / "trainers").resolve())
+    window.close()
+
+
+def test_gui_script_training_leaves_output_empty_for_service_default(monkeypatch, tmp_path) -> None:
+    _ensure_app()
+    script = tmp_path / "train_any.py"
+    script.write_text("print('{}')\n", encoding="utf-8")
+    dataset_root = tmp_path / "dataset"
+    dataset_root.mkdir()
+    window = MainWindow()
+    window.training_config_name_edit.setText("Script Config")
+    window.dataset_root_edit.setText(str(dataset_root))
+    window.training_output_edit.setText("")
+    window.model_path_edit.setText("outputs/existing_checkpoint.ckpt")
+    window.trainer_entrypoint_edit.setText(str(script))
+    captured: dict[str, object] = {}
+
+    def fake_save_script_training_config(**kwargs):
+        captured.update(kwargs)
+        return {
+            "trainer": {"id": "script_config", "manifest_path": str(tmp_path / "trainers" / "script_config.yaml")},
+            "training_config": {"id": "script_config", "training_preset_id": "script_config"},
+        }
+
+    monkeypatch.setattr(services, "save_script_training_config", fake_save_script_training_config)
+
+    window.save_script_training_config_from_gui()
+
+    assert captured["output_path"] == ""
     window.close()
 
 
