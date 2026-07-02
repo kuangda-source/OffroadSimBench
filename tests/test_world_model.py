@@ -117,6 +117,34 @@ def test_tiny_learned_world_model_records_gear_feature() -> None:
     assert model.weights.shape[0] == len(model.metadata["feature_names"])
 
 
+def test_tiny_learned_world_model_records_validation_and_segment_errors() -> None:
+    frames = [
+        DatasetFrame(
+            f"{index:06d}",
+            float(index),
+            VehicleState(x=float(index), y=0.0, yaw=0.0, speed=1.0),
+            action=Action(throttle=0.4),
+        )
+        for index in range(7)
+    ]
+    sequence = DatasetSequence(
+        dataset_id="beamng_episode",
+        dataset_type="beamng_episode",
+        sequence_id="segmented",
+        root=".",
+        frames=frames,
+        goal=(6.0, 0.0),
+    )
+
+    model = TinyLearnedWorldModel.fit([sequence], ridge=1e-4, validation_fraction=0.34)
+
+    assert model.metadata["validation_sample_count"] >= 1
+    assert model.metadata["validation_rmse"] >= 0.0
+    assert set(model.metadata["segment_rmse"]) == {"start", "middle", "goal"}
+    assert all(model.metadata["segment_sample_count"][name] >= 1 for name in ("start", "middle", "goal"))
+    assert all(model.metadata["segment_rmse"][name] >= 0.0 for name in ("start", "middle", "goal"))
+
+
 def test_tiny_learned_world_model_loads_legacy_weights_without_gear(tmp_path) -> None:
     model_dir = tmp_path / "legacy_tiny"
     model_dir.mkdir()

@@ -25,6 +25,7 @@ class WorldModelDirectAgent(OffroadAgent):
         planner_name: str | None = None,
         planner_config: dict[str, Any] | None = None,
         allow_reverse_recovery: bool = False,
+        local_subgoal_distance_m: float = 22.0,
         **_: Any,
     ) -> None:
         self.world_model_name = str(world_model_name or "simple_kinematic")
@@ -37,6 +38,7 @@ class WorldModelDirectAgent(OffroadAgent):
             planner_kwargs.setdefault("checkpoint_path", world_model_path)
         self.planner = make_planner(self.planner_name, **planner_kwargs) if planner_name else NavigationMPCPlanner(**planner_kwargs)
         self.allow_reverse_recovery = bool(allow_reverse_recovery)
+        self.local_subgoal_distance_m = max(1.0, float(local_subgoal_distance_m))
         self._last_diagnostics: dict[str, Any] = {}
         self._stuck_steps = 0
         self._last_goal_distance: float | None = None
@@ -59,14 +61,18 @@ class WorldModelDirectAgent(OffroadAgent):
                 "world_model": self.world_model_name,
                 "world_model_path": self.world_model_path,
                 "target_goal": [float(obs.goal[0]), float(obs.goal[1])],
+                "local_subgoal": [float(obs.goal[0]), float(obs.goal[1])],
+                "planner_goal": [float(obs.goal[0]), float(obs.goal[1])],
                 "route_used": False,
                 "goal_stop": True,
                 "goal_hold_latched": self._goal_hold_latched,
                 "executed_action": _action_dict(terminal_stop),
             }
             return terminal_stop
-        reference_action = self.reference_agent.act(obs)
-        planning = self.planner.plan(obs, self.world_model, reference_action=reference_action)
+        local_subgoal = self._local_subgoal(obs)
+        planning_obs = _observation_with_goal(obs, local_subgoal)
+        reference_action = self.reference_agent.act(planning_obs)
+        planning = self.planner.plan(planning_obs, self.world_model, reference_action=reference_action)
         stabilized = _stabilize_action(planning.first_action, reference_action, obs)
         action, stuck_recovery = self._progress_filter(stabilized, reference_action, obs)
         self._last_diagnostics = {
@@ -77,6 +83,8 @@ class WorldModelDirectAgent(OffroadAgent):
             "best_cost": planning.best_cost,
             "planning": planning.metadata,
             "target_goal": [float(obs.goal[0]), float(obs.goal[1])],
+            "local_subgoal": [float(local_subgoal[0]), float(local_subgoal[1])],
+            "planner_goal": [float(planning_obs.goal[0]), float(planning_obs.goal[1])],
             "route_used": False,
             "reference_action": _action_dict(reference_action),
             "executed_action": _action_dict(action),
@@ -188,6 +196,66 @@ class WorldModelDirectAgent(OffroadAgent):
         self._stuck_steps = 0
         self._last_goal_distance = distance
         return Action(steer=0.0, throttle=0.0, brake=1.0, gear=0)
+
+    def _local_subgoal(self, obs: Observation) -> tuple[float, float]:
+        state = obs.vehicle_state
+        start = (float(state.x), float(state.y))
+        goal = (float(obs.goal[0]), float(obs.goal[1]))
+        dx = goal[0] - start[0]
+        dy = goal[1] - start[1]
+        distance = math.hypot(dx, dy)
+        if distance <= self.local_subgoal_distance_m:
+            return goal
+        ux = dx / distance
+        uy = dy / distance
+        polygon = _navigation_polygon(obs.info)
+        for scale in (1.0, 0.8, 0.6, 0.4, 0.25):
+            step = self.local_subgoal_distance_m * scale
+            candidate = (start[0] + ux * step, start[1] + uy * step)
+            if not polygon or _point_in_polygon(candidate, polygon):
+                return candidate
+        return start
+
+
+def _observation_with_goal(obs: Observation, goal: tuple[float, float]) -> Observation:
+    return Observation(
+        timestamp=obs.timestamp,
+        vehicle_state=obs.vehicle_state,
+        goal=(float(goal[0]), float(goal[1])),
+        front_rgb=obs.front_rgb,
+        depth=obs.depth,
+        lidar_points=obs.lidar_points,
+        local_bev=obs.local_bev,
+        terrain_map=obs.terrain_map,
+        info=obs.info,
+    )
+
+
+def _navigation_polygon(info: dict[str, Any]) -> list[tuple[float, float]]:
+    task = info.get("navigation_region", {}) if isinstance(info, dict) else {}
+    region = task.get("region", {}) if isinstance(task, dict) else {}
+    raw = region.get("polygon", []) if isinstance(region, dict) else []
+    polygon: list[tuple[float, float]] = []
+    for point in raw or []:
+        try:
+            polygon.append((float(point[0]), float(point[1])))
+        except (TypeError, ValueError, IndexError):
+            continue
+    return polygon if len(polygon) >= 3 else []
+
+
+def _point_in_polygon(point: tuple[float, float], polygon: list[tuple[float, float]]) -> bool:
+    x, y = point
+    inside = False
+    j = len(polygon) - 1
+    for i, current in enumerate(polygon):
+        previous = polygon[j]
+        if ((current[1] > y) != (previous[1] > y)) and (
+            x < (previous[0] - current[0]) * (y - current[1]) / ((previous[1] - current[1]) or 1e-12) + current[0]
+        ):
+            inside = not inside
+        j = i
+    return inside
 
 
 def _stabilize_action(action: Action, reference_action: Action, obs: Observation) -> Action:

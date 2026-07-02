@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import sys
 from pathlib import Path
 from unittest.mock import patch
@@ -160,6 +161,11 @@ def test_region_self_supervised_world_model_trains_and_evaluates_without_route(t
     assert training_record["metrics"]["min_goal_distance"] <= 5.0
     assert training_record["metrics"]["collection_min_goal_distance"] > 30.0
     assert training_record["metrics"]["collection_distance_traveled"] == 8.0
+    assert training_record["metrics"]["validation_rmse"] == payload["training"]["metrics"]["validation_rmse"]
+    assert training_record["metrics"]["validation_sample_count"] == payload["training"]["metrics"]["validation_sample_count"]
+    assert training_record["metrics"]["segment_rmse"] == payload["training"]["metrics"]["segment_rmse"]
+    assert training_record["metrics"]["segment_sample_count"] == payload["training"]["metrics"]["segment_sample_count"]
+    assert training_record["history"]["validation_rmse"] == [payload["training"]["metrics"]["validation_rmse"]]
     assert training_record["history"]["collection_min_goal_distance"] == [training_record["metrics"]["collection_min_goal_distance"]]
     config = payload["world_model_config"]
     saved_config = next(row for row in services.world_model_config_entries(tmp_path / "world_model_configs.json") if row["id"] == config["id"])
@@ -168,10 +174,13 @@ def test_region_self_supervised_world_model_trains_and_evaluates_without_route(t
     assert saved_config["model_path"] == payload["model_dir"]
     assert saved_config["source_training_run_path"] == payload["training_run_path"]
     assert saved_config["validation"]["goal_success"] is True
+    assert saved_config["validation"]["validation_rmse"] == payload["training"]["metrics"]["validation_rmse"]
+    assert saved_config["validation"]["segment_rmse"] == payload["training"]["metrics"]["segment_rmse"]
     refreshed_record = json.loads(Path(payload["training_run_path"]).read_text(encoding="utf-8"))
     assert refreshed_record["summary"]["world_model_config"]["id"] == config["id"]
     assert refreshed_record["summary"]["world_model_config"]["model_path"] == payload["model_dir"]
     assert refreshed_record["summary"]["world_model_config"]["validation"]["goal_success"] is True
+    assert refreshed_record["summary"]["world_model_config"]["validation"]["validation_rmse"] == payload["training"]["metrics"]["validation_rmse"]
 
 
 def test_region_self_supervised_world_model_trains_from_multiple_collection_rollouts(tmp_path: Path) -> None:
@@ -374,10 +383,17 @@ def test_region_world_model_training_from_collection_registers_model_config(tmp_
     assert training_record["artifact_type"] == "world_model"
     assert training_record["artifact_path"] == payload["model_dir"]
     assert training_record["metrics"]["train_rmse"] == payload["training"]["metrics"]["train_rmse"]
+    assert training_record["metrics"]["validation_rmse"] == payload["training"]["metrics"]["validation_rmse"]
+    assert training_record["metrics"]["validation_sample_count"] == payload["training"]["metrics"]["validation_sample_count"]
+    assert training_record["metrics"]["segment_rmse"] == payload["training"]["metrics"]["segment_rmse"]
+    assert training_record["metrics"]["segment_sample_count"] == payload["training"]["metrics"]["segment_sample_count"]
+    assert training_record["history"]["validation_rmse"] == [payload["training"]["metrics"]["validation_rmse"]]
     assert saved_config["algorithm"] == "world_model_direct"
     assert saved_config["world_model"] == "tiny_learned"
     assert saved_config["model_path"] == payload["model_dir"]
     assert saved_config["source_training_run_path"] == payload["training_run_path"]
+    assert saved_config["validation"]["validation_rmse"] == payload["training"]["metrics"]["validation_rmse"]
+    assert saved_config["validation"]["segment_rmse"] == payload["training"]["metrics"]["segment_rmse"]
 
 
 def test_region_world_model_training_refuses_insufficient_collection_manifest(tmp_path: Path) -> None:
@@ -449,11 +465,13 @@ def test_region_self_supervised_world_model_records_navigation_diagnostics_when_
 
     assert payload["status"] == "completed"
     assert payload["acceptance"]["goal_success"] is False
-    assert diagnostics["status"] == "navigation_model_insufficient"
+    assert diagnostics["status"] == "training_coverage_insufficient"
     assert diagnostics["evidence"]["route_free"] is True
     assert diagnostics["evidence"]["model_controlled"] is True
     assert diagnostics["evidence"]["min_goal_distance"] > payload["acceptance"]["goal_radius"]
-    assert any("coverage" in item.lower() for item in diagnostics["next_actions"])
+    assert diagnostics["evidence"]["segment_sample_count"]["middle"] == 0
+    assert diagnostics["evidence"]["segment_sample_count"]["goal"] == 0
+    assert any("middle/goal" in item.lower() for item in diagnostics["next_actions"])
     assert training_record["summary"]["diagnostics"] == diagnostics
 
 
@@ -505,6 +523,49 @@ def test_region_self_supervised_world_model_stops_when_collection_makes_no_goal_
     assert "world_model_config" not in training_record["summary"]
     assert payload.get("world_model_config") in ({}, None)
     assert not (tmp_path / "world_model_configs.json").exists()
+
+
+def test_region_self_supervised_world_model_marks_too_short_collection_episode_insufficient(tmp_path: Path) -> None:
+    task_path = tmp_path / "task.yaml"
+    _write_task(task_path)
+    collection_episode = _save_episode(
+        tmp_path / "collection_short",
+        [(35.0, 35.0, 0.0, 0.0)],
+    )
+    seen_agents: list[str] = []
+
+    def fake_run_episode(**kwargs):
+        seen_agents.append(kwargs["agent_name"])
+
+        class Result:
+            def to_dict(self):
+                return {
+                    "episode_id": "collect_short",
+                    "episode_path": str(collection_episode),
+                    "metrics": {"horizontal_distance_traveled": 0.0, "collision_count": 0, "drive_mode": "manual"},
+                }
+
+        return Result()
+
+    with patch("desktop_app.services.run_episode", side_effect=fake_run_episode):
+        payload = services.run_region_self_supervised_world_model(
+            services.RegionSelfSupervisedWorldModelRequest(
+                task_path=str(task_path),
+                output_dir=str(tmp_path / "out"),
+                collect_steps=20,
+                collect_rollouts=1,
+                close_beamng=True,
+            )
+        )
+
+    training_record = json.loads(Path(payload["training_run_path"]).read_text(encoding="utf-8"))
+
+    assert seen_agents == ["region_explorer"]
+    assert payload["status"] == "collection_insufficient"
+    assert payload["quality_gate"]["reason"] == "collection_episode_too_short"
+    assert payload["training"]["status"] == "skipped"
+    assert training_record["status"] == "collection_insufficient"
+    assert training_record["summary"]["diagnostics"]["status"] == "collection_insufficient"
 
 
 def test_region_world_model_evaluation_loads_existing_model_without_training(tmp_path: Path) -> None:
@@ -670,6 +731,48 @@ def test_region_training_data_collection_can_use_route_aware_curriculum(tmp_path
     assert payload["metrics"]["collection_min_goal_distance"] <= 5.0
 
 
+def test_route_aware_collection_can_spawn_multiple_starts_along_expert_route(tmp_path: Path) -> None:
+    task_path = tmp_path / "task.yaml"
+    _write_task(task_path)
+    episodes = [
+        _save_episode(tmp_path / f"collection_{index}", [(2.0, 2.0, 0.0, 0.5), (35.0, 35.0, 0.45, 1.5)])
+        for index in range(3)
+    ]
+    seen_starts: list[list[float]] = []
+
+    def fake_run_episode(**kwargs):
+        beamng = kwargs["scenario"]["metadata"]["beamng"]
+        seen_starts.append(list(beamng["vehicle_start"]["pos"]))
+        index = len(seen_starts) - 1
+
+        class Result:
+            def to_dict(self):
+                return {
+                    "episode_id": f"collection_{index}",
+                    "episode_path": str(episodes[index]),
+                    "metrics": {"horizontal_distance_traveled": 50.0, "collision_count": 0, "drive_mode": "manual"},
+                }
+
+        return Result()
+
+    with patch("desktop_app.services.run_episode", side_effect=fake_run_episode):
+        services.collect_region_training_data(
+            services.RegionTrainingDataCollectionRequest(
+                task_path=str(task_path),
+                output_dir=str(tmp_path / "collection_run"),
+                collect_steps=20,
+                collect_rollouts=3,
+                collection_strategy="route_aware",
+                collection_route_target_interval=1,
+                collection_multi_start=True,
+                close_beamng=True,
+            )
+        )
+
+    assert [point[:2] for point in seen_starts] == [[2.0, 2.0], [10.0, 30.0], [10.0, 30.0]]
+    assert all(math.hypot(point[0] - 35.0, point[1] - 35.0) > 5.0 for point in seen_starts)
+
+
 def test_region_training_data_collection_marks_insufficient_quality_gate(tmp_path: Path) -> None:
     task_path = tmp_path / "task.yaml"
     _write_task(task_path)
@@ -748,6 +851,19 @@ def test_region_self_supervised_script_exposes_gui_training_options(monkeypatch,
             "2",
             "--collection-max-target-steps",
             "35",
+            "--collection-strategy",
+            "route_aware",
+            "--collection-route-target-interval",
+            "1",
+            "--collection-route-lateral-m",
+            "2.5",
+            "--collection-multi-start",
+            "--collection-multi-start-lateral-m",
+            "1.25",
+            "--min-route-coverage-ratio",
+            "0.55",
+            "--min-goal-zone-coverage",
+            "0.25",
             "--register-world-model-config",
             "--world-model-config-path",
             str(tmp_path / "world_model_configs.json"),
@@ -765,6 +881,13 @@ def test_region_self_supervised_script_exposes_gui_training_options(monkeypatch,
     assert request.collection_coverage_grid_size == 5
     assert request.collection_coverage_target_interval == 2
     assert request.collection_max_target_steps == 35
+    assert request.collection_strategy == "route_aware"
+    assert request.collection_route_target_interval == 1
+    assert request.collection_route_lateral_m == 2.5
+    assert request.collection_multi_start is True
+    assert request.collection_multi_start_lateral_m == 1.25
+    assert request.min_route_coverage_ratio == 0.55
+    assert request.min_goal_zone_coverage == 0.25
     assert request.register_world_model_config is True
     assert request.world_model_config_path == str(tmp_path / "world_model_configs.json")
     assert json.loads(capsys.readouterr().out)["status"] == "ok"

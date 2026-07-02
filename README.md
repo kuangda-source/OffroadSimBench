@@ -480,6 +480,18 @@ writes `training_run.json`, registers the trained model as a selectable world
 model config, and updates the BeamNG page so `开始评估` can immediately run the
 same task with the trained model.
 
+Route-free training diagnostics are intentionally stricter than "a model file
+was produced." Region self-supervised runs now record train/validation RMSE,
+middle/goal segment sample counts, route coverage, goal-zone coverage, stuck
+recovery count, reverse count, and final/minimum goal distance. Route-aware
+multi-start collection avoids spawning inside the goal radius, and a model that
+only contains start-segment samples is diagnosed as
+`training_coverage_insufficient` instead of being treated as navigation-ready.
+A short real Johnson Valley probe on 2026-07-03 completed collection, training,
+and route-free evaluation, but the tiny model only reached a minimum goal
+distance of about 110.55 m after moving about 10.17 m. That probe validates the
+pipeline and the diagnostics, not final route-free autonomous driving quality.
+
 Saved tasks default to `evaluation_drive_mode: manual`, which means
 the `OffroadAgent`/planner commands control the vehicle during evaluation.
 `evaluation_drive_mode: ai_line` remains available only for BeamNG-native

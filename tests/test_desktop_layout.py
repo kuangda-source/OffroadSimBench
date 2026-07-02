@@ -158,6 +158,28 @@ def test_training_run_overview_surfaces_region_navigation_diagnostics() -> None:
     assert "diagnostic_next: Collect wider coverage inside the region." in text
 
 
+def test_training_run_overview_surfaces_validation_quality_metrics() -> None:
+    text = _training_run_overview_text(
+        {
+            "run_id": "demo",
+            "preset_id": "region_world_model_training",
+            "status": "completed",
+            "artifact_path": "outputs/model",
+            "metrics": {
+                "train_rmse": 0.42,
+                "validation_rmse": 0.73,
+                "validation_sample_count": 3,
+                "segment_rmse": {"start": 0.1, "middle": 0.2, "goal": None},
+            },
+        }
+    )
+
+    assert "validation_rmse: 0.73" in text
+    assert "validation_sample_count: 3" in text
+    assert "segment_rmse.start: 0.1" in text
+    assert "segment_rmse.middle: 0.2" in text
+
+
 def test_region_world_model_summary_surfaces_baseline_comparison() -> None:
     text = _region_world_model_summary_text(
         {

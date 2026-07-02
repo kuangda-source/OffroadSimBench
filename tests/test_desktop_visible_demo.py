@@ -989,6 +989,15 @@ def test_training_curve_widget_accepts_metric_history() -> None:
     assert curve.primary_metric == "loss"
 
 
+def test_training_curve_widget_prioritizes_validation_rmse_for_world_models() -> None:
+    _ensure_app()
+    curve = TrainingCurveWidget()
+
+    curve.set_history({"train_rmse": [0.4], "validation_rmse": [0.7], "segment_rmse.start": [0.2]})
+
+    assert curve.primary_metric == "validation_rmse"
+
+
 def test_gui_world_model_page_saves_config_for_home(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(services, "WORLD_MODEL_CONFIGS_PATH", tmp_path / "world_model_configs.json")
     _ensure_app()
@@ -1217,6 +1226,7 @@ def test_gui_exposes_region_self_supervised_training(monkeypatch) -> None:
     assert captured["request"].collection_strategy == "route_aware"
     assert captured["request"].collection_route_target_interval == 1
     assert captured["request"].collection_route_lateral_m > 0.0
+    assert captured["request"].collection_multi_start is True
     assert captured["request"].min_route_coverage_ratio >= 0.5
     assert captured["request"].collection_coverage_grid_size >= 6
     assert captured["request"].collection_coverage_target_interval == 1
@@ -1270,6 +1280,7 @@ def test_gui_collects_region_training_data_from_selected_task(monkeypatch) -> No
     assert captured["request"].collection_strategy == "route_aware"
     assert captured["request"].collection_route_target_interval == 1
     assert captured["request"].collection_route_lateral_m > 0.0
+    assert captured["request"].collection_multi_start is True
     assert captured["request"].min_route_coverage_ratio >= 0.5
     assert captured["request"].collection_coverage_grid_size >= 6
     assert captured["request"].collection_max_target_steps <= 30

@@ -62,9 +62,10 @@ class TinyLearnedWorldModel(BaseWorldModel):
         self.metadata["output_names"] = list(OUTPUT_NAMES)
 
     @classmethod
-    def fit(cls, sequences: Iterable[DatasetSequence], *, ridge: float = 1e-4) -> "TinyLearnedWorldModel":
+    def fit(cls, sequences: Iterable[DatasetSequence], *, ridge: float = 1e-4, validation_fraction: float = 0.2) -> "TinyLearnedWorldModel":
         features: list[np.ndarray] = []
         targets: list[np.ndarray] = []
+        segment_labels: list[str] = []
         frame_count = 0
         sequence_count = 0
         recorded_action_sample_count = 0
@@ -73,27 +74,42 @@ class TinyLearnedWorldModel(BaseWorldModel):
             sequence_count += 1
             frames = sequence.frames
             frame_count += len(frames)
-            for current, nxt in zip(frames, frames[1:]):
+            for transition_index, (current, nxt) in enumerate(zip(frames, frames[1:])):
                 action, action_source = _transition_action(current, nxt)
                 if action_source == "recorded":
                     recorded_action_sample_count += 1
                 features.append(_features(current.vehicle_state, action))
                 targets.append(_target(current.vehicle_state, nxt.vehicle_state))
+                segment_labels.append(_transition_segment(sequence, transition_index, current.vehicle_state))
 
         if not features:
             raise ValueError("TinyLearnedWorldModel.fit requires at least two frames.")
 
         x = np.vstack(features)
         y = np.vstack(targets)
+        train_indices, validation_indices = _train_validation_indices(int(x.shape[0]), validation_fraction=validation_fraction)
+        train_x = x[train_indices]
+        train_y = y[train_indices]
         regularizer = ridge * np.eye(x.shape[1])
-        weights = np.linalg.solve(x.T @ x + regularizer, x.T @ y)
-        residual = x @ weights - y
+        weights = np.linalg.solve(train_x.T @ train_x + regularizer, train_x.T @ train_y)
+        train_residual = train_x @ weights - train_y
+        validation_residual = x[validation_indices] @ weights - y[validation_indices] if validation_indices.size else np.empty((0, y.shape[1]))
+        all_residual = x @ weights - y
+        segment_rmse, segment_sample_count = _segment_error_summary(all_residual, segment_labels)
         metadata = {
             "sequence_count": sequence_count,
             "frame_count": frame_count,
             "sample_count": int(x.shape[0]),
-            "train_mse": float(np.mean(residual**2)),
-            "train_rmse": float(np.sqrt(np.mean(residual**2))),
+            "transition_count": int(x.shape[0]),
+            "train_sample_count": int(train_indices.size),
+            "validation_sample_count": int(validation_indices.size),
+            "validation_fraction": float(max(0.0, min(0.9, validation_fraction))),
+            "train_mse": float(np.mean(train_residual**2)),
+            "train_rmse": float(np.sqrt(np.mean(train_residual**2))),
+            "validation_mse": float(np.mean(validation_residual**2)) if validation_indices.size else math.nan,
+            "validation_rmse": float(np.sqrt(np.mean(validation_residual**2))) if validation_indices.size else math.nan,
+            "segment_rmse": segment_rmse,
+            "segment_sample_count": segment_sample_count,
             "recorded_action_sample_count": recorded_action_sample_count,
             "feature_names": list(FEATURE_NAMES),
             "output_names": list(OUTPUT_NAMES),
@@ -247,6 +263,57 @@ def _transition_action(current: DatasetFrame, nxt: DatasetFrame) -> tuple[Action
     if current.action is not None:
         return current.action, "recorded"
     return _action_from_pair(current.vehicle_state, nxt.vehicle_state), "inferred"
+
+
+def _train_validation_indices(sample_count: int, *, validation_fraction: float) -> tuple[np.ndarray, np.ndarray]:
+    if sample_count <= 1:
+        return np.arange(sample_count, dtype=np.int64), np.asarray([], dtype=np.int64)
+    fraction = max(0.0, min(0.9, float(validation_fraction)))
+    validation_count = int(round(sample_count * fraction))
+    if fraction > 0.0:
+        validation_count = max(1, validation_count)
+    validation_count = min(sample_count - 1, validation_count)
+    if validation_count <= 0:
+        return np.arange(sample_count, dtype=np.int64), np.asarray([], dtype=np.int64)
+    # Deterministic spread over the trajectory keeps start/middle/goal samples represented.
+    validation_indices = np.unique(np.linspace(0, sample_count - 1, validation_count, dtype=np.int64))
+    if validation_indices.size < validation_count:
+        missing = validation_count - int(validation_indices.size)
+        candidates = [index for index in range(sample_count - 1, -1, -1) if index not in set(int(item) for item in validation_indices)]
+        validation_indices = np.asarray(sorted([*validation_indices.tolist(), *candidates[:missing]]), dtype=np.int64)
+    validation_set = set(int(index) for index in validation_indices)
+    train_indices = np.asarray([index for index in range(sample_count) if index not in validation_set], dtype=np.int64)
+    return train_indices, validation_indices
+
+
+def _transition_segment(sequence: DatasetSequence, transition_index: int, state: VehicleState) -> str:
+    if sequence.goal is not None and sequence.frames:
+        start = sequence.frames[0].vehicle_state
+        start_distance = math.hypot(float(start.x) - float(sequence.goal[0]), float(start.y) - float(sequence.goal[1]))
+        current_distance = math.hypot(float(state.x) - float(sequence.goal[0]), float(state.y) - float(sequence.goal[1]))
+        progress = 0.0 if start_distance <= 1e-9 else max(0.0, min(1.0, (start_distance - current_distance) / start_distance))
+    else:
+        transition_count = max(1, len(sequence.frames) - 1)
+        progress = max(0.0, min(1.0, transition_index / transition_count))
+    if progress < 1.0 / 3.0:
+        return "start"
+    if progress < 2.0 / 3.0:
+        return "middle"
+    return "goal"
+
+
+def _segment_error_summary(residual: np.ndarray, labels: list[str]) -> tuple[dict[str, float | None], dict[str, int]]:
+    rmse: dict[str, float | None] = {}
+    counts: dict[str, int] = {}
+    for name in ("start", "middle", "goal"):
+        indices = [index for index, label in enumerate(labels) if label == name]
+        counts[name] = len(indices)
+        if not indices:
+            rmse[name] = None
+            continue
+        segment_residual = residual[np.asarray(indices, dtype=np.int64)]
+        rmse[name] = float(np.sqrt(np.mean(segment_residual**2)))
+    return rmse, counts
 
 
 def _normalize_weights(weights: np.ndarray, expected_shape: tuple[int, int]) -> np.ndarray:

@@ -244,6 +244,30 @@ def test_world_model_direct_agent_ignores_expert_route_info() -> None:
     assert diagnostics["route_used"] is False
 
 
+def test_world_model_direct_agent_uses_local_subgoal_inside_region() -> None:
+    agent = make_agent("world_model_direct", planner_config={"horizon": 4, "num_samples": 16, "seed": 4}, local_subgoal_distance_m=12.0)
+    observation = Observation(
+        timestamp=0.0,
+        vehicle_state=VehicleState(x=2.0, y=2.0, yaw=0.0, speed=1.0),
+        goal=(35.0, 2.0),
+        info={
+            "navigation_region": {
+                "region": {"polygon": [[0.0, 0.0], [40.0, 0.0], [40.0, 20.0], [0.0, 20.0]]},
+                "goal": {"pos": [35.0, 2.0], "radius": 4.0},
+            }
+        },
+    )
+
+    action = agent.act(observation)
+    diagnostics = agent.diagnostics()
+
+    assert action.throttle >= 0.0
+    assert diagnostics["target_goal"] == [35.0, 2.0]
+    assert diagnostics["local_subgoal"] == [14.0, 2.0]
+    assert diagnostics["planner_goal"] == [14.0, 2.0]
+    assert diagnostics["route_used"] is False
+
+
 def test_world_model_direct_agent_brakes_inside_navigation_goal_radius() -> None:
     agent = make_agent("world_model_direct", planner_config={"horizon": 4, "num_samples": 16, "seed": 4})
     observation = Observation(

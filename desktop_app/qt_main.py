@@ -187,7 +187,19 @@ class TrainingCurveWidget(QWidget):
             for key, values in history.items()
             if values
         }
-        priority = ["loss", "final_loss", "train_rmse", "train_mse", "metadata.mean_goal_distance", "total_frames"]
+        priority = [
+            "loss",
+            "final_loss",
+            "validation_rmse",
+            "validation_mse",
+            "train_rmse",
+            "train_mse",
+            "segment_rmse.goal",
+            "segment_rmse.middle",
+            "segment_rmse.start",
+            "metadata.mean_goal_distance",
+            "total_frames",
+        ]
         self.primary_metric = next((key for key in priority if key in self.history), next(iter(self.history), ""))
         self.update()
 
@@ -2477,6 +2489,8 @@ class MainWindow(QMainWindow):
             collection_strategy="route_aware",
             collection_route_target_interval=1,
             collection_route_lateral_m=2.5,
+            collection_multi_start=True,
+            collection_multi_start_lateral_m=1.5,
             min_route_coverage_ratio=0.5,
             min_goal_zone_coverage=0.2,
             collection_coverage_grid_size=6,
@@ -2527,6 +2541,8 @@ class MainWindow(QMainWindow):
             collection_strategy="route_aware",
             collection_route_target_interval=1,
             collection_route_lateral_m=2.5,
+            collection_multi_start=True,
+            collection_multi_start_lateral_m=1.5,
             min_route_coverage_ratio=0.5,
             min_goal_zone_coverage=0.2,
             collection_coverage_grid_size=6,
@@ -3630,11 +3646,18 @@ def _training_run_overview_text(run: dict[str, Any]) -> str:
         if path:
             lines.append(f"{key}: {path}")
     metrics = run.get("metrics") if isinstance(run.get("metrics"), dict) else {}
+    flat_metrics = _flatten_numeric_mapping(metrics)
     history = services.training_metric_history(run)
     metric_lines: list[str] = []
     for key in [
         "loss",
         "final_loss",
+        "validation_rmse",
+        "validation_mse",
+        "validation_sample_count",
+        "segment_rmse.goal",
+        "segment_rmse.middle",
+        "segment_rmse.start",
         "train_rmse",
         "train_mse",
         "goal_success",
@@ -3644,6 +3667,8 @@ def _training_run_overview_text(run: dict[str, Any]) -> str:
     ]:
         if key in metrics:
             metric_lines.append(f"{key}: {services.display_value(metrics[key])}")
+        elif key in flat_metrics:
+            metric_lines.append(f"{key}: {services.display_value(flat_metrics[key])}")
         elif key in history and history[key]:
             metric_lines.append(f"{key}: {services.display_value(history[key][-1])}")
     if metric_lines:
@@ -3651,6 +3676,24 @@ def _training_run_overview_text(run: dict[str, Any]) -> str:
     else:
         lines.append(f"metrics: {services.NAN_TEXT}")
     return "\n".join(lines)
+
+
+def _flatten_numeric_mapping(payload: dict[str, Any], prefix: str = "") -> dict[str, Any]:
+    values: dict[str, Any] = {}
+    for key, value in payload.items():
+        name = f"{prefix}.{key}" if prefix else str(key)
+        if isinstance(value, dict):
+            values.update(_flatten_numeric_mapping(value, name))
+            continue
+        if isinstance(value, bool):
+            continue
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(number):
+            values[name] = value
+    return values
 
 
 def _training_log_summary(run: dict[str, Any]) -> str:

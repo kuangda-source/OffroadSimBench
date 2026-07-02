@@ -24,6 +24,8 @@ def main() -> None:
     parser.add_argument("--collection-strategy", default="region_explorer", choices=["region_explorer", "route_aware"])
     parser.add_argument("--collection-route-target-interval", type=int, default=0)
     parser.add_argument("--collection-route-lateral-m", type=float, default=0.0)
+    parser.add_argument("--collection-multi-start", action="store_true")
+    parser.add_argument("--collection-multi-start-lateral-m", type=float, default=0.0)
     parser.add_argument("--min-route-coverage-ratio", type=float, default=0.0)
     parser.add_argument("--min-goal-zone-coverage", type=float, default=0.0)
     parser.add_argument("--eval-steps", type=int, default=1000)
@@ -58,6 +60,8 @@ def main() -> None:
             collection_strategy=args.collection_strategy,
             collection_route_target_interval=args.collection_route_target_interval,
             collection_route_lateral_m=args.collection_route_lateral_m,
+            collection_multi_start=args.collection_multi_start,
+            collection_multi_start_lateral_m=args.collection_multi_start_lateral_m,
             min_route_coverage_ratio=args.min_route_coverage_ratio,
             min_goal_zone_coverage=args.min_goal_zone_coverage,
             eval_steps=args.eval_steps,

@@ -173,6 +173,8 @@ class RegionSelfSupervisedWorldModelRequest:
     collection_strategy: str = "region_explorer"
     collection_route_target_interval: int = 0
     collection_route_lateral_m: float = 0.0
+    collection_multi_start: bool = False
+    collection_multi_start_lateral_m: float = 0.0
     min_route_coverage_ratio: float = 0.0
     min_goal_zone_coverage: float = 0.0
     eval_steps: int = 1000
@@ -210,6 +212,8 @@ class RegionTrainingDataCollectionRequest:
     collection_strategy: str = "region_explorer"
     collection_route_target_interval: int = 0
     collection_route_lateral_m: float = 0.0
+    collection_multi_start: bool = False
+    collection_multi_start_lateral_m: float = 0.0
     min_route_coverage_ratio: float = 0.0
     min_goal_zone_coverage: float = 0.0
     beamng_gfx: str = "vk"
@@ -1465,6 +1469,7 @@ def _register_region_self_supervised_world_model_config(
     training_run_path: str,
     acceptance: dict[str, Any],
     quality_gate: dict[str, Any],
+    model_metadata: dict[str, Any],
 ) -> dict[str, Any]:
     if not request.register_world_model_config:
         return {}
@@ -1480,6 +1485,7 @@ def _register_region_self_supervised_world_model_config(
         "collision_count": acceptance.get("collision_count"),
         "quality_gate_passed": bool(quality_gate.get("passed")),
         "collection_progress_ratio": quality_gate.get("progress_ratio"),
+        **_world_model_training_quality_metrics(model_metadata),
     }
     config = save_world_model_config(
         config_id=f"{task_id}_self_supervised_world_model",
@@ -1493,6 +1499,25 @@ def _register_region_self_supervised_world_model_config(
     )
     _attach_world_model_config_to_training_run(training_run_path, config)
     return config
+
+
+def _world_model_training_quality_metrics(metadata: dict[str, Any]) -> dict[str, Any]:
+    quality_keys = (
+        "train_rmse",
+        "train_mse",
+        "sequence_count",
+        "sample_count",
+        "transition_count",
+        "train_sample_count",
+        "validation_sample_count",
+        "validation_fraction",
+        "validation_mse",
+        "validation_rmse",
+        "segment_rmse",
+        "segment_sample_count",
+        "recorded_action_sample_count",
+    )
+    return {key: metadata.get(key) for key in quality_keys if key in metadata}
 
 
 def _attach_world_model_config_to_training_run(training_run_path: str, config: dict[str, Any]) -> None:
@@ -2394,8 +2419,18 @@ def collect_region_training_data(request: RegionTrainingDataCollectionRequest) -
     episode_paths: list[str] = []
     rollout_count = max(1, int(request.collect_rollouts))
     for rollout_index in range(rollout_count):
+        rollout_scenario = _collection_rollout_scenario(
+            task,
+            collection_scenario,
+            strategy=collection_strategy,
+            rollout_index=rollout_index,
+            rollout_count=rollout_count,
+            multi_start=bool(request.collection_multi_start),
+            lateral_m=float(request.collection_multi_start_lateral_m),
+            seed=int(request.seed) + rollout_index,
+        )
         collection = _run_region_beamng_episode_with_reconnect_retry(
-            scenario=collection_scenario,
+            scenario=rollout_scenario,
             vehicle=request.vehicle,
             max_steps=min(max(1, int(request.collect_steps)), task.max_steps),
             seed=int(request.seed) + rollout_index,
@@ -2485,6 +2520,8 @@ def collect_region_training_data(request: RegionTrainingDataCollectionRequest) -
             "collection_strategy": collection_strategy,
             "collection_route_target_interval": agent_options.get("route_target_interval", 0),
             "collection_route_lateral_m": agent_options.get("route_lateral_m", 0.0),
+            "collection_multi_start": bool(request.collection_multi_start),
+            "collection_multi_start_lateral_m": max(0.0, float(request.collection_multi_start_lateral_m)),
             "min_route_coverage_ratio": max(0.0, float(request.min_route_coverage_ratio)),
             "min_goal_zone_coverage": max(0.0, float(request.min_goal_zone_coverage)),
         },
@@ -2566,11 +2603,9 @@ def train_region_world_model_from_collection(request: RegionWorldModelTrainingRe
         "metrics": model.metadata,
     }
     collection_metrics = collection.get("metrics") if isinstance(collection.get("metrics"), dict) else {}
+    model_quality_metrics = _world_model_training_quality_metrics(model.metadata)
     metrics = {
-        "train_rmse": model.metadata.get("train_rmse"),
-        "train_mse": model.metadata.get("train_mse"),
-        "sequence_count": model.metadata.get("sequence_count"),
-        "transition_count": model.metadata.get("transition_count"),
+        **model_quality_metrics,
         "collection_rollout_count": len(episode_paths),
         "collection_distance_traveled": collection_metrics.get("collection_distance_traveled"),
         "collection_min_goal_distance": collection_metrics.get("collection_min_goal_distance"),
@@ -2589,6 +2624,8 @@ def train_region_world_model_from_collection(request: RegionWorldModelTrainingRe
         history={
             "train_rmse": [model.metadata.get("train_rmse")],
             "train_mse": [model.metadata.get("train_mse")],
+            "validation_rmse": [model.metadata.get("validation_rmse")],
+            "validation_mse": [model.metadata.get("validation_mse")],
             "collection_min_goal_distance": [collection_metrics.get("collection_min_goal_distance")],
         },
         parameters={
@@ -2599,6 +2636,7 @@ def train_region_world_model_from_collection(request: RegionWorldModelTrainingRe
             "task": task.to_dict(),
             "collection_manifest_path": str(manifest_path.resolve()),
             "collection_metrics": collection_metrics,
+            "model_quality_metrics": model_quality_metrics,
         },
     )
     payload: dict[str, Any] = {
@@ -2613,8 +2651,7 @@ def train_region_world_model_from_collection(request: RegionWorldModelTrainingRe
     }
     if request.register_world_model_config:
         validation = {
-            "train_rmse": model.metadata.get("train_rmse"),
-            "train_mse": model.metadata.get("train_mse"),
+            **model_quality_metrics,
             "collection_rollout_count": len(episode_paths),
             "collection_min_goal_distance": collection_metrics.get("collection_min_goal_distance"),
             "collection_collision_count": collection_metrics.get("collection_collision_count"),
@@ -2674,10 +2711,21 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
     collection_distances: list[float] = []
     episode_paths: list[str] = []
     sequences: list[DatasetSequence] = []
+    short_episode_paths: list[str] = []
     rollout_count = max(1, int(request.collect_rollouts))
     for rollout_index in range(rollout_count):
+        rollout_scenario = _collection_rollout_scenario(
+            task,
+            collection_scenario,
+            strategy=collection_strategy,
+            rollout_index=rollout_index,
+            rollout_count=rollout_count,
+            multi_start=bool(request.collection_multi_start),
+            lateral_m=float(request.collection_multi_start_lateral_m),
+            seed=int(request.seed) + rollout_index,
+        )
         collection = _run_region_beamng_episode_with_reconnect_retry(
-            scenario=collection_scenario,
+            scenario=rollout_scenario,
             vehicle=request.vehicle,
             max_steps=min(max(1, int(request.collect_steps)), task.max_steps),
             seed=int(request.seed) + rollout_index,
@@ -2706,7 +2754,10 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
         collection_distance = _float_or_nan(collection_metrics.get("horizontal_distance_traveled"))
         if math.isfinite(collection_distance):
             collection_distances.append(collection_distance)
-        sequences.append(_episode_trace_to_dataset_sequence(episode_path, task))
+        try:
+            sequences.append(_episode_trace_to_dataset_sequence(episode_path, task))
+        except ValueError:
+            short_episode_paths.append(str(Path(episode_path).resolve()))
     collection_acceptance = min(collection_acceptances, key=lambda row: _finite_or_inf(row.get("min_goal_distance")))
     collection_distance = float(sum(collection_distances)) if collection_distances else math.nan
     coverage = _collection_coverage_metrics(
@@ -2724,6 +2775,13 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
         goal_zone_coverage=route_metrics["goal_zone_coverage"],
         min_goal_zone_coverage=request.min_goal_zone_coverage,
     )
+    if short_episode_paths:
+        quality_gate = {
+            **quality_gate,
+            "passed": False,
+            "reason": "collection_episode_too_short",
+            "short_episode_paths": short_episode_paths,
+        }
     if not quality_gate["passed"]:
         diagnostics = _region_self_supervised_diagnostics(
             quality_gate=quality_gate,
@@ -2788,6 +2846,8 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
                 "collection_strategy": collection_strategy,
                 "collection_route_target_interval": collection_agent_options.get("route_target_interval", 0),
                 "collection_route_lateral_m": collection_agent_options.get("route_lateral_m", 0.0),
+                "collection_multi_start": bool(request.collection_multi_start),
+                "collection_multi_start_lateral_m": max(0.0, float(request.collection_multi_start_lateral_m)),
                 "min_route_coverage_ratio": max(0.0, float(request.min_route_coverage_ratio)),
                 "min_goal_zone_coverage": max(0.0, float(request.min_goal_zone_coverage)),
             },
@@ -2890,6 +2950,7 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
         training=training,
         region_navigation=region_navigation_payload,
     )
+    model_quality_metrics = _world_model_training_quality_metrics(model.metadata)
     training_run = write_training_run_record(
         output_dir,
         preset_id="region_self_supervised_world_model",
@@ -2905,8 +2966,7 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
             "min_goal_distance": acceptance.get("min_goal_distance"),
             "final_goal_distance": acceptance.get("final_goal_distance"),
             "collision_count": acceptance.get("collision_count"),
-            "train_rmse": model.metadata.get("train_rmse"),
-            "train_mse": model.metadata.get("train_mse"),
+            **model_quality_metrics,
             "collection_goal_reached": bool(collection_acceptance.get("goal_reached")),
             "collection_min_goal_distance": collection_acceptance.get("min_goal_distance"),
             "collection_final_goal_distance": collection_acceptance.get("final_goal_distance"),
@@ -2925,6 +2985,8 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
         history={
             "train_rmse": [model.metadata.get("train_rmse")],
             "train_mse": [model.metadata.get("train_mse")],
+            "validation_rmse": [model.metadata.get("validation_rmse")],
+            "validation_mse": [model.metadata.get("validation_mse")],
             "collection_min_goal_distance": [collection_acceptance.get("min_goal_distance")],
             "collection_progress_ratio": [quality_gate.get("progress_ratio")],
             "collection_coverage_ratio": [coverage["ratio"]],
@@ -2951,6 +3013,8 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
             "collection_strategy": collection_strategy,
             "collection_route_target_interval": collection_agent_options.get("route_target_interval", 0),
             "collection_route_lateral_m": collection_agent_options.get("route_lateral_m", 0.0),
+            "collection_multi_start": bool(request.collection_multi_start),
+            "collection_multi_start_lateral_m": max(0.0, float(request.collection_multi_start_lateral_m)),
             "min_route_coverage_ratio": max(0.0, float(request.min_route_coverage_ratio)),
             "min_goal_zone_coverage": max(0.0, float(request.min_goal_zone_coverage)),
         },
@@ -2959,6 +3023,7 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
             "quality_gate": quality_gate,
             "coverage": coverage,
             "route_metrics": route_metrics,
+            "model_quality_metrics": model_quality_metrics,
             "diagnostics": diagnostics,
             "collection_acceptance": collection_acceptance,
             "collection_acceptances": collection_acceptances,
@@ -2990,6 +3055,7 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
         training_run_path=str(training_run["path"]),
         acceptance=acceptance,
         quality_gate=quality_gate,
+        model_metadata=model.metadata,
     )
     if world_model_config:
         payload["world_model_config"] = world_model_config
@@ -3415,6 +3481,106 @@ def _collection_region_scenario(task: NavigationRegionTask, *, strategy: str) ->
     if normalized in {"route_aware", "route-aware", "curriculum", "route_curriculum"}:
         return _route_guided_region_scenario(task)
     return _route_free_region_scenario(task.to_beamng_scenario(mode="evaluation"))
+
+
+def _collection_rollout_scenario(
+    task: NavigationRegionTask,
+    base_scenario: dict[str, Any],
+    *,
+    strategy: str,
+    rollout_index: int,
+    rollout_count: int,
+    multi_start: bool,
+    lateral_m: float,
+    seed: int,
+) -> dict[str, Any]:
+    scenario = json.loads(json.dumps(base_scenario, default=str))
+    normalized = str(strategy or "region_explorer").strip().lower()
+    if not multi_start or rollout_index <= 0 or normalized not in {"route_aware", "route-aware", "curriculum", "route_curriculum"}:
+        return scenario
+    route = task.expert_route
+    if len(route) < 2:
+        return scenario
+    indices = _route_multi_start_indices(task=task, rollout_count=max(1, int(rollout_count)))
+    route_index = indices[min(max(0, int(rollout_index)), len(indices) - 1)]
+    point = route[route_index]
+    previous_point = route[max(0, route_index - 1)]
+    next_point = route[min(len(route) - 1, route_index + 1)]
+    dx = float(next_point[0]) - float(previous_point[0])
+    dy = float(next_point[1]) - float(previous_point[1])
+    yaw = math.atan2(dy, dx) if abs(dx) + abs(dy) > 1e-6 else float(task.start_yaw)
+    start_xy = _route_multi_start_lateral_point(task, point, previous_point, next_point, lateral_m=max(0.0, float(lateral_m)), seed=seed)
+    metadata = scenario.setdefault("metadata", {})
+    beamng = metadata.setdefault("beamng", {})
+    start_pos = [float(start_xy[0]), float(start_xy[1]), float(task.start_pos[2])]
+    vehicle_start = beamng.setdefault("vehicle_start", {})
+    vehicle_start["pos"] = start_pos
+    vehicle_start["yaw"] = float(yaw)
+    vehicle_start["original_yaw"] = float(task.start_yaw)
+    vehicle_start["yaw_source"] = "collection_multi_start_route"
+    vehicle_start["rot_quat"] = _beamng_yaw_to_quat(yaw)
+    task_metadata = metadata.get("task")
+    if isinstance(task_metadata, dict):
+        start_pose = task_metadata.setdefault("start_pose", {})
+        if isinstance(start_pose, dict):
+            start_pose["pos"] = start_pos
+            start_pose["yaw"] = float(yaw)
+    return scenario
+
+
+def _route_multi_start_indices(*, task: NavigationRegionTask, rollout_count: int) -> list[int]:
+    route_count = len(task.expert_route)
+    if route_count <= 1:
+        return [0]
+    if rollout_count <= 1:
+        return [0]
+    min_goal_distance = max(float(task.goal_radius) + 2.0, float(task.goal_radius) * 1.25)
+    eligible = [
+        index
+        for index, point in enumerate(task.expert_route)
+        if math.hypot(float(point[0]) - float(task.goal_pos[0]), float(point[1]) - float(task.goal_pos[1])) > min_goal_distance
+    ]
+    if not eligible:
+        eligible = [0]
+    if len(eligible) == 1:
+        return [eligible[0] for _ in range(rollout_count)]
+    last = len(eligible) - 1
+    indices: list[int] = []
+    for rollout_index in range(rollout_count):
+        if rollout_index <= 0:
+            eligible_index = 0
+        else:
+            eligible_index = int(math.ceil(rollout_index * last / max(1, rollout_count - 1)))
+        indices.append(eligible[min(last, max(0, eligible_index))])
+    return indices
+
+
+def _route_multi_start_lateral_point(
+    task: NavigationRegionTask,
+    point: tuple[float, float],
+    previous_point: tuple[float, float],
+    next_point: tuple[float, float],
+    *,
+    lateral_m: float,
+    seed: int,
+) -> tuple[float, float]:
+    if lateral_m <= 0.0:
+        return (float(point[0]), float(point[1]))
+    dx = float(next_point[0]) - float(previous_point[0])
+    dy = float(next_point[1]) - float(previous_point[1])
+    length = math.hypot(dx, dy)
+    if length <= 1e-6:
+        return (float(point[0]), float(point[1]))
+    rng = np.random.default_rng(seed)
+    lateral = float(rng.uniform(-lateral_m, lateral_m))
+    candidate = (float(point[0]) - dy / length * lateral, float(point[1]) + dx / length * lateral)
+    return candidate if task.contains_point(candidate) else (float(point[0]), float(point[1]))
+
+
+def _beamng_yaw_to_quat(yaw: float) -> list[float]:
+    beamng_yaw = -float(yaw) - math.pi * 0.5
+    half = beamng_yaw * 0.5
+    return [0.0, 0.0, round(math.sin(half), 6), round(math.cos(half), 6)]
 
 
 def _navigation_task_from_collection_manifest(collection: dict[str, Any], manifest_path: Path) -> NavigationRegionTask:
@@ -4038,6 +4204,11 @@ def _region_self_supervised_diagnostics(
     training: dict[str, Any],
     region_navigation: dict[str, Any],
 ) -> dict[str, Any]:
+    training_metrics = training.get("metrics") if isinstance(training.get("metrics"), dict) else {}
+    segment_sample_count = training_metrics.get("segment_sample_count") if isinstance(training_metrics.get("segment_sample_count"), dict) else {}
+    missing_training_segments = [
+        name for name in ("middle", "goal") if int(segment_sample_count.get(name, 0) or 0) <= 0
+    ]
     if not bool(quality_gate.get("passed")):
         status = "collection_insufficient"
         message = "Self-supervised collection did not cover enough goal-directed motion to train a useful navigation model."
@@ -4064,6 +4235,14 @@ def _region_self_supervised_diagnostics(
         status = "goal_hold_failed"
         message = "The vehicle entered the goal radius but did not finish stopped inside it."
         next_actions = ["Verify terminal braking and goal latch behavior for the selected controller."]
+    elif missing_training_segments:
+        status = "training_coverage_insufficient"
+        message = "The learned dynamics model was trained without enough middle/goal segment samples for route-free navigation."
+        next_actions = [
+            "Collect middle/goal segment examples by increasing route-aware rollouts, step count, and goal-zone coverage.",
+            "Require nonzero middle and goal segment counts before treating a model as navigation-ready.",
+            "Inspect the trajectory plot and route coverage before rerunning route-free evaluation.",
+        ]
     else:
         status = "navigation_model_insufficient"
         message = "The local learned dynamics model ran under model control but did not produce a successful start-to-goal navigation policy."
@@ -4089,8 +4268,12 @@ def _region_self_supervised_diagnostics(
         "collection_progress_ratio": quality_gate.get("progress_ratio"),
         "required_collection_progress_ratio": quality_gate.get("required_progress_ratio"),
         "collection_min_goal_distance": collection_acceptance.get("min_goal_distance"),
-        "train_rmse": (training.get("metrics") if isinstance(training.get("metrics"), dict) else {}).get("train_rmse"),
-        "train_mse": (training.get("metrics") if isinstance(training.get("metrics"), dict) else {}).get("train_mse"),
+        "train_rmse": training_metrics.get("train_rmse"),
+        "train_mse": training_metrics.get("train_mse"),
+        "validation_rmse": training_metrics.get("validation_rmse"),
+        "validation_mse": training_metrics.get("validation_mse"),
+        "segment_sample_count": segment_sample_count,
+        "missing_training_segments": missing_training_segments,
     }
     return {
         "status": status,
