@@ -250,7 +250,7 @@ Training records support a `history` field for loss, RMSE, frame count, or other
 
 External trainers can report metrics through a JSON object on stdout or through sidecar files in the selected output directory. Supported sidecars are `metrics.json` for final scalar metrics, `history.json` for metric arrays, and `events.jsonl` for per-step JSON events such as `{"step": 1, "loss": 0.9}`.
 
-BeamNG region self-supervised runs also write a `training_run.json` with the trained model path plus acceptance metrics such as `goal_success`, `min_goal_distance`, `final_goal_distance`, and `collision_count`, so the Training Results tab can index the simulator-trained model instead of leaving it as an opaque folder. These records now include a `trajectory_plot_path` SVG containing collection and route-free evaluation traces. When the GUI self-supervised workflow reaches a route-free `goal_success`, it saves a validated `world_model_direct + tiny_learned` world-model config with the source `training_run.json` and validation metrics, making the trained model selectable from the Overview and BeamNG Simulation pages. Failed, collection-insufficient, or only route-guided runs remain visible in Training Results but are not promoted to demo-ready runnable model configs.
+BeamNG region self-supervised runs also write a `training_run.json` with the trained model path plus acceptance metrics such as `goal_success`, `min_goal_distance`, `final_goal_distance`, and `collision_count`, so the Training Results tab can index the simulator-trained model instead of leaving it as an opaque folder. These records now include a `trajectory_plot_path` SVG containing collection and route-free evaluation traces. When the GUI self-supervised workflow reaches a direct route-free `goal_success`, it saves a validated `world_model_direct + tiny_learned` world-model config with the source `training_run.json` and validation metrics, making the trained model selectable from the Overview and BeamNG Simulation pages. Failed, collection-insufficient, experience-corridor-only, or only route-guided runs remain visible in Training Results but are not promoted to demo-ready runnable model configs.
 
 BeamNG region training now uses a wider GUI collection default for quality runs: 6 rollouts, at least 1500 requested collection steps, a 6x6 coverage curriculum, route-aware waypoint targets with lateral perturbations, stricter collection-progress/route-coverage/goal-zone gates, and at least 1200 requested evaluation steps. Collection and self-supervised training records include `collection_coverage_cell_count`, `collection_coverage_total_cells`, `collection_coverage_ratio`, `route_coverage_ratio`, `goal_zone_coverage`, and `unique_region_cells`; collection manifests that fail the quality gate are refused by the separated training step instead of silently training a weak model.
 
@@ -496,16 +496,22 @@ recovery count, reverse count, and final/minimum goal distance. Route-aware
 multi-start collection avoids spawning inside the goal radius, and a model that
 only contains start-segment samples is diagnosed as
 `training_coverage_insufficient` instead of being treated as navigation-ready.
-A real Johnson Valley probe on 2026-07-03 now completes a route-free
-`tiny_learned + world_model_direct` model-control loop on the current task.
-The route-aware curriculum collected 4 rollouts with 160 steps each, produced an
-experience corridor from recorded vehicle states, removed both
-`metadata.beamng.route` and task `expert_route` from route-free evaluation, and
-ran 1200 evaluation steps with `local_subgoal_distance_m=12`. The resulting
-route-free evaluation reached the 12 m goal radius with a final distance of
-11.860 m, zero collisions, zero reverse steps, and `drive_mode=manual`. This is
-a demo-ready result for the current Johnson Valley task, not yet a claim of
-generalization to new starts/goals or maps.
+A real Johnson Valley probe on 2026-07-03 shows the current gap clearly. The
+route-aware curriculum collected 4 rollouts with 160 steps each and produced an
+experience corridor from recorded vehicle states. With that experience corridor
+enabled, `tiny_learned + world_model_direct` reached the 12 m goal radius after
+1200 evaluation steps, with final distance 11.860 m, zero collisions, zero
+reverse steps, and `drive_mode=manual`. This is an intermediate navigation aid,
+not the strict direct route-free baseline. In the stricter direct route-free
+baseline, which receives only region/start/goal and no expert route or
+experience corridor, the same model did not make meaningful progress
+(`min_goal_distance=109.825 m`, `final_goal_distance=109.835 m`,
+`stuck_recovery_count=1016`). The route-guided baseline on the same run did
+succeed (`final_goal_distance=11.752 m`, zero collisions), proving that the
+map, vehicle, and expert route are drivable while direct route-free model
+control still needs improvement. Only direct route-free success should be marked
+demo-ready. The detailed probe report is tracked in
+[`docs/reports/route_free_johnson_valley_p1_probe_2026-07-03.md`](docs/reports/route_free_johnson_valley_p1_probe_2026-07-03.md).
 
 Saved tasks default to `evaluation_drive_mode: manual`, which means
 the `OffroadAgent`/planner commands control the vehicle during evaluation.

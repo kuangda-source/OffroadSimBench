@@ -188,7 +188,7 @@ class RegionSelfSupervisedWorldModelRequest:
     use_experience_corridor: bool = True
     experience_route_min_spacing_m: float = 4.0
     experience_route_max_points: int = 120
-    evaluation_allow_reverse_recovery: bool = True
+    evaluation_allow_reverse_recovery: bool = False
     evaluation_reverse_recovery_after_steps: int = 96
     evaluation_local_subgoal_distance_m: float = 12.0
     beamng_gfx: str = "vk"
@@ -1486,6 +1486,7 @@ def _register_region_self_supervised_world_model_config(
     acceptance: dict[str, Any],
     quality_gate: dict[str, Any],
     model_metadata: dict[str, Any],
+    experience_corridor_used: bool,
 ) -> dict[str, Any]:
     if not request.register_world_model_config:
         return {}
@@ -1493,8 +1494,10 @@ def _register_region_self_supervised_world_model_config(
         return {}
     if not bool(acceptance.get("goal_success")):
         return {}
+    evaluation_route_free = str(request.evaluation_route_mode or "route_free").strip().lower() in {"route_free", "none", "direct"}
+    route_free_direct = bool(evaluation_route_free and not experience_corridor_used)
     validation = {
-        "demo_ready": True,
+        "demo_ready": route_free_direct,
         "goal_success": bool(acceptance.get("goal_success")),
         "goal_reached": bool(acceptance.get("goal_reached")),
         "final_goal_reached": bool(acceptance.get("final_goal_reached")),
@@ -1502,7 +1505,9 @@ def _register_region_self_supervised_world_model_config(
         "final_goal_distance": acceptance.get("final_goal_distance"),
         "goal_radius": acceptance.get("goal_radius"),
         "model_controlled": bool(acceptance.get("model_controlled", True)),
-        "route_free": True,
+        "route_free": bool(evaluation_route_free),
+        "route_free_direct": route_free_direct,
+        "experience_corridor": bool(experience_corridor_used),
         "evaluation_route_mode": "route_free",
         "route_waypoint_count": int(acceptance.get("route_waypoint_count", 0) or 0),
         "collision_count": acceptance.get("collision_count"),
@@ -3144,6 +3149,7 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
         acceptance=acceptance,
         quality_gate=quality_gate,
         model_metadata=model.metadata,
+        experience_corridor_used=bool(experience_route),
     )
     if world_model_config:
         payload["world_model_config"] = world_model_config
@@ -4740,6 +4746,11 @@ def _world_model_config_demo_ready(row: dict[str, Any]) -> bool:
     if algorithm == "world_model_direct" or world_model == "tiny_learned":
         route_mode = str(validation.get("evaluation_route_mode") or "").strip().lower()
         route_free = bool(validation.get("route_free")) or route_mode in {"route_free", "none", "direct"}
+        route_free_direct = bool(validation.get("route_free_direct")) or route_mode == "route_free_direct"
+        if bool(validation.get("experience_corridor")):
+            return False
+        if not route_free_direct:
+            return False
         route_waypoint_count = _coerce_int(validation.get("route_waypoint_count"), default=-1)
         if not route_free and route_waypoint_count != 0:
             return False

@@ -366,6 +366,26 @@ def test_world_model_configs_mark_only_route_free_success_as_demo_ready(tmp_path
         validation={
             "goal_success": True,
             "route_free": True,
+            "route_free_direct": True,
+            "model_controlled": True,
+            "route_waypoint_count": 0,
+            "collision_count": 0,
+            "final_goal_distance": 11.8,
+            "goal_radius": 12.0,
+        },
+        path=config_path,
+    )
+    services.save_world_model_config(
+        config_id="experience_corridor_success",
+        label="Experience Corridor Success",
+        algorithm="world_model_direct",
+        world_model="tiny_learned",
+        model_path=str(model_dir),
+        validation={
+            "goal_success": True,
+            "route_free": True,
+            "route_free_direct": False,
+            "experience_corridor": True,
             "model_controlled": True,
             "route_waypoint_count": 0,
             "collision_count": 0,
@@ -387,6 +407,7 @@ def test_world_model_configs_mark_only_route_free_success_as_demo_ready(tmp_path
     rows = {row["id"]: row for row in services.world_model_config_entries(config_path)}
 
     assert rows["route_free_success"]["demo_ready"] is True
+    assert rows["experience_corridor_success"]["demo_ready"] is False
     assert rows["trained_only"]["demo_ready"] is False
     assert rows[services.DEFAULT_WORLD_MODEL_CONFIG_ID]["demo_ready"] is True
     assert [row["id"] for row in services.demo_ready_world_model_config_entries(config_path)] == [

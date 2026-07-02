@@ -1631,7 +1631,7 @@ class MainWindow(QMainWindow):
         )
         self._fill_world_model_config_combo(
             self.world_model_config_combo,
-            self.catalog.get("world_model_configs", []),
+            self.catalog.get("demo_ready_world_model_configs", []),
             default_id=services.DEFAULT_WORLD_MODEL_CONFIG_ID,
         )
         self._fill_world_model_config_combo(

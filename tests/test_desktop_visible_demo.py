@@ -946,7 +946,7 @@ def test_gui_registers_latest_training_artifact_as_world_model_config(tmp_path, 
     window.model_config_name_edit.setText("Latest Tiny")
     window.register_latest_training_artifact_model()
 
-    row = window.world_model_config_combo.currentData()
+    row = window.world_model_config_edit_combo.currentData()
     buttons = [button.text() for button in window.page_stack.widget(1).findChildren(QPushButton)]
     assert "Register latest training artifact" in buttons
     assert row["id"] == "Latest_Tiny"
@@ -1010,11 +1010,59 @@ def test_gui_world_model_page_saves_config_for_home(tmp_path, monkeypatch) -> No
     window.save_world_model_config()
 
     ids = [
-        window.world_model_config_combo.itemData(index)["id"]
-        for index in range(window.world_model_config_combo.count())
+        window.world_model_config_edit_combo.itemData(index)["id"]
+        for index in range(window.world_model_config_edit_combo.count())
     ]
     assert "Test_LE-WM" in ids
-    assert window.world_model_config_combo.currentData()["model_path"] == "outputs/test/model/lewm_cost_object.ckpt"
+    assert window.world_model_config_edit_combo.currentData()["model_path"] == "outputs/test/model/lewm_cost_object.ckpt"
+    window.close()
+
+
+def test_gui_home_world_model_config_combo_only_shows_demo_ready_configs(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(services, "WORLD_MODEL_CONFIGS_PATH", tmp_path / "world_model_configs.json")
+    model_dir = tmp_path / "tiny_model"
+    model_dir.mkdir()
+    (model_dir / "model.json").write_text('{"model_type": "tiny_learned", "weights": "weights.npz"}', encoding="utf-8")
+    services.save_world_model_config(
+        config_id="direct_ready",
+        label="Direct Ready",
+        algorithm="world_model_direct",
+        world_model="tiny_learned",
+        model_path=str(model_dir),
+        validation={
+            "goal_success": True,
+            "route_free": True,
+            "route_free_direct": True,
+            "model_controlled": True,
+            "route_waypoint_count": 0,
+            "collision_count": 0,
+            "final_goal_distance": 5.0,
+            "goal_radius": 12.0,
+        },
+    )
+    services.save_world_model_config(
+        config_id="experience_only",
+        label="Experience Only",
+        algorithm="world_model_direct",
+        world_model="tiny_learned",
+        model_path=str(model_dir),
+        validation={
+            "goal_success": True,
+            "route_free": True,
+            "route_free_direct": False,
+            "experience_corridor": True,
+            "route_waypoint_count": 0,
+        },
+    )
+    _ensure_app()
+    window = MainWindow()
+
+    home_ids = [window.world_model_config_combo.itemData(index)["id"] for index in range(window.world_model_config_combo.count())]
+    beamng_ids = [window.beamng_model_config_combo.itemData(index)["id"] for index in range(window.beamng_model_config_combo.count())]
+
+    assert "direct_ready" in home_ids
+    assert "experience_only" not in home_ids
+    assert "experience_only" in beamng_ids
     window.close()
 
 
@@ -1029,7 +1077,7 @@ def test_gui_imports_world_model_config_for_home(tmp_path, monkeypatch) -> None:
 
     window.import_world_model_config()
 
-    row = window.world_model_config_combo.currentData()
+    row = window.world_model_config_edit_combo.currentData()
     buttons = [button.text() for button in window.page_stack.widget(1).findChildren(QPushButton)]
     assert "Import model/checkpoint" in buttons
     assert row["id"] == "external_lewm_object"
@@ -1052,7 +1100,7 @@ def test_gui_imports_world_model_directory_for_home(tmp_path, monkeypatch) -> No
 
     window.import_world_model_directory_config()
 
-    row = window.world_model_config_combo.currentData()
+    row = window.world_model_config_edit_combo.currentData()
     buttons = [button.text() for button in window.page_stack.widget(1).findChildren(QPushButton)]
     assert "Import model folder" in buttons
     assert row["id"] == "external_tiny_dir"
@@ -1127,7 +1175,7 @@ def test_gui_pipeline_finished_registers_self_supervised_world_model_config(tmp_
         }
     )
 
-    row = window.world_model_config_combo.currentData()
+    row = window.world_model_config_edit_combo.currentData()
     assert row["algorithm"] == "world_model_direct"
     assert row["world_model"] == "tiny_learned"
     assert row["model_path"] == "outputs/region_self_supervised/nav_demo/model"
@@ -1346,6 +1394,7 @@ def test_gui_home_start_uses_selected_task_and_checkpoint(tmp_path, monkeypatch)
         algorithm="stablewm_lewm",
         world_model="le_wm",
         model_path="outputs/region_navigation/model/lewm_cost_object.ckpt",
+        validation={"demo_ready": True, "goal_success": True},
     )
     _ensure_app()
     window = MainWindow()
@@ -1378,6 +1427,16 @@ def test_gui_home_start_uses_direct_world_model_evaluation_for_tiny_model(tmp_pa
         algorithm="world_model_direct",
         world_model="tiny_learned",
         model_path="outputs/region_self_supervised/model",
+        validation={
+            "goal_success": True,
+            "route_free": True,
+            "route_free_direct": True,
+            "model_controlled": True,
+            "route_waypoint_count": 0,
+            "collision_count": 0,
+            "final_goal_distance": 5.0,
+            "goal_radius": 12.0,
+        },
     )
     _ensure_app()
     window = MainWindow()

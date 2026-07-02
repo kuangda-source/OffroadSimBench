@@ -95,7 +95,7 @@ def test_region_self_supervised_world_model_defaults_match_route_free_demo_probe
 
     assert request.eval_steps == 1200
     assert request.evaluation_local_subgoal_distance_m == 12.0
-    assert request.evaluation_allow_reverse_recovery is True
+    assert request.evaluation_allow_reverse_recovery is False
     assert request.evaluation_reverse_recovery_after_steps == 96
     assert request.use_experience_corridor is True
 
@@ -159,7 +159,7 @@ def test_region_self_supervised_world_model_trains_and_evaluates_without_route(t
     assert seen_agent_options[0]["max_target_steps"] == 80
     assert seen_agent_options[1]["world_model_name"] == "tiny_learned"
     assert seen_agent_options[1]["planner_config"] == {"horizon": 6, "num_samples": 32, "iterations": 3}
-    assert seen_agent_options[1]["allow_reverse_recovery"] is True
+    assert seen_agent_options[1]["allow_reverse_recovery"] is False
     assert seen_agent_options[1]["reverse_recovery_after_steps"] == 96
     assert seen_agent_options[1]["local_subgoal_distance_m"] == 12.0
     assert Path(payload["training"]["model_path"]).exists()
@@ -191,10 +191,12 @@ def test_region_self_supervised_world_model_trains_and_evaluates_without_route(t
     assert saved_config["world_model"] == "tiny_learned"
     assert saved_config["model_path"] == payload["model_dir"]
     assert saved_config["source_training_run_path"] == payload["training_run_path"]
-    assert saved_config["demo_ready"] is True
-    assert saved_config["validation"]["demo_ready"] is True
+    assert saved_config["demo_ready"] is False
+    assert saved_config["validation"]["demo_ready"] is False
     assert saved_config["validation"]["goal_success"] is True
     assert saved_config["validation"]["route_free"] is True
+    assert saved_config["validation"]["route_free_direct"] is False
+    assert saved_config["validation"]["experience_corridor"] is True
     assert saved_config["validation"]["evaluation_route_mode"] == "route_free"
     assert saved_config["validation"]["route_waypoint_count"] == 0
     assert saved_config["validation"]["model_controlled"] is True
