@@ -352,6 +352,82 @@ def test_register_training_run_artifact_promotes_world_model_config(tmp_path) ->
     assert refreshed["summary"]["world_model_config"]["id"] == "Promoted_Tiny"
 
 
+def test_world_model_configs_mark_only_route_free_success_as_demo_ready(tmp_path) -> None:
+    config_path = tmp_path / "world_model_configs.json"
+    model_dir = tmp_path / "trained_tiny"
+    model_dir.mkdir()
+    (model_dir / "model.json").write_text('{"model_type": "tiny_learned", "weights": "weights.npz"}', encoding="utf-8")
+    services.save_world_model_config(
+        config_id="route_free_success",
+        label="Route Free Success",
+        algorithm="world_model_direct",
+        world_model="tiny_learned",
+        model_path=str(model_dir),
+        validation={
+            "goal_success": True,
+            "route_free": True,
+            "model_controlled": True,
+            "route_waypoint_count": 0,
+            "collision_count": 0,
+            "final_goal_distance": 11.8,
+            "goal_radius": 12.0,
+        },
+        path=config_path,
+    )
+    services.save_world_model_config(
+        config_id="trained_only",
+        label="Trained Only",
+        algorithm="world_model_direct",
+        world_model="tiny_learned",
+        model_path=str(model_dir),
+        validation={"train_rmse": 0.1, "collection_rollout_count": 6},
+        path=config_path,
+    )
+
+    rows = {row["id"]: row for row in services.world_model_config_entries(config_path)}
+
+    assert rows["route_free_success"]["demo_ready"] is True
+    assert rows["trained_only"]["demo_ready"] is False
+    assert rows[services.DEFAULT_WORLD_MODEL_CONFIG_ID]["demo_ready"] is True
+    assert [row["id"] for row in services.demo_ready_world_model_config_entries(config_path)] == [
+        services.DEFAULT_WORLD_MODEL_CONFIG_ID,
+        "route_free_success",
+    ]
+
+
+def test_demo_acceptance_rejects_non_demo_ready_world_model_config(tmp_path, monkeypatch) -> None:
+    config_path = tmp_path / "world_model_configs.json"
+    model_dir = tmp_path / "trained_tiny"
+    model_dir.mkdir()
+    (model_dir / "model.json").write_text('{"model_type": "tiny_learned", "weights": "weights.npz"}', encoding="utf-8")
+    services.save_world_model_config(
+        config_id="trained_only",
+        label="Trained Only",
+        algorithm="world_model_direct",
+        world_model="tiny_learned",
+        model_path=str(model_dir),
+        validation={"train_rmse": 0.1},
+        path=config_path,
+    )
+    monkeypatch.setattr(services, "WORLD_MODEL_CONFIGS_PATH", config_path)
+    monkeypatch.setattr(
+        services,
+        "demo_config_entries",
+        lambda: [
+            {
+                "id": "unsafe_demo",
+                "label": "Unsafe Demo",
+                "task_path": str(tmp_path / "task.yaml"),
+                "world_model_config_id": "trained_only",
+                "planner": "navigation_mpc",
+            }
+        ],
+    )
+
+    with pytest.raises(ValueError, match="not demo-ready"):
+        services.run_demo_acceptance(services.DemoAcceptanceRequest(demo_config_id="unsafe_demo", max_steps=1))
+
+
 def test_register_training_run_artifact_rejects_hdf5_export(tmp_path) -> None:
     hdf5 = tmp_path / "dataset.h5"
     hdf5.write_bytes(b"hdf5")

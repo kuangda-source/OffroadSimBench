@@ -327,6 +327,7 @@ def catalog_snapshot() -> dict[str, list[dict[str, Any]]]:
         "demo_configs": demo_config_entries(),
         "model_checkpoints": model_checkpoint_entries(),
         "world_model_configs": world_model_config_entries(),
+        "demo_ready_world_model_configs": demo_ready_world_model_config_entries(),
         "dataset_manifests": dataset_manifest_entries(),
         "training_configs": training_config_entries(),
         "training_presets": training_preset_entries(),
@@ -1336,6 +1337,11 @@ def world_model_config_entries(path: str | Path | None = None) -> list[dict[str,
                 "algorithm": "stablewm_lewm",
                 "world_model": "le_wm",
                 "model_path": str(DEFAULT_LEWM_CHECKPOINT_PATH),
+                "validation": {
+                    "demo_ready": True,
+                    "validation_source": "johnson_valley_standard_demo",
+                    "goal_success": True,
+                },
             }
         )
     }
@@ -1349,6 +1355,10 @@ def world_model_config_entries(path: str | Path | None = None) -> list[dict[str,
                 row = _world_model_config_row(raw)
                 rows[row["id"]] = row
     return list(rows.values())
+
+
+def demo_ready_world_model_config_entries(path: str | Path | None = None) -> list[dict[str, Any]]:
+    return [row for row in world_model_config_entries(path) if bool(row.get("demo_ready"))]
 
 
 def _world_model_config_by_id(config_id: str) -> dict[str, Any]:
@@ -1484,11 +1494,22 @@ def _register_region_self_supervised_world_model_config(
     if not bool(acceptance.get("goal_success")):
         return {}
     validation = {
+        "demo_ready": True,
         "goal_success": bool(acceptance.get("goal_success")),
         "goal_reached": bool(acceptance.get("goal_reached")),
+        "final_goal_reached": bool(acceptance.get("final_goal_reached")),
         "min_goal_distance": acceptance.get("min_goal_distance"),
         "final_goal_distance": acceptance.get("final_goal_distance"),
+        "goal_radius": acceptance.get("goal_radius"),
+        "model_controlled": bool(acceptance.get("model_controlled", True)),
+        "route_free": True,
+        "evaluation_route_mode": "route_free",
+        "route_waypoint_count": int(acceptance.get("route_waypoint_count", 0) or 0),
         "collision_count": acceptance.get("collision_count"),
+        "max_collision_count": acceptance.get("max_collision_count"),
+        "distance_traveled": acceptance.get("distance_traveled"),
+        "stuck_recovery_count": acceptance.get("stuck_recovery_count"),
+        "reverse_count": acceptance.get("reverse_count"),
         "quality_gate_passed": bool(quality_gate.get("passed")),
         "collection_progress_ratio": quality_gate.get("progress_ratio"),
         **_world_model_training_quality_metrics(model_metadata),
@@ -2331,6 +2352,8 @@ def run_demo_acceptance(request: DemoAcceptanceRequest) -> dict[str, Any]:
     demo = resolve_demo_config(request.demo_config_id)
     runs = min(3, max(1, int(request.runs)))
     world_model_config = _world_model_config_by_id(str(demo.get("world_model_config_id") or DEFAULT_WORLD_MODEL_CONFIG_ID))
+    if not bool(world_model_config.get("demo_ready")):
+        raise ValueError(f"World model config is not demo-ready: {world_model_config.get('id')}")
     algorithm = str(world_model_config.get("algorithm") or "stablewm_lewm")
     world_model = str(world_model_config.get("world_model") or "le_wm")
     model_path = str(world_model_config.get("model_path") or "")
@@ -2801,6 +2824,7 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
             "reason": "collection_episode_too_short",
             "short_episode_paths": short_episode_paths,
         }
+    trajectory_plot_path = _write_region_self_supervised_trajectory_plot(task, output_dir, episode_paths=episode_paths)
     if not quality_gate["passed"]:
         diagnostics = _region_self_supervised_diagnostics(
             quality_gate=quality_gate,
@@ -2886,6 +2910,7 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
                 "route_metrics": route_metrics,
                 "experience_route_point_count": experience_route_point_count,
                 "experience_route": experience_route,
+                "trajectory_plot_path": trajectory_plot_path,
                 "diagnostics": diagnostics,
                 "collection_acceptance": collection_acceptance,
                 "collection_acceptances": collection_acceptances,
@@ -2904,6 +2929,7 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
             "quality_gate": quality_gate,
             "coverage": coverage,
             "route_metrics": route_metrics,
+            "trajectory_plot_path": trajectory_plot_path,
             "diagnostics": diagnostics,
             "region_navigation": {
                 "collection_agent": "region_explorer",
@@ -2978,6 +3004,12 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
     }
     evaluation = _run_region_beamng_episode_with_reconnect_retry(**evaluation_kwargs)
     acceptance = _navigation_acceptance(evaluation, task)
+    trajectory_plot_path = _write_region_self_supervised_trajectory_plot(
+        task,
+        output_dir,
+        episode_paths=episode_paths,
+        evaluation=evaluation,
+    )
     region_navigation = evaluation.get("region_navigation", {}) if isinstance(evaluation.get("region_navigation"), dict) else {}
     region_navigation_payload = {
         **region_navigation,
@@ -3077,6 +3109,7 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
             "route_metrics": route_metrics,
             "experience_route_point_count": experience_route_point_count,
             "experience_route": experience_route,
+            "trajectory_plot_path": trajectory_plot_path,
             "model_quality_metrics": model_quality_metrics,
             "diagnostics": diagnostics,
             "collection_acceptance": collection_acceptance,
@@ -3097,6 +3130,7 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
         "quality_gate": quality_gate,
         "coverage": coverage,
         "route_metrics": route_metrics,
+        "trajectory_plot_path": trajectory_plot_path,
         "diagnostics": diagnostics,
         "region_navigation": region_navigation_payload,
         "training_run_path": training_run["path"],
@@ -4147,6 +4181,30 @@ def _write_region_trajectory_svg(task: NavigationRegionTask, output_path: Path, 
     output_path.write_text("\n".join(lines), encoding="utf-8")
 
 
+def _write_region_self_supervised_trajectory_plot(
+    task: NavigationRegionTask,
+    output_dir: Path,
+    *,
+    episode_paths: list[str],
+    evaluation: dict[str, Any] | None = None,
+) -> str:
+    traces: dict[str, list[dict[str, Any]]] = {}
+    collection_trace: list[dict[str, Any]] = []
+    for episode_path in episode_paths:
+        collection_trace.extend(load_episode_trace(episode_path))
+    if collection_trace:
+        traces["collection"] = collection_trace
+    if evaluation:
+        route_free_trace = load_episode_trace(str(evaluation.get("episode_path") or ""))
+        if route_free_trace:
+            traces["route_free"] = route_free_trace
+    if not traces:
+        return ""
+    path = output_dir / "region_self_supervised_trajectory.svg"
+    _write_region_trajectory_svg(task, path, traces=traces)
+    return str(path.resolve())
+
+
 def _navigation_acceptance(evaluation: dict[str, Any], task: NavigationRegionTask) -> dict[str, Any]:
     trace = load_episode_trace(evaluation.get("episode_path", ""))
     final = trace[-1] if trace else {}
@@ -4648,7 +4706,7 @@ def _world_model_config_row(raw: dict[str, Any]) -> dict[str, Any]:
     config_id = _safe_name(str(raw.get("id") or raw.get("label") or "world_model_config"))
     label = str(raw.get("label") or config_id)
     validation = raw.get("validation") if isinstance(raw.get("validation"), dict) else {}
-    return {
+    row = {
         "id": config_id,
         "label": label,
         "algorithm": str(raw.get("algorithm") or "stablewm_lewm"),
@@ -4657,6 +4715,53 @@ def _world_model_config_row(raw: dict[str, Any]) -> dict[str, Any]:
         "source_training_run_path": str(raw.get("source_training_run_path") or ""),
         "validation": dict(validation),
     }
+    row["demo_ready"] = bool(raw["demo_ready"]) if "demo_ready" in raw else _world_model_config_demo_ready(row)
+    return row
+
+
+def _world_model_config_demo_ready(row: dict[str, Any]) -> bool:
+    validation = row.get("validation") if isinstance(row.get("validation"), dict) else {}
+    if "demo_ready" in validation:
+        return bool(validation.get("demo_ready"))
+    if not bool(validation.get("goal_success")):
+        return False
+    if not bool(validation.get("model_controlled", True)):
+        return False
+    collision_count = _coerce_int(validation.get("collision_count"), default=0)
+    max_collision_count = _coerce_int(validation.get("max_collision_count"), default=0)
+    if collision_count > max_collision_count:
+        return False
+    goal_radius = _coerce_float(validation.get("goal_radius"))
+    final_distance = _coerce_float(validation.get("final_goal_distance"))
+    if math.isfinite(goal_radius) and math.isfinite(final_distance) and final_distance > goal_radius:
+        return False
+    algorithm = str(row.get("algorithm") or "").lower()
+    world_model = str(row.get("world_model") or "").lower()
+    if algorithm == "world_model_direct" or world_model == "tiny_learned":
+        route_mode = str(validation.get("evaluation_route_mode") or "").strip().lower()
+        route_free = bool(validation.get("route_free")) or route_mode in {"route_free", "none", "direct"}
+        route_waypoint_count = _coerce_int(validation.get("route_waypoint_count"), default=-1)
+        if not route_free and route_waypoint_count != 0:
+            return False
+    return True
+
+
+def _coerce_int(value: Any, *, default: int) -> int:
+    try:
+        if value is None:
+            return int(default)
+        return int(value)
+    except (TypeError, ValueError):
+        return int(default)
+
+
+def _coerce_float(value: Any) -> float:
+    try:
+        if value is None:
+            return math.nan
+        return float(value)
+    except (TypeError, ValueError):
+        return math.nan
 
 
 def _infer_world_model_type(path: Path) -> str:

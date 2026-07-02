@@ -167,9 +167,14 @@ def test_region_self_supervised_world_model_trains_and_evaluates_without_route(t
     assert payload["region_navigation"]["evaluation_agent"] == "world_model_direct"
     assert payload["acceptance"]["goal_success"] is True
     assert payload["acceptance"]["route_waypoint_count"] == 0
+    assert Path(payload["trajectory_plot_path"]).exists()
+    trajectory_svg = Path(payload["trajectory_plot_path"]).read_text(encoding="utf-8")
+    assert "collection" in trajectory_svg
+    assert "route_free" in trajectory_svg
     training_record = json.loads(Path(payload["training_run_path"]).read_text(encoding="utf-8"))
     assert training_record["preset_id"] == "region_self_supervised_world_model"
     assert training_record["artifact_path"] == payload["model_dir"]
+    assert training_record["summary"]["trajectory_plot_path"] == payload["trajectory_plot_path"]
     assert training_record["metrics"]["goal_success"] is True
     assert training_record["metrics"]["min_goal_distance"] <= 5.0
     assert training_record["metrics"]["collection_min_goal_distance"] > 30.0
@@ -186,7 +191,13 @@ def test_region_self_supervised_world_model_trains_and_evaluates_without_route(t
     assert saved_config["world_model"] == "tiny_learned"
     assert saved_config["model_path"] == payload["model_dir"]
     assert saved_config["source_training_run_path"] == payload["training_run_path"]
+    assert saved_config["demo_ready"] is True
+    assert saved_config["validation"]["demo_ready"] is True
     assert saved_config["validation"]["goal_success"] is True
+    assert saved_config["validation"]["route_free"] is True
+    assert saved_config["validation"]["evaluation_route_mode"] == "route_free"
+    assert saved_config["validation"]["route_waypoint_count"] == 0
+    assert saved_config["validation"]["model_controlled"] is True
     assert saved_config["validation"]["validation_rmse"] == payload["training"]["metrics"]["validation_rmse"]
     assert saved_config["validation"]["segment_rmse"] == payload["training"]["metrics"]["segment_rmse"]
     refreshed_record = json.loads(Path(payload["training_run_path"]).read_text(encoding="utf-8"))
