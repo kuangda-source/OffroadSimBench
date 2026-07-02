@@ -189,6 +189,43 @@ def test_region_explorer_shuffles_coverage_targets_by_seed() -> None:
     assert first_targets(3) != first_targets(4)
 
 
+def test_region_explorer_can_follow_route_aware_curriculum_targets() -> None:
+    agent = make_agent(
+        "region_explorer",
+        seed=3,
+        goal_bias_interval=0,
+        goal_corridor_interval=0,
+        coverage_grid_size=0,
+        coverage_target_interval=0,
+        route_target_interval=1,
+        route_lateral_m=0.0,
+        max_target_steps=1,
+    )
+    observation = Observation(
+        timestamp=0.0,
+        vehicle_state=VehicleState(x=2.0, y=2.0, yaw=0.0, speed=0.5),
+        goal=(28.0, 28.0),
+        info={
+            "route": [[2.0, 2.0], [12.0, 8.0], [24.0, 24.0], [28.0, 28.0]],
+            "navigation_region": {
+                "region": {"polygon": [[0.0, 0.0], [30.0, 0.0], [30.0, 30.0], [0.0, 30.0]]}
+            },
+        },
+    )
+
+    targets: list[tuple[float, float]] = []
+    for step in range(3):
+        observation.timestamp = float(step)
+        agent.act(observation)
+        diagnostics = agent.diagnostics()
+        targets.append(tuple(diagnostics["target"]))
+        assert diagnostics["target_source"] == "route"
+        assert diagnostics["route_target_count"] == 3
+        assert diagnostics["target_in_region"] is True
+
+    assert targets == [(12.0, 8.0), (24.0, 24.0), (28.0, 28.0)]
+
+
 def test_world_model_direct_agent_ignores_expert_route_info() -> None:
     agent = make_agent("world_model_direct", planner_config={"horizon": 4, "num_samples": 16, "seed": 4})
     observation = Observation(
@@ -358,10 +395,10 @@ def test_world_model_direct_agent_recovers_from_low_speed_no_progress() -> None:
         action, stuck = agent._progress_filter(Action(steer=-0.75, throttle=0.4, brake=0.0), Action(steer=-0.9, throttle=0.45, brake=0.0), observation)
 
     assert stuck is True
-    assert action.gear == -1
-    assert 0.4 <= action.throttle <= 0.65
-    assert action.brake == 0.0
-    assert abs(action.steer) <= 0.1
+    assert action.gear is None
+    assert 0.2 <= action.throttle <= 0.55
+    assert action.brake <= 0.25
+    assert abs(action.steer) <= 0.9
 
 
 def test_world_model_direct_agent_turns_again_after_straight_recovery_burst() -> None:

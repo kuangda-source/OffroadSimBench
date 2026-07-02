@@ -8,6 +8,7 @@ import subprocess
 import sys
 import threading
 import time
+from html import escape
 from dataclasses import asdict, dataclass, field, is_dataclass
 from pathlib import Path
 from typing import Any
@@ -169,6 +170,11 @@ class RegionSelfSupervisedWorldModelRequest:
     collection_coverage_grid_size: int = 0
     collection_coverage_target_interval: int = 0
     collection_max_target_steps: int = 80
+    collection_strategy: str = "region_explorer"
+    collection_route_target_interval: int = 0
+    collection_route_lateral_m: float = 0.0
+    min_route_coverage_ratio: float = 0.0
+    min_goal_zone_coverage: float = 0.0
     eval_steps: int = 1000
     seed: int = 7
     planner: str = "navigation_mpc"
@@ -201,6 +207,11 @@ class RegionTrainingDataCollectionRequest:
     collection_coverage_grid_size: int = 4
     collection_coverage_target_interval: int = 1
     collection_max_target_steps: int = 40
+    collection_strategy: str = "region_explorer"
+    collection_route_target_interval: int = 0
+    collection_route_lateral_m: float = 0.0
+    min_route_coverage_ratio: float = 0.0
+    min_goal_zone_coverage: float = 0.0
     beamng_gfx: str = "vk"
     close_beamng: bool = True
     step_delay_sec: float = 0.0
@@ -231,6 +242,8 @@ class RegionWorldModelEvaluationRequest:
     planner_samples: int = 32
     planner_iterations: int = 3
     evaluation_agent: str = "world_model_direct"
+    include_route_guided_baseline: bool = False
+    write_trajectory_plot: bool = True
     beamng_gfx: str = "vk"
     close_beamng: bool = True
     step_delay_sec: float = 0.0
@@ -2356,7 +2369,24 @@ def collect_region_training_data(request: RegionTrainingDataCollectionRequest) -
     stamp = time.strftime("%Y%m%dT%H%M%S")
     output_dir = Path(request.output_dir or ROOT / "outputs" / "beamng_region_training_data" / _safe_name(task.task_id) / stamp)
     output_dir.mkdir(parents=True, exist_ok=True)
-    collection_scenario = _route_free_region_scenario(task.to_beamng_scenario(mode="evaluation"))
+    collection_strategy = str(request.collection_strategy or "region_explorer").strip().lower()
+    collection_scenario = _collection_region_scenario(task, strategy=collection_strategy)
+    route_aware = collection_strategy in {"route_aware", "route-aware", "curriculum", "route_curriculum"}
+    agent_options = {
+        "goal_bias_interval": max(0, int(request.collection_goal_bias_interval)),
+        "goal_corridor_interval": max(0, int(request.collection_goal_corridor_interval)),
+        "goal_corridor_lateral_m": max(0.0, float(request.collection_goal_corridor_lateral_m)),
+        "coverage_grid_size": max(0, int(request.collection_coverage_grid_size)),
+        "coverage_target_interval": max(0, int(request.collection_coverage_target_interval)),
+        "max_target_steps": max(1, int(request.collection_max_target_steps)),
+    }
+    if route_aware:
+        agent_options.update(
+            {
+                "route_target_interval": max(1, int(request.collection_route_target_interval or 1)),
+                "route_lateral_m": max(0.0, float(request.collection_route_lateral_m)),
+            }
+        )
 
     collections: list[dict[str, Any]] = []
     collection_acceptances: list[dict[str, Any]] = []
@@ -2370,14 +2400,7 @@ def collect_region_training_data(request: RegionTrainingDataCollectionRequest) -
             max_steps=min(max(1, int(request.collect_steps)), task.max_steps),
             seed=int(request.seed) + rollout_index,
             agent_name="region_explorer",
-            agent_options={
-                "goal_bias_interval": max(0, int(request.collection_goal_bias_interval)),
-                "goal_corridor_interval": max(0, int(request.collection_goal_corridor_interval)),
-                "goal_corridor_lateral_m": max(0.0, float(request.collection_goal_corridor_lateral_m)),
-                "coverage_grid_size": max(0, int(request.collection_coverage_grid_size)),
-                "coverage_target_interval": max(0, int(request.collection_coverage_target_interval)),
-                "max_target_steps": max(1, int(request.collection_max_target_steps)),
-            },
+            agent_options=agent_options,
             world_model_type="simple_kinematic",
             world_model_path="",
             planner="",
@@ -2404,11 +2427,20 @@ def collect_region_training_data(request: RegionTrainingDataCollectionRequest) -
 
     best_acceptance = min(collection_acceptances, key=lambda row: _finite_or_inf(row.get("min_goal_distance")))
     collection_distance_total = float(sum(collection_distances)) if collection_distances else math.nan
-    quality_gate = _collection_quality_gate(task, best_acceptance, min_progress_ratio=request.min_collection_goal_progress_ratio)
     coverage = _collection_coverage_metrics(
         task,
         episode_paths,
         grid_size=max(2, int(request.collection_coverage_grid_size)),
+    )
+    route_metrics = _collection_route_metrics(task, episode_paths)
+    quality_gate = _collection_quality_gate(
+        task,
+        best_acceptance,
+        min_progress_ratio=request.min_collection_goal_progress_ratio,
+        route_coverage_ratio=route_metrics["route_coverage_ratio"],
+        min_route_coverage_ratio=request.min_route_coverage_ratio,
+        goal_zone_coverage=route_metrics["goal_zone_coverage"],
+        min_goal_zone_coverage=request.min_goal_zone_coverage,
     )
     metrics = {
         "collection_rollout_count": rollout_count,
@@ -2422,9 +2454,15 @@ def collect_region_training_data(request: RegionTrainingDataCollectionRequest) -
         "collection_coverage_cell_count": coverage["cell_count"],
         "collection_coverage_total_cells": coverage["total_cells"],
         "collection_coverage_ratio": coverage["ratio"],
+        "unique_region_cells": coverage["cell_count"],
+        "route_coverage_ratio": route_metrics["route_coverage_ratio"],
+        "route_covered_waypoint_count": route_metrics["route_covered_waypoint_count"],
+        "route_waypoint_count": route_metrics["route_waypoint_count"],
+        "goal_zone_coverage": route_metrics["goal_zone_coverage"],
     }
+    collection_status = "completed" if bool(quality_gate.get("passed")) else "collection_insufficient"
     payload: dict[str, Any] = {
-        "status": "completed",
+        "status": collection_status,
         "task": task.to_dict(),
         "task_path": str(Path(request.task_path).resolve()),
         "output_dir": str(output_dir.resolve()),
@@ -2444,6 +2482,11 @@ def collect_region_training_data(request: RegionTrainingDataCollectionRequest) -
             "collection_coverage_grid_size": max(0, int(request.collection_coverage_grid_size)),
             "collection_coverage_target_interval": max(0, int(request.collection_coverage_target_interval)),
             "collection_max_target_steps": max(1, int(request.collection_max_target_steps)),
+            "collection_strategy": collection_strategy,
+            "collection_route_target_interval": agent_options.get("route_target_interval", 0),
+            "collection_route_lateral_m": agent_options.get("route_lateral_m", 0.0),
+            "min_route_coverage_ratio": max(0.0, float(request.min_route_coverage_ratio)),
+            "min_goal_zone_coverage": max(0.0, float(request.min_goal_zone_coverage)),
         },
     }
     manifest_path = output_dir / REGION_TRAINING_COLLECTION_FILENAME
@@ -2451,7 +2494,7 @@ def collect_region_training_data(request: RegionTrainingDataCollectionRequest) -
     training_run = write_training_run_record(
         output_dir,
         preset_id="beamng_region_training_data",
-        status="completed",
+        status=collection_status,
         dataset_root=episode_paths[0],
         adapter="beamng_episode",
         sequence_id=task.task_id,
@@ -2462,12 +2505,15 @@ def collect_region_training_data(request: RegionTrainingDataCollectionRequest) -
             "collection_min_goal_distance": [best_acceptance.get("min_goal_distance")],
             "collection_progress_ratio": [quality_gate.get("progress_ratio")],
             "collection_distance_traveled": [collection_distance_total],
+            "route_coverage_ratio": [route_metrics["route_coverage_ratio"]],
+            "goal_zone_coverage": [route_metrics["goal_zone_coverage"]],
         },
         parameters=payload["parameters"],
         summary={
             "task_path": str(Path(request.task_path).resolve()),
             "quality_gate": quality_gate,
             "coverage": coverage,
+            "route_metrics": route_metrics,
             "collection_acceptance": best_acceptance,
             "collection_acceptances": collection_acceptances,
             "episode_paths": episode_paths,
@@ -2487,6 +2533,10 @@ def train_region_world_model_from_collection(request: RegionWorldModelTrainingRe
     collection = _read_json(manifest_path)
     if not isinstance(collection, dict) or str(collection.get("status") or "") != "completed":
         raise ValueError("Collection manifest must be a completed BeamNG region collection.")
+    quality_gate = collection.get("quality_gate") if isinstance(collection.get("quality_gate"), dict) else {}
+    if quality_gate and not bool(quality_gate.get("passed", True)):
+        reason = str(quality_gate.get("reason") or "collection_insufficient")
+        raise ValueError(f"Collection quality gate failed: {reason}")
     task = _navigation_task_from_collection_manifest(collection, manifest_path)
     episode_paths = [str(Path(path).resolve()) for path in collection.get("episode_paths", []) if str(path or "").strip()]
     if not episode_paths:
@@ -2594,7 +2644,24 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
     stamp = time.strftime("%Y%m%dT%H%M%S")
     output_dir = Path(request.output_dir or ROOT / "outputs" / "region_self_supervised" / _safe_name(task.task_id) / stamp)
     output_dir.mkdir(parents=True, exist_ok=True)
-    collection_scenario = _route_free_region_scenario(task.to_beamng_scenario(mode="evaluation"))
+    collection_strategy = str(request.collection_strategy or "region_explorer").strip().lower()
+    collection_scenario = _collection_region_scenario(task, strategy=collection_strategy)
+    route_aware = collection_strategy in {"route_aware", "route-aware", "curriculum", "route_curriculum"}
+    collection_agent_options = {
+        "goal_bias_interval": max(0, int(request.collection_goal_bias_interval)),
+        "goal_corridor_interval": max(0, int(request.collection_goal_corridor_interval)),
+        "goal_corridor_lateral_m": max(0.0, float(request.collection_goal_corridor_lateral_m)),
+        "coverage_grid_size": max(0, int(request.collection_coverage_grid_size)),
+        "coverage_target_interval": max(0, int(request.collection_coverage_target_interval)),
+        "max_target_steps": max(1, int(request.collection_max_target_steps)),
+    }
+    if route_aware:
+        collection_agent_options.update(
+            {
+                "route_target_interval": max(1, int(request.collection_route_target_interval or 1)),
+                "route_lateral_m": max(0.0, float(request.collection_route_lateral_m)),
+            }
+        )
     evaluation_route_free = str(request.evaluation_route_mode or "route_free").strip().lower() in {"route_free", "none", "direct"}
     evaluation_scenario = (
         _route_free_region_scenario(task.to_beamng_scenario(mode="evaluation"))
@@ -2615,14 +2682,7 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
             max_steps=min(max(1, int(request.collect_steps)), task.max_steps),
             seed=int(request.seed) + rollout_index,
             agent_name="region_explorer",
-            agent_options={
-                "goal_bias_interval": max(0, int(request.collection_goal_bias_interval)),
-                "goal_corridor_interval": max(0, int(request.collection_goal_corridor_interval)),
-                "goal_corridor_lateral_m": max(0.0, float(request.collection_goal_corridor_lateral_m)),
-                "coverage_grid_size": max(0, int(request.collection_coverage_grid_size)),
-                "coverage_target_interval": max(0, int(request.collection_coverage_target_interval)),
-                "max_target_steps": max(1, int(request.collection_max_target_steps)),
-            },
+            agent_options=collection_agent_options,
             world_model_type="simple_kinematic",
             world_model_path="",
             planner="",
@@ -2649,11 +2709,20 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
         sequences.append(_episode_trace_to_dataset_sequence(episode_path, task))
     collection_acceptance = min(collection_acceptances, key=lambda row: _finite_or_inf(row.get("min_goal_distance")))
     collection_distance = float(sum(collection_distances)) if collection_distances else math.nan
-    quality_gate = _collection_quality_gate(task, collection_acceptance, min_progress_ratio=request.min_collection_goal_progress_ratio)
     coverage = _collection_coverage_metrics(
         task,
         episode_paths,
         grid_size=max(2, int(request.collection_coverage_grid_size)),
+    )
+    route_metrics = _collection_route_metrics(task, episode_paths)
+    quality_gate = _collection_quality_gate(
+        task,
+        collection_acceptance,
+        min_progress_ratio=request.min_collection_goal_progress_ratio,
+        route_coverage_ratio=route_metrics["route_coverage_ratio"],
+        min_route_coverage_ratio=request.min_route_coverage_ratio,
+        goal_zone_coverage=route_metrics["goal_zone_coverage"],
+        min_goal_zone_coverage=request.min_goal_zone_coverage,
     )
     if not quality_gate["passed"]:
         diagnostics = _region_self_supervised_diagnostics(
@@ -2689,11 +2758,16 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
                 "collection_coverage_cell_count": coverage["cell_count"],
                 "collection_coverage_total_cells": coverage["total_cells"],
                 "collection_coverage_ratio": coverage["ratio"],
+                "unique_region_cells": coverage["cell_count"],
+                "route_coverage_ratio": route_metrics["route_coverage_ratio"],
+                "goal_zone_coverage": route_metrics["goal_zone_coverage"],
             },
             history={
                 "collection_min_goal_distance": [collection_acceptance.get("min_goal_distance")],
                 "collection_progress_ratio": [quality_gate.get("progress_ratio")],
                 "collection_coverage_ratio": [coverage["ratio"]],
+                "route_coverage_ratio": [route_metrics["route_coverage_ratio"]],
+                "goal_zone_coverage": [route_metrics["goal_zone_coverage"]],
             },
             parameters={
                 "world_model_type": request.world_model_type,
@@ -2711,11 +2785,17 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
                 "collection_coverage_grid_size": max(0, int(request.collection_coverage_grid_size)),
                 "collection_coverage_target_interval": max(0, int(request.collection_coverage_target_interval)),
                 "collection_max_target_steps": max(1, int(request.collection_max_target_steps)),
+                "collection_strategy": collection_strategy,
+                "collection_route_target_interval": collection_agent_options.get("route_target_interval", 0),
+                "collection_route_lateral_m": collection_agent_options.get("route_lateral_m", 0.0),
+                "min_route_coverage_ratio": max(0.0, float(request.min_route_coverage_ratio)),
+                "min_goal_zone_coverage": max(0.0, float(request.min_goal_zone_coverage)),
             },
             summary={
                 "task_path": str(Path(request.task_path).resolve()),
                 "quality_gate": quality_gate,
                 "coverage": coverage,
+                "route_metrics": route_metrics,
                 "diagnostics": diagnostics,
                 "collection_acceptance": collection_acceptance,
                 "collection_acceptances": collection_acceptances,
@@ -2733,6 +2813,7 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
             "acceptance": {},
             "quality_gate": quality_gate,
             "coverage": coverage,
+            "route_metrics": route_metrics,
             "diagnostics": diagnostics,
             "region_navigation": {
                 "collection_agent": "region_explorer",
@@ -2758,6 +2839,9 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
             "collection_coverage_cell_count": coverage["cell_count"],
             "collection_coverage_total_cells": coverage["total_cells"],
             "collection_coverage_ratio": coverage["ratio"],
+            "unique_region_cells": coverage["cell_count"],
+            "route_coverage_ratio": route_metrics["route_coverage_ratio"],
+            "goal_zone_coverage": route_metrics["goal_zone_coverage"],
         }
     )
     model_dir = output_dir / "model"
@@ -2834,6 +2918,9 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
             "collection_coverage_cell_count": coverage["cell_count"],
             "collection_coverage_total_cells": coverage["total_cells"],
             "collection_coverage_ratio": coverage["ratio"],
+            "unique_region_cells": coverage["cell_count"],
+            "route_coverage_ratio": route_metrics["route_coverage_ratio"],
+            "goal_zone_coverage": route_metrics["goal_zone_coverage"],
         },
         history={
             "train_rmse": [model.metadata.get("train_rmse")],
@@ -2841,6 +2928,8 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
             "collection_min_goal_distance": [collection_acceptance.get("min_goal_distance")],
             "collection_progress_ratio": [quality_gate.get("progress_ratio")],
             "collection_coverage_ratio": [coverage["ratio"]],
+            "route_coverage_ratio": [route_metrics["route_coverage_ratio"]],
+            "goal_zone_coverage": [route_metrics["goal_zone_coverage"]],
             "evaluation_min_goal_distance": [acceptance.get("min_goal_distance")],
         },
         parameters={
@@ -2859,11 +2948,17 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
             "collection_coverage_grid_size": max(0, int(request.collection_coverage_grid_size)),
             "collection_coverage_target_interval": max(0, int(request.collection_coverage_target_interval)),
             "collection_max_target_steps": max(1, int(request.collection_max_target_steps)),
+            "collection_strategy": collection_strategy,
+            "collection_route_target_interval": collection_agent_options.get("route_target_interval", 0),
+            "collection_route_lateral_m": collection_agent_options.get("route_lateral_m", 0.0),
+            "min_route_coverage_ratio": max(0.0, float(request.min_route_coverage_ratio)),
+            "min_goal_zone_coverage": max(0.0, float(request.min_goal_zone_coverage)),
         },
         summary={
             "task_path": str(Path(request.task_path).resolve()),
             "quality_gate": quality_gate,
             "coverage": coverage,
+            "route_metrics": route_metrics,
             "diagnostics": diagnostics,
             "collection_acceptance": collection_acceptance,
             "collection_acceptances": collection_acceptances,
@@ -2882,6 +2977,7 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
         "acceptance": acceptance,
         "quality_gate": quality_gate,
         "coverage": coverage,
+        "route_metrics": route_metrics,
         "diagnostics": diagnostics,
         "region_navigation": region_navigation_payload,
         "training_run_path": training_run["path"],
@@ -2932,6 +3028,67 @@ def run_region_world_model_evaluation(request: RegionWorldModelEvaluationRequest
     )
     acceptance = _navigation_acceptance(evaluation, task)
     region_navigation = evaluation.get("region_navigation", {}) if isinstance(evaluation.get("region_navigation"), dict) else {}
+    baselines: dict[str, Any] = {
+        "route_free": {
+            "evaluation": evaluation,
+            "acceptance": acceptance,
+            "region_navigation": {
+                **region_navigation,
+                "evaluation_agent": request.evaluation_agent,
+                "route_free": True,
+                "evaluation_route_mode": "route_free",
+            },
+        }
+    }
+    route_guided_evaluation: dict[str, Any] | None = None
+    route_guided_acceptance: dict[str, Any] | None = None
+    if request.include_route_guided_baseline:
+        route_guided_evaluation = _run_region_beamng_episode_with_reconnect_retry(
+            scenario=_route_guided_region_scenario(task),
+            vehicle=request.vehicle,
+            max_steps=min(max(1, int(request.eval_steps)), task.max_steps),
+            seed=request.seed,
+            agent_name="route_world_model",
+            world_model_type=request.world_model_type,
+            world_model_path=request.world_model_path,
+            planner=request.planner,
+            planner_horizon=request.planner_horizon,
+            planner_samples=request.planner_samples,
+            planner_iterations=request.planner_iterations,
+            record=True,
+            beamng_gfx=request.beamng_gfx,
+            pre_run_hold_sec=0.0,
+            step_delay_sec=request.step_delay_sec,
+            post_run_hold_sec=request.post_run_hold_sec,
+            close_beamng=request.close_beamng,
+        )
+        route_guided_acceptance = _navigation_acceptance(route_guided_evaluation, task)
+        route_guided_region_navigation = (
+            route_guided_evaluation.get("region_navigation", {}) if isinstance(route_guided_evaluation.get("region_navigation"), dict) else {}
+        )
+        baselines["route_guided"] = {
+            "evaluation": route_guided_evaluation,
+            "acceptance": route_guided_acceptance,
+            "region_navigation": {
+                **route_guided_region_navigation,
+                "evaluation_agent": "route_world_model",
+                "route_free": False,
+                "evaluation_route_mode": "task_route",
+            },
+        }
+    comparison = _region_evaluation_comparison(
+        route_free_acceptance=acceptance,
+        route_free_evaluation=evaluation,
+        route_guided_acceptance=route_guided_acceptance,
+        route_guided_evaluation=route_guided_evaluation,
+    )
+    trajectory_plot_path = ""
+    if request.write_trajectory_plot:
+        trajectory_plot_path = str((output_dir / "region_world_model_trajectory.svg").resolve())
+        traces = {"route_free": load_episode_trace(evaluation.get("episode_path", ""))}
+        if route_guided_evaluation is not None:
+            traces["route_guided"] = load_episode_trace(route_guided_evaluation.get("episode_path", ""))
+        _write_region_trajectory_svg(task, Path(trajectory_plot_path), traces=traces)
     payload: dict[str, Any] = {
         "status": "completed",
         "task": task.to_dict(),
@@ -2939,6 +3096,9 @@ def run_region_world_model_evaluation(request: RegionWorldModelEvaluationRequest
         "model_dir": str(Path(request.world_model_path).resolve()),
         "evaluation": evaluation,
         "acceptance": acceptance,
+        "baselines": baselines,
+        "comparison": comparison,
+        "trajectory_plot_path": trajectory_plot_path,
         "region_navigation": {
             **region_navigation,
             "evaluation_agent": request.evaluation_agent,
@@ -3238,6 +3398,25 @@ def _route_free_region_scenario(scenario: dict[str, Any]) -> dict[str, Any]:
     return cleaned
 
 
+def _route_guided_region_scenario(task: NavigationRegionTask) -> dict[str, Any]:
+    scenario = json.loads(json.dumps(task.to_beamng_scenario(mode="evaluation"), default=str))
+    metadata = scenario.setdefault("metadata", {})
+    beamng = metadata.setdefault("beamng", {})
+    route = task.expert_route or [(task.start_pos[0], task.start_pos[1]), task.goal_pos]
+    beamng["route"] = [list(point) for point in route]
+    beamng["draw_route"] = True
+    beamng["drive_mode"] = "manual"
+    beamng["evaluation_route_mode"] = "expert"
+    return scenario
+
+
+def _collection_region_scenario(task: NavigationRegionTask, *, strategy: str) -> dict[str, Any]:
+    normalized = str(strategy or "region_explorer").strip().lower()
+    if normalized in {"route_aware", "route-aware", "curriculum", "route_curriculum"}:
+        return _route_guided_region_scenario(task)
+    return _route_free_region_scenario(task.to_beamng_scenario(mode="evaluation"))
+
+
 def _navigation_task_from_collection_manifest(collection: dict[str, Any], manifest_path: Path) -> NavigationRegionTask:
     raw_task = collection.get("task")
     if isinstance(raw_task, dict) and raw_task:
@@ -3278,6 +3457,46 @@ def _collection_coverage_metrics(task: NavigationRegionTask, episode_paths: list
         "total_cells": total_cells,
         "ratio": ratio,
         "visited_cells": [[int(col), int(row)] for col, row in sorted(visited)],
+    }
+
+
+def _collection_route_metrics(task: NavigationRegionTask, episode_paths: list[str], *, route_radius_m: float | None = None) -> dict[str, Any]:
+    route = task.expert_route or [(task.start_pos[0], task.start_pos[1]), task.goal_pos]
+    radius = float(route_radius_m if route_radius_m is not None else max(task.goal_radius, 8.0))
+    covered_indices: set[int] = set()
+    goal_episode_hits = 0
+    valid_episode_count = 0
+    for episode_path in episode_paths:
+        trace = load_episode_trace(episode_path)
+        if not trace:
+            continue
+        valid_episode_count += 1
+        hit_goal = False
+        for row in trace:
+            x = _float_or_nan(row.get("x"))
+            y = _float_or_nan(row.get("y"))
+            if not math.isfinite(x) or not math.isfinite(y):
+                continue
+            point = (float(x), float(y))
+            for index, route_point in enumerate(route):
+                if math.hypot(point[0] - float(route_point[0]), point[1] - float(route_point[1])) <= radius:
+                    covered_indices.add(index)
+            if math.hypot(point[0] - task.goal_pos[0], point[1] - task.goal_pos[1]) <= task.goal_radius:
+                hit_goal = True
+        if hit_goal:
+            goal_episode_hits += 1
+    route_count = len(route)
+    route_ratio = float(len(covered_indices) / route_count) if route_count > 0 else math.nan
+    goal_zone_coverage = float(goal_episode_hits / valid_episode_count) if valid_episode_count > 0 else 0.0
+    return {
+        "route_radius_m": radius,
+        "route_waypoint_count": route_count,
+        "route_covered_waypoint_count": len(covered_indices),
+        "route_covered_indices": [int(index) for index in sorted(covered_indices)],
+        "route_coverage_ratio": route_ratio,
+        "goal_zone_episode_count": goal_episode_hits,
+        "episode_count": valid_episode_count,
+        "goal_zone_coverage": goal_zone_coverage,
     }
 
 
@@ -3470,6 +3689,144 @@ def _run_region_beamng_episode(
     return payload
 
 
+def _episode_behavior_counts(trace: list[dict[str, Any]], metrics: dict[str, Any]) -> dict[str, int]:
+    reverse_count = 0
+    stuck_recovery_count = 0
+    for row in trace:
+        gear = _int_or_none(row.get("gear"))
+        diagnostics = row.get("agent_diagnostics") if isinstance(row.get("agent_diagnostics"), dict) else {}
+        executed = diagnostics.get("executed_action") if isinstance(diagnostics.get("executed_action"), dict) else {}
+        executed_gear = _int_or_none(executed.get("gear")) if executed else None
+        if (gear is not None and gear < 0) or (executed_gear is not None and executed_gear < 0):
+            reverse_count += 1
+        if bool(diagnostics.get("stuck_recovery")):
+            stuck_recovery_count += 1
+    final_diagnostics = metrics.get("agent_diagnostics") if isinstance(metrics.get("agent_diagnostics"), dict) else {}
+    if bool(final_diagnostics.get("stuck_recovery")) and stuck_recovery_count == 0:
+        stuck_recovery_count = 1
+    return {"reverse_count": int(reverse_count), "stuck_recovery_count": int(stuck_recovery_count)}
+
+
+def _region_evaluation_comparison(
+    *,
+    route_free_acceptance: dict[str, Any],
+    route_free_evaluation: dict[str, Any],
+    route_guided_acceptance: dict[str, Any] | None,
+    route_guided_evaluation: dict[str, Any] | None,
+) -> dict[str, Any]:
+    route_free_metrics = route_free_evaluation.get("metrics", {}) if isinstance(route_free_evaluation.get("metrics"), dict) else {}
+    comparison: dict[str, Any] = {
+        "route_free_goal_success": bool(route_free_acceptance.get("goal_success")),
+        "route_free_goal_reached": bool(route_free_acceptance.get("goal_reached")),
+        "route_free_min_goal_distance": route_free_acceptance.get("min_goal_distance"),
+        "route_free_final_goal_distance": route_free_acceptance.get("final_goal_distance"),
+        "route_free_collision_count": int(route_free_acceptance.get("collision_count", 0) or 0),
+        "route_free_distance_traveled": route_free_acceptance.get("distance_traveled", route_free_metrics.get("horizontal_distance_traveled")),
+        "route_free_stuck_recovery_count": int(route_free_acceptance.get("stuck_recovery_count", 0) or 0),
+        "route_free_reverse_count": int(route_free_acceptance.get("reverse_count", 0) or 0),
+    }
+    if route_guided_acceptance is not None and route_guided_evaluation is not None:
+        route_guided_metrics = route_guided_evaluation.get("metrics", {}) if isinstance(route_guided_evaluation.get("metrics"), dict) else {}
+        comparison.update(
+            {
+                "route_guided_goal_success": bool(route_guided_acceptance.get("goal_success")),
+                "route_guided_goal_reached": bool(route_guided_acceptance.get("goal_reached")),
+                "route_guided_min_goal_distance": route_guided_acceptance.get("min_goal_distance"),
+                "route_guided_final_goal_distance": route_guided_acceptance.get("final_goal_distance"),
+                "route_guided_collision_count": int(route_guided_acceptance.get("collision_count", 0) or 0),
+                "route_guided_distance_traveled": route_guided_acceptance.get(
+                    "distance_traveled", route_guided_metrics.get("horizontal_distance_traveled")
+                ),
+                "route_guided_stuck_recovery_count": int(route_guided_acceptance.get("stuck_recovery_count", 0) or 0),
+                "route_guided_reverse_count": int(route_guided_acceptance.get("reverse_count", 0) or 0),
+            }
+        )
+    return comparison
+
+
+def _write_region_trajectory_svg(task: NavigationRegionTask, output_path: Path, *, traces: dict[str, list[dict[str, Any]]]) -> None:
+    points: list[tuple[float, float]] = list(task.region_polygon)
+    points.extend(task.expert_route or [])
+    points.append((float(task.start_pos[0]), float(task.start_pos[1])))
+    points.append((float(task.goal_pos[0]), float(task.goal_pos[1])))
+    for trace in traces.values():
+        for row in trace:
+            x = _float_or_nan(row.get("x"))
+            y = _float_or_nan(row.get("y"))
+            if math.isfinite(x) and math.isfinite(y):
+                points.append((float(x), float(y)))
+    if not points:
+        return
+    width = 900.0
+    height = 640.0
+    margin = 44.0
+    xs = [point[0] for point in points]
+    ys = [point[1] for point in points]
+    min_x, max_x = min(xs), max(xs)
+    min_y, max_y = min(ys), max(ys)
+    span_x = max(max_x - min_x, 1e-6)
+    span_y = max(max_y - min_y, 1e-6)
+    scale = min((width - margin * 2.0) / span_x, (height - margin * 2.0) / span_y)
+
+    def project(point: tuple[float, float]) -> tuple[float, float]:
+        return (
+            margin + (point[0] - min_x) * scale,
+            height - margin - (point[1] - min_y) * scale,
+        )
+
+    def polyline(raw_points: list[tuple[float, float]]) -> str:
+        return " ".join(f"{project(point)[0]:.1f},{project(point)[1]:.1f}" for point in raw_points)
+
+    colors = {
+        "collection": "#8aa2ff",
+        "route_free": "#35d399",
+        "route_guided": "#c084fc",
+        "expert_route": "#f59e0b",
+    }
+    lines: list[str] = [
+        '<svg xmlns="http://www.w3.org/2000/svg" width="900" height="640" viewBox="0 0 900 640">',
+        '<rect width="900" height="640" fill="#08131c"/>',
+        '<text x="24" y="32" fill="#dbeafe" font-family="Arial" font-size="18">BeamNG region trajectory comparison</text>',
+    ]
+    if len(task.region_polygon) >= 3:
+        lines.append(
+            f'<polygon points="{polyline(task.region_polygon)}" fill="#0f2230" stroke="#7dd3fc" stroke-width="2" fill-opacity="0.55"/>'
+        )
+    route = task.expert_route or [(task.start_pos[0], task.start_pos[1]), task.goal_pos]
+    if len(route) >= 2:
+        lines.append(f'<polyline points="{polyline(route)}" fill="none" stroke="{colors["expert_route"]}" stroke-width="4" stroke-dasharray="10 7"/>')
+    for label, trace in traces.items():
+        trace_points = [
+            (float(row["x"]), float(row["y"]))
+            for row in trace
+            if math.isfinite(_float_or_nan(row.get("x"))) and math.isfinite(_float_or_nan(row.get("y")))
+        ]
+        if len(trace_points) >= 2:
+            color = colors.get(label, "#e5e7eb")
+            lines.append(f'<polyline points="{polyline(trace_points)}" fill="none" stroke="{color}" stroke-width="3"/>')
+        elif len(trace_points) == 1:
+            x, y = project(trace_points[0])
+            lines.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="4" fill="{colors.get(label, "#e5e7eb")}"/>')
+    start_x, start_y = project((float(task.start_pos[0]), float(task.start_pos[1])))
+    goal_x, goal_y = project((float(task.goal_pos[0]), float(task.goal_pos[1])))
+    lines.extend(
+        [
+            f'<circle cx="{start_x:.1f}" cy="{start_y:.1f}" r="7" fill="#22c55e"/>',
+            f'<circle cx="{goal_x:.1f}" cy="{goal_y:.1f}" r="9" fill="#ef4444"/>',
+            f'<circle cx="{goal_x:.1f}" cy="{goal_y:.1f}" r="{max(3.0, task.goal_radius * scale):.1f}" fill="none" stroke="#ef4444" stroke-width="2" stroke-opacity="0.5"/>',
+        ]
+    )
+    legend_y = 58
+    for label in ["expert_route", *traces.keys()]:
+        color = colors.get(label, "#e5e7eb")
+        lines.append(f'<rect x="24" y="{legend_y}" width="18" height="4" fill="{color}"/>')
+        lines.append(f'<text x="50" y="{legend_y + 5}" fill="#cbd5e1" font-family="Arial" font-size="13">{escape(label)}</text>')
+        legend_y += 22
+    lines.append("</svg>")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text("\n".join(lines), encoding="utf-8")
+
+
 def _navigation_acceptance(evaluation: dict[str, Any], task: NavigationRegionTask) -> dict[str, Any]:
     trace = load_episode_trace(evaluation.get("episode_path", ""))
     final = trace[-1] if trace else {}
@@ -3503,6 +3860,10 @@ def _navigation_acceptance(evaluation: dict[str, Any], task: NavigationRegionTas
     throttles = [value for value in throttles if math.isfinite(value)]
     steers = [_float_or_nan(row.get("steer")) for row in trace]
     steers = [value for value in steers if math.isfinite(value)]
+    behavior_counts = _episode_behavior_counts(trace, metrics)
+    distance_traveled = _float_or_nan(metrics.get("horizontal_distance_traveled"))
+    if not math.isfinite(distance_traveled):
+        distance_traveled = _trajectory_length(trace)
     return {
         "goal_success": bool(final_goal_reached and reached_in_region and model_controlled and collision_count <= task.max_collision_count),
         "goal_reached": bool(goal_reached),
@@ -3519,6 +3880,9 @@ def _navigation_acceptance(evaluation: dict[str, Any], task: NavigationRegionTas
         "mean_throttle": float(sum(throttles) / len(throttles)) if throttles else math.nan,
         "mean_abs_steer": float(sum(abs(value) for value in steers) / len(steers)) if steers else math.nan,
         "collision_count": collision_count,
+        "distance_traveled": distance_traveled,
+        "stuck_recovery_count": behavior_counts["stuck_recovery_count"],
+        "reverse_count": behavior_counts["reverse_count"],
         "max_collision_count": task.max_collision_count,
     }
 
@@ -3618,8 +3982,14 @@ def _collection_quality_gate(
     collection_acceptance: dict[str, Any],
     *,
     min_progress_ratio: float,
+    route_coverage_ratio: float | None = None,
+    min_route_coverage_ratio: float = 0.0,
+    goal_zone_coverage: float | None = None,
+    min_goal_zone_coverage: float = 0.0,
 ) -> dict[str, Any]:
     required = max(0.0, float(min_progress_ratio))
+    required_route = max(0.0, float(min_route_coverage_ratio))
+    required_goal_zone = max(0.0, float(min_goal_zone_coverage))
     start_distance = math.hypot(task.start_pos[0] - task.goal_pos[0], task.start_pos[1] - task.goal_pos[1])
     min_distance = _float_or_nan(collection_acceptance.get("min_goal_distance"))
     if not math.isfinite(min_distance) or start_distance <= 1e-9:
@@ -3627,13 +3997,33 @@ def _collection_quality_gate(
     else:
         progress_ratio = max(0.0, min(1.0, (start_distance - min_distance) / start_distance))
     goal_reached = bool(collection_acceptance.get("goal_reached"))
-    passed = required <= 0.0 or goal_reached or progress_ratio >= required
-    reason = "passed" if passed else "collection_goal_progress_below_threshold"
+    route_ratio = _float_or_nan(route_coverage_ratio)
+    if not math.isfinite(route_ratio):
+        route_ratio = 0.0
+    goal_zone_ratio = _float_or_nan(goal_zone_coverage)
+    if not math.isfinite(goal_zone_ratio):
+        goal_zone_ratio = 0.0
+    progress_passed = required <= 0.0 or goal_reached or progress_ratio >= required
+    route_passed = required_route <= 0.0 or route_ratio >= required_route
+    goal_zone_passed = required_goal_zone <= 0.0 or goal_zone_ratio >= required_goal_zone
+    passed = bool(progress_passed and route_passed and goal_zone_passed)
+    if passed:
+        reason = "passed"
+    elif not progress_passed:
+        reason = "collection_goal_progress_below_threshold"
+    elif not route_passed:
+        reason = "collection_route_coverage_below_threshold"
+    else:
+        reason = "collection_goal_zone_coverage_below_threshold"
     return {
         "passed": bool(passed),
         "reason": reason,
         "progress_ratio": float(progress_ratio),
         "required_progress_ratio": float(required),
+        "route_coverage_ratio": float(route_ratio),
+        "required_route_coverage_ratio": float(required_route),
+        "goal_zone_coverage": float(goal_zone_ratio),
+        "required_goal_zone_coverage": float(required_goal_zone),
         "start_goal_distance": float(start_distance),
         "collection_min_goal_distance": min_distance,
         "collection_goal_reached": goal_reached,

@@ -6,7 +6,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication, QComboBox, QGroupBox, QLabel, QLineEdit, QPushButton, QScrollArea, QSpinBox, QWidget
 
-from desktop_app.qt_main import MainWindow, _training_run_overview_text
+from desktop_app.qt_main import MainWindow, _region_world_model_summary_text, _training_run_overview_text
 
 
 def _ensure_app() -> QApplication:
@@ -156,3 +156,33 @@ def test_training_run_overview_surfaces_region_navigation_diagnostics() -> None:
 
     assert "diagnostic_status: navigation_model_insufficient" in text
     assert "diagnostic_next: Collect wider coverage inside the region." in text
+
+
+def test_region_world_model_summary_surfaces_baseline_comparison() -> None:
+    text = _region_world_model_summary_text(
+        {
+            "acceptance": {
+                "goal_success": False,
+                "min_goal_distance": 52.0,
+                "final_goal_distance": 80.0,
+                "collision_count": 0,
+                "reverse_count": 2,
+                "stuck_recovery_count": 3,
+            },
+            "region_navigation": {"evaluation_agent": "world_model_direct", "route_free": True},
+            "comparison": {
+                "route_free_goal_success": False,
+                "route_free_min_goal_distance": 52.0,
+                "route_free_reverse_count": 2,
+                "route_guided_goal_success": True,
+                "route_guided_final_goal_distance": 3.0,
+            },
+            "trajectory_plot_path": "outputs/eval/region_world_model_trajectory.svg",
+        }
+    )
+
+    assert "reverse_count: 2" in text
+    assert "stuck_recovery_count: 3" in text
+    assert "route_free_min_goal_distance: 52" in text
+    assert "route_guided_goal_success: true" in text
+    assert "trajectory_plot_path: outputs/eval/region_world_model_trajectory.svg" in text

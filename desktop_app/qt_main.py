@@ -1795,6 +1795,7 @@ class MainWindow(QMainWindow):
                 planner_horizon=self.settings.planner_horizon,
                 planner_samples=self.settings.planner_samples,
                 planner_iterations=self.settings.planner_iterations,
+                include_route_guided_baseline=True,
                 close_beamng=False,
                 step_delay_sec=0.02,
                 post_run_hold_sec=20.0,
@@ -2426,6 +2427,7 @@ class MainWindow(QMainWindow):
                 planner_horizon=self.settings.planner_horizon,
                 planner_samples=self.settings.planner_samples,
                 planner_iterations=self.settings.planner_iterations,
+                include_route_guided_baseline=True,
                 close_beamng=False,
                 step_delay_sec=0.02,
                 post_run_hold_sec=20.0,
@@ -2472,6 +2474,11 @@ class MainWindow(QMainWindow):
             collect_steps=max(int(self.settings.max_steps), 1500),
             collect_rollouts=6,
             min_collection_goal_progress_ratio=0.35,
+            collection_strategy="route_aware",
+            collection_route_target_interval=1,
+            collection_route_lateral_m=2.5,
+            min_route_coverage_ratio=0.5,
+            min_goal_zone_coverage=0.2,
             collection_coverage_grid_size=6,
             collection_coverage_target_interval=1,
             collection_max_target_steps=30,
@@ -2517,6 +2524,11 @@ class MainWindow(QMainWindow):
             collect_steps=max(int(self.settings.max_steps), 1500),
             collect_rollouts=6,
             min_collection_goal_progress_ratio=0.35,
+            collection_strategy="route_aware",
+            collection_route_target_interval=1,
+            collection_route_lateral_m=2.5,
+            min_route_coverage_ratio=0.5,
+            min_goal_zone_coverage=0.2,
             collection_coverage_grid_size=6,
             collection_coverage_target_interval=1,
             collection_max_target_steps=30,
@@ -3667,6 +3679,9 @@ def _region_world_model_summary_text(payload: dict[str, Any]) -> str:
         "min_goal_distance",
         "final_goal_distance",
         "collision_count",
+        "distance_traveled",
+        "stuck_recovery_count",
+        "reverse_count",
         "max_collision_count",
     ]:
         if key in acceptance:
@@ -3681,6 +3696,27 @@ def _region_world_model_summary_text(payload: dict[str, Any]) -> str:
             lines.append(f"quality_progress_ratio: {services.display_value(quality['progress_ratio'])}")
         if quality.get("reason"):
             lines.append(f"quality_reason: {quality['reason']}")
+    comparison = payload.get("comparison") if isinstance(payload.get("comparison"), dict) else {}
+    if comparison:
+        for key in [
+            "route_free_goal_success",
+            "route_free_min_goal_distance",
+            "route_free_final_goal_distance",
+            "route_free_collision_count",
+            "route_free_distance_traveled",
+            "route_free_stuck_recovery_count",
+            "route_free_reverse_count",
+            "route_guided_goal_success",
+            "route_guided_min_goal_distance",
+            "route_guided_final_goal_distance",
+            "route_guided_collision_count",
+            "route_guided_distance_traveled",
+        ]:
+            if key in comparison:
+                lines.append(f"{key}: {services.display_value(comparison[key])}")
+    trajectory_plot_path = str(payload.get("trajectory_plot_path") or "").strip()
+    if trajectory_plot_path:
+        lines.append(f"trajectory_plot_path: {trajectory_plot_path}")
     for key in ["model_dir", "training_run_path", "summary_path"]:
         value = str(payload.get(key) or "").strip()
         if value:

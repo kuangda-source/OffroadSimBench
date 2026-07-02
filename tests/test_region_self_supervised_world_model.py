@@ -5,6 +5,8 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 import scripts.run_region_self_supervised_world_model as region_self_supervised_script
 from desktop_app import services
 from offroad_sim.core import Action, Observation, VehicleState
@@ -62,6 +64,28 @@ def _save_episode(path: Path, points: list[tuple[float, float, float, float]]) -
             info={},
         )
     recorder.end_episode({"steps": len(points), "collision_count": 0})
+    return recorder.save(path)
+
+
+def _save_episode_with_controls(
+    path: Path,
+    points: list[tuple[float, float, float, float, int | None, bool]],
+) -> Path:
+    recorder = EpisodeRecorder()
+    recorder.start_episode({"episode_id": path.name, "backend": "beamng"})
+    for index, (x, y, yaw, speed, gear, recovery) in enumerate(points):
+        recorder.record_step(
+            observation=Observation(
+                timestamp=float(index),
+                vehicle_state=VehicleState(x=x, y=y, z=1.0, yaw=yaw, speed=speed),
+                goal=(35.0, 35.0),
+            ),
+            action=Action(steer=0.1, throttle=0.3, brake=0.0, gear=gear),
+            reward=0.0,
+            done=False,
+            info={"agent_diagnostics": {"stuck_recovery": recovery, "executed_action": {"gear": gear}}},
+        )
+    recorder.end_episode({"steps": len(points), "collision_count": 0, "drive_mode": "manual"})
     return recorder.save(path)
 
 
@@ -356,6 +380,31 @@ def test_region_world_model_training_from_collection_registers_model_config(tmp_
     assert saved_config["source_training_run_path"] == payload["training_run_path"]
 
 
+def test_region_world_model_training_refuses_insufficient_collection_manifest(tmp_path: Path) -> None:
+    task_path = tmp_path / "task.yaml"
+    _write_task(task_path)
+    collection_payload = {
+        "status": "completed",
+        "task": services.load_navigation_region_task(str(task_path)).to_dict(),
+        "task_path": str(task_path),
+        "output_dir": str(tmp_path / "collection_run"),
+        "episode_paths": [],
+        "quality_gate": {"passed": False, "reason": "collection_route_coverage_below_threshold"},
+        "metrics": {"route_coverage_ratio": 0.2, "goal_zone_coverage": 0.0},
+    }
+    manifest_path = tmp_path / "collection_run" / "region_training_collection.json"
+    manifest_path.parent.mkdir(parents=True)
+    manifest_path.write_text(json.dumps(collection_payload, indent=2), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Collection quality gate failed"):
+        services.train_region_world_model_from_collection(
+            services.RegionWorldModelTrainingRequest(
+                collection_manifest_path=str(manifest_path),
+                output_dir=str(tmp_path / "trained_model"),
+            )
+        )
+
+
 def test_region_self_supervised_world_model_records_navigation_diagnostics_when_eval_misses_goal(tmp_path: Path) -> None:
     task_path = tmp_path / "task.yaml"
     _write_task(task_path)
@@ -499,6 +548,172 @@ def test_region_world_model_evaluation_loads_existing_model_without_training(tmp
     assert payload["status"] == "completed"
     assert payload["acceptance"]["goal_success"] is True
     assert payload["region_navigation"]["evaluation_agent"] == "world_model_direct"
+
+
+def test_region_world_model_evaluation_compares_route_free_and_route_guided_baselines(tmp_path: Path) -> None:
+    task_path = tmp_path / "task.yaml"
+    _write_task(task_path)
+    route_free_episode = _save_episode_with_controls(
+        tmp_path / "route_free",
+        [
+            (2.0, 2.0, 0.0, 0.5, None, False),
+            (6.0, 3.0, 0.1, 0.8, -1, True),
+            (8.0, 4.0, 0.1, 0.6, None, False),
+        ],
+    )
+    route_guided_episode = _save_episode_with_controls(
+        tmp_path / "route_guided",
+        [
+            (2.0, 2.0, 0.0, 0.5, None, False),
+            (10.0, 30.0, 0.6, 1.5, None, False),
+            (35.0, 35.0, 0.6, 0.8, None, False),
+        ],
+    )
+    episodes = [route_free_episode, route_guided_episode]
+    seen_agents: list[str] = []
+    seen_scenarios: list[dict[str, object]] = []
+
+    def fake_run_episode(**kwargs):
+        seen_agents.append(kwargs["agent_name"])
+        seen_scenarios.append(kwargs["scenario"])
+        index = len(seen_agents) - 1
+
+        class Result:
+            def to_dict(self):
+                return {
+                    "episode_id": f"eval_{index}",
+                    "episode_path": str(episodes[index]),
+                    "metrics": {
+                        "horizontal_distance_traveled": 10.0 + index * 60.0,
+                        "collision_count": 0,
+                        "drive_mode": "manual",
+                        "route_waypoint_count": 0 if index == 0 else 3,
+                    },
+                }
+
+        return Result()
+
+    with patch("desktop_app.services.run_episode", side_effect=fake_run_episode):
+        payload = services.run_region_world_model_evaluation(
+            services.RegionWorldModelEvaluationRequest(
+                task_path=str(task_path),
+                world_model_type="tiny_learned",
+                world_model_path=str(tmp_path / "model"),
+                output_dir=str(tmp_path / "out"),
+                eval_steps=20,
+                close_beamng=True,
+                include_route_guided_baseline=True,
+            )
+        )
+
+    assert seen_agents == ["world_model_direct", "route_world_model"]
+    assert "route" not in seen_scenarios[0]["metadata"]["beamng"]
+    assert seen_scenarios[1]["metadata"]["beamng"]["route"] == [[2.0, 2.0], [10.0, 30.0], [35.0, 35.0]]
+    assert payload["baselines"]["route_free"]["acceptance"]["goal_success"] is False
+    assert payload["baselines"]["route_guided"]["acceptance"]["goal_success"] is True
+    assert payload["comparison"]["route_free_goal_success"] is False
+    assert payload["comparison"]["route_guided_goal_success"] is True
+    assert payload["comparison"]["route_free_reverse_count"] == 1
+    assert payload["comparison"]["route_free_stuck_recovery_count"] == 1
+    assert payload["comparison"]["route_guided_final_goal_distance"] <= 5.0
+    assert Path(payload["trajectory_plot_path"]).exists()
+    assert "route_free" in Path(payload["trajectory_plot_path"]).read_text(encoding="utf-8")
+    assert json.loads(Path(payload["summary_path"]).read_text(encoding="utf-8"))["comparison"] == payload["comparison"]
+
+
+def test_region_training_data_collection_can_use_route_aware_curriculum(tmp_path: Path) -> None:
+    task_path = tmp_path / "task.yaml"
+    _write_task(task_path)
+    collection_episode = _save_episode(
+        tmp_path / "collection",
+        [(2.0, 2.0, 0.0, 0.5), (10.0, 30.0, 0.2, 1.2), (35.0, 35.0, 0.45, 1.5)],
+    )
+    seen_scenarios: list[dict[str, object]] = []
+    seen_agent_options: list[dict[str, object]] = []
+
+    def fake_run_episode(**kwargs):
+        seen_scenarios.append(kwargs["scenario"])
+        seen_agent_options.append(kwargs["agent_options"])
+
+        class Result:
+            def to_dict(self):
+                return {
+                    "episode_id": "collection",
+                    "episode_path": str(collection_episode),
+                    "metrics": {"horizontal_distance_traveled": 50.0, "collision_count": 0, "drive_mode": "manual"},
+                }
+
+        return Result()
+
+    with patch("desktop_app.services.run_episode", side_effect=fake_run_episode):
+        payload = services.collect_region_training_data(
+            services.RegionTrainingDataCollectionRequest(
+                task_path=str(task_path),
+                output_dir=str(tmp_path / "collection_run"),
+                collect_steps=20,
+                collect_rollouts=1,
+                collection_strategy="route_aware",
+                collection_route_target_interval=1,
+                collection_route_lateral_m=1.5,
+                min_route_coverage_ratio=0.8,
+                min_goal_zone_coverage=1.0,
+                close_beamng=True,
+            )
+        )
+
+    assert seen_scenarios[0]["metadata"]["beamng"]["route"] == [[2.0, 2.0], [10.0, 30.0], [35.0, 35.0]]
+    assert seen_agent_options[0]["route_target_interval"] == 1
+    assert seen_agent_options[0]["route_lateral_m"] == 1.5
+    assert payload["quality_gate"]["passed"] is True
+    assert payload["metrics"]["route_coverage_ratio"] == 1.0
+    assert payload["metrics"]["goal_zone_coverage"] == 1.0
+    assert payload["metrics"]["collection_min_goal_distance"] <= 5.0
+
+
+def test_region_training_data_collection_marks_insufficient_quality_gate(tmp_path: Path) -> None:
+    task_path = tmp_path / "task.yaml"
+    _write_task(task_path)
+    collection_episode = _save_episode(
+        tmp_path / "collection",
+        [(2.0, 2.0, 0.0, 0.5), (3.0, 2.0, 0.0, 0.5), (4.0, 2.0, 0.0, 0.5)],
+    )
+
+    def fake_run_episode(**kwargs):
+        class Result:
+            def to_dict(self):
+                return {
+                    "episode_id": "collection",
+                    "episode_path": str(collection_episode),
+                    "metrics": {"horizontal_distance_traveled": 2.0, "collision_count": 0, "drive_mode": "manual"},
+                }
+
+        return Result()
+
+    with patch("desktop_app.services.run_episode", side_effect=fake_run_episode):
+        payload = services.collect_region_training_data(
+            services.RegionTrainingDataCollectionRequest(
+                task_path=str(task_path),
+                output_dir=str(tmp_path / "collection_run"),
+                collect_steps=20,
+                collect_rollouts=1,
+                collection_strategy="route_aware",
+                collection_route_target_interval=1,
+                min_route_coverage_ratio=0.8,
+                min_goal_zone_coverage=1.0,
+                close_beamng=True,
+            )
+        )
+
+    training_record = json.loads(Path(payload["training_run_path"]).read_text(encoding="utf-8"))
+
+    assert payload["status"] == "collection_insufficient"
+    assert payload["quality_gate"]["passed"] is False
+    assert payload["quality_gate"]["reason"] in {
+        "collection_goal_progress_below_threshold",
+        "collection_route_coverage_below_threshold",
+        "collection_goal_zone_coverage_below_threshold",
+    }
+    assert training_record["status"] == "collection_insufficient"
 
 
 def test_region_self_supervised_script_exposes_gui_training_options(monkeypatch, tmp_path: Path, capsys) -> None:

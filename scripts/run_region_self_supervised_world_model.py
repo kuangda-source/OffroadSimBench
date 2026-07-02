@@ -21,6 +21,11 @@ def main() -> None:
     parser.add_argument("--collection-coverage-grid-size", type=int, default=0)
     parser.add_argument("--collection-coverage-target-interval", type=int, default=0)
     parser.add_argument("--collection-max-target-steps", type=int, default=80)
+    parser.add_argument("--collection-strategy", default="region_explorer", choices=["region_explorer", "route_aware"])
+    parser.add_argument("--collection-route-target-interval", type=int, default=0)
+    parser.add_argument("--collection-route-lateral-m", type=float, default=0.0)
+    parser.add_argument("--min-route-coverage-ratio", type=float, default=0.0)
+    parser.add_argument("--min-goal-zone-coverage", type=float, default=0.0)
     parser.add_argument("--eval-steps", type=int, default=1000)
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--planner", default="navigation_mpc")
@@ -50,6 +55,11 @@ def main() -> None:
             collection_coverage_grid_size=args.collection_coverage_grid_size,
             collection_coverage_target_interval=args.collection_coverage_target_interval,
             collection_max_target_steps=args.collection_max_target_steps,
+            collection_strategy=args.collection_strategy,
+            collection_route_target_interval=args.collection_route_target_interval,
+            collection_route_lateral_m=args.collection_route_lateral_m,
+            min_route_coverage_ratio=args.min_route_coverage_ratio,
+            min_goal_zone_coverage=args.min_goal_zone_coverage,
             eval_steps=args.eval_steps,
             seed=args.seed,
             planner=args.planner,

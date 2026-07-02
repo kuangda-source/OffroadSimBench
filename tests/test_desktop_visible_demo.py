@@ -1214,6 +1214,10 @@ def test_gui_exposes_region_self_supervised_training(monkeypatch) -> None:
     assert captured["request"].collect_steps >= 1000
     assert captured["request"].collect_rollouts >= 6
     assert captured["request"].min_collection_goal_progress_ratio >= 0.35
+    assert captured["request"].collection_strategy == "route_aware"
+    assert captured["request"].collection_route_target_interval == 1
+    assert captured["request"].collection_route_lateral_m > 0.0
+    assert captured["request"].min_route_coverage_ratio >= 0.5
     assert captured["request"].collection_coverage_grid_size >= 6
     assert captured["request"].collection_coverage_target_interval == 1
     assert captured["request"].collection_max_target_steps <= 30
@@ -1263,6 +1267,10 @@ def test_gui_collects_region_training_data_from_selected_task(monkeypatch) -> No
     assert captured["request"].collect_steps >= 1500
     assert captured["request"].collect_rollouts >= 6
     assert captured["request"].min_collection_goal_progress_ratio >= 0.35
+    assert captured["request"].collection_strategy == "route_aware"
+    assert captured["request"].collection_route_target_interval == 1
+    assert captured["request"].collection_route_lateral_m > 0.0
+    assert captured["request"].min_route_coverage_ratio >= 0.5
     assert captured["request"].collection_coverage_grid_size >= 6
     assert captured["request"].collection_max_target_steps <= 30
     assert captured["request"].close_beamng is False
@@ -1378,6 +1386,7 @@ def test_gui_home_start_uses_direct_world_model_evaluation_for_tiny_model(tmp_pa
     assert captured["request"].world_model_type == "tiny_learned"
     assert captured["request"].world_model_path == "outputs/region_self_supervised/model"
     assert captured["request"].eval_steps >= 900
+    assert captured["request"].include_route_guided_baseline is True
     assert captured["request"].step_delay_sec == 0.02
     assert captured["request"].close_beamng is False
     window.close()
@@ -1413,6 +1422,7 @@ def test_gui_beamng_start_uses_direct_world_model_evaluation_for_tiny_model(tmp_
     assert captured["request"].world_model_type == "tiny_learned"
     assert captured["request"].world_model_path == "outputs/beamng_region_world_models/run/model"
     assert captured["request"].eval_steps >= 900
+    assert captured["request"].include_route_guided_baseline is True
     assert captured["request"].step_delay_sec == 0.02
     assert captured["request"].close_beamng is False
     window.close()

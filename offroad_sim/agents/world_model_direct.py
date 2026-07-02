@@ -24,6 +24,7 @@ class WorldModelDirectAgent(OffroadAgent):
         world_model_path: str | Path | None = None,
         planner_name: str | None = None,
         planner_config: dict[str, Any] | None = None,
+        allow_reverse_recovery: bool = False,
         **_: Any,
     ) -> None:
         self.world_model_name = str(world_model_name or "simple_kinematic")
@@ -35,6 +36,7 @@ class WorldModelDirectAgent(OffroadAgent):
         if self.planner_name == "le_wm_cem" and world_model_path is not None:
             planner_kwargs.setdefault("checkpoint_path", world_model_path)
         self.planner = make_planner(self.planner_name, **planner_kwargs) if planner_name else NavigationMPCPlanner(**planner_kwargs)
+        self.allow_reverse_recovery = bool(allow_reverse_recovery)
         self._last_diagnostics: dict[str, Any] = {}
         self._stuck_steps = 0
         self._last_goal_distance: float | None = None
@@ -79,6 +81,7 @@ class WorldModelDirectAgent(OffroadAgent):
             "reference_action": _action_dict(reference_action),
             "executed_action": _action_dict(action),
             "stuck_recovery": stuck_recovery,
+            "allow_reverse_recovery": self.allow_reverse_recovery,
             "goal_stop": False,
             "goal_hold_latched": self._goal_hold_latched,
         }
@@ -106,6 +109,16 @@ class WorldModelDirectAgent(OffroadAgent):
         turn_demand = abs(reference_steer)
         recovery_phase = ((self._stuck_steps - 18) // 12) % 3
         if turn_demand > 0.35 and recovery_phase == 0:
+            if not self.allow_reverse_recovery:
+                return (
+                    Action(
+                        steer=max(min(reference_steer, 0.55), -0.55),
+                        throttle=min(max(float(reference_action.throttle), 0.28), 0.55),
+                        brake=0.0,
+                        gear=None,
+                    ),
+                    True,
+                )
             return (
                 Action(steer=0.0, throttle=0.55, brake=0.0, gear=-1),
                 True,
@@ -141,6 +154,16 @@ class WorldModelDirectAgent(OffroadAgent):
                 True,
             )
         if recovery_phase == 0:
+            if not self.allow_reverse_recovery:
+                return (
+                    Action(
+                        steer=max(min(reference_steer, 0.25), -0.25),
+                        throttle=0.25,
+                        brake=0.15,
+                        gear=None,
+                    ),
+                    True,
+                )
             return (Action(steer=0.0, throttle=0.55, brake=0.0, gear=-1), True)
         return (
             Action(

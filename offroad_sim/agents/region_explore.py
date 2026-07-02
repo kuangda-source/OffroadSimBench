@@ -26,6 +26,8 @@ class RegionExploreAgent(OffroadAgent):
         goal_corridor_lateral_m: float = 2.0,
         coverage_grid_size: int = 0,
         coverage_target_interval: int = 0,
+        route_target_interval: int = 0,
+        route_lateral_m: float = 0.0,
         **_: Any,
     ) -> None:
         self.rng = np.random.default_rng(seed)
@@ -36,6 +38,8 @@ class RegionExploreAgent(OffroadAgent):
         self.goal_corridor_lateral_m = max(0.0, float(goal_corridor_lateral_m))
         self.coverage_grid_size = max(0, int(coverage_grid_size))
         self.coverage_target_interval = max(0, int(coverage_target_interval))
+        self.route_target_interval = max(0, int(route_target_interval))
+        self.route_lateral_m = max(0.0, float(route_lateral_m))
         self.driver = RuleBasedGoalAgent(cruise_throttle=cruise_throttle)
         self._target: tuple[float, float] | None = None
         self._target_steps = 0
@@ -44,6 +48,9 @@ class RegionExploreAgent(OffroadAgent):
         self._coverage_targets: list[tuple[float, float]] = []
         self._coverage_index = 0
         self._coverage_signature: tuple[tuple[float, float], ...] = ()
+        self._route_targets: list[tuple[float, float]] = []
+        self._route_index = 0
+        self._route_signature: tuple[tuple[float, float], ...] = ()
         self._last_diagnostics: dict[str, Any] = {}
 
     def reset(self, scenario_info: Any) -> None:
@@ -54,6 +61,9 @@ class RegionExploreAgent(OffroadAgent):
         self._coverage_targets = []
         self._coverage_index = 0
         self._coverage_signature = ()
+        self._route_targets = []
+        self._route_index = 0
+        self._route_signature = ()
         self._last_diagnostics = {}
         self.driver.reset(scenario_info)
 
@@ -90,6 +100,7 @@ class RegionExploreAgent(OffroadAgent):
             "target_steps": self._target_steps,
             "target_count": self._target_count,
             "coverage_target_count": len(self._coverage_targets),
+            "route_target_count": len(self._route_targets),
         }
         return action
 
@@ -100,6 +111,9 @@ class RegionExploreAgent(OffroadAgent):
         return None
 
     def _next_target(self, obs: Observation, polygon: list[tuple[float, float]]) -> tuple[tuple[float, float], str]:
+        route_target = self._next_route_target(obs, polygon)
+        if route_target is not None:
+            return route_target, "route"
         coverage_target = self._next_coverage_target(polygon)
         if coverage_target is not None:
             return coverage_target, "coverage"
@@ -114,6 +128,46 @@ class RegionExploreAgent(OffroadAgent):
         if corridor_target is not None:
             return corridor_target, "goal_corridor"
         return _sample_point_in_polygon(polygon, self.rng), "sampled"
+
+    def _next_route_target(self, obs: Observation, polygon: list[tuple[float, float]]) -> tuple[float, float] | None:
+        if self.route_target_interval <= 0 or self._target_count % self.route_target_interval != 0:
+            return None
+        route = _navigation_route(obs.info)
+        if len(route) < 2:
+            return None
+        signature = tuple((round(float(x), 3), round(float(y), 3)) for x, y in route)
+        if signature != self._route_signature:
+            self._route_signature = signature
+            start = (float(obs.vehicle_state.x), float(obs.vehicle_state.y))
+            self._route_targets = [
+                point
+                for point in route[1:]
+                if _distance(start, point) > max(0.5, self.waypoint_radius_m * 0.5) and _point_in_polygon(point, polygon)
+            ]
+            if not self._route_targets:
+                self._route_targets = [point for point in route[1:] if _point_in_polygon(point, polygon)]
+            self._route_index = 0
+        if not self._route_targets:
+            return None
+        base = self._route_targets[min(self._route_index, len(self._route_targets) - 1)]
+        perturbed = self._route_perturbation(base, polygon)
+        self._route_index = min(self._route_index + 1, len(self._route_targets) - 1)
+        return perturbed
+
+    def _route_perturbation(self, point: tuple[float, float], polygon: list[tuple[float, float]]) -> tuple[float, float]:
+        if self.route_lateral_m <= 0.0 or len(self._route_targets) < 2:
+            return point
+        index = min(self._route_index, len(self._route_targets) - 1)
+        previous_point = self._route_targets[index - 1] if index > 0 else self._route_targets[index]
+        next_point = self._route_targets[index + 1] if index + 1 < len(self._route_targets) else self._route_targets[index]
+        dx = float(next_point[0]) - float(previous_point[0])
+        dy = float(next_point[1]) - float(previous_point[1])
+        length = math.hypot(dx, dy)
+        if length <= 1e-6:
+            return point
+        lateral = float(self.rng.uniform(-self.route_lateral_m, self.route_lateral_m))
+        candidate = (float(point[0]) - dy / length * lateral, float(point[1]) + dx / length * lateral)
+        return candidate if _point_in_polygon(candidate, polygon) else point
 
     def _goal_corridor_target(self, obs: Observation, polygon: list[tuple[float, float]]) -> tuple[float, float] | None:
         if self.goal_corridor_interval <= 0 or self._target_count % self.goal_corridor_interval != 0:
@@ -168,6 +222,27 @@ def _navigation_polygon(info: dict[str, Any]) -> list[tuple[float, float]]:
         except (TypeError, ValueError, IndexError):
             continue
     return polygon if len(polygon) >= 3 else []
+
+
+def _navigation_route(info: dict[str, Any]) -> list[tuple[float, float]]:
+    raw: Any = []
+    if isinstance(info, dict):
+        if isinstance(info.get("route"), list):
+            raw = info.get("route")
+        else:
+            navigation = info.get("navigation_region", {})
+            if isinstance(navigation, dict):
+                for key in ("route", "expert_route"):
+                    if isinstance(navigation.get(key), list):
+                        raw = navigation.get(key)
+                        break
+    route: list[tuple[float, float]] = []
+    for point in raw or []:
+        try:
+            route.append((float(point[0]), float(point[1])))
+        except (TypeError, ValueError, IndexError):
+            continue
+    return route
 
 
 def _sample_point_in_polygon(polygon: list[tuple[float, float]], rng: np.random.Generator) -> tuple[float, float]:
