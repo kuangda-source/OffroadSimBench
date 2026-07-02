@@ -90,6 +90,16 @@ def _save_episode_with_controls(
     return recorder.save(path)
 
 
+def test_region_self_supervised_world_model_defaults_match_route_free_demo_probe() -> None:
+    request = services.RegionSelfSupervisedWorldModelRequest(task_path="configs/tasks/beamng_johnson_valley_nav_test.yaml")
+
+    assert request.eval_steps == 1200
+    assert request.evaluation_local_subgoal_distance_m == 12.0
+    assert request.evaluation_allow_reverse_recovery is True
+    assert request.evaluation_reverse_recovery_after_steps == 96
+    assert request.use_experience_corridor is True
+
+
 def test_region_self_supervised_world_model_trains_and_evaluates_without_route(tmp_path: Path) -> None:
     task_path = tmp_path / "task.yaml"
     _write_task(task_path)
@@ -149,6 +159,9 @@ def test_region_self_supervised_world_model_trains_and_evaluates_without_route(t
     assert seen_agent_options[0]["max_target_steps"] == 80
     assert seen_agent_options[1]["world_model_name"] == "tiny_learned"
     assert seen_agent_options[1]["planner_config"] == {"horizon": 6, "num_samples": 32, "iterations": 3}
+    assert seen_agent_options[1]["allow_reverse_recovery"] is True
+    assert seen_agent_options[1]["reverse_recovery_after_steps"] == 96
+    assert seen_agent_options[1]["local_subgoal_distance_m"] == 12.0
     assert Path(payload["training"]["model_path"]).exists()
     assert payload["training"]["model_type"] == "tiny_learned"
     assert payload["region_navigation"]["evaluation_agent"] == "world_model_direct"
@@ -181,6 +194,69 @@ def test_region_self_supervised_world_model_trains_and_evaluates_without_route(t
     assert refreshed_record["summary"]["world_model_config"]["model_path"] == payload["model_dir"]
     assert refreshed_record["summary"]["world_model_config"]["validation"]["goal_success"] is True
     assert refreshed_record["summary"]["world_model_config"]["validation"]["validation_rmse"] == payload["training"]["metrics"]["validation_rmse"]
+
+
+def test_region_self_supervised_world_model_adds_experience_corridor_without_expert_route_leakage(tmp_path: Path) -> None:
+    task_path = tmp_path / "task.yaml"
+    _write_task(task_path)
+    collection_episode = _save_episode(
+        tmp_path / "collection",
+        [
+            (2.0, 2.0, 0.0, 0.5),
+            (2.0, 12.0, 0.4, 1.0),
+            (2.0, 24.0, 0.6, 1.2),
+            (12.0, 30.0, 0.4, 1.4),
+            (24.0, 34.0, 0.2, 1.5),
+            (34.0, 35.0, 0.0, 0.8),
+        ],
+    )
+    evaluation_episode = _save_episode(
+        tmp_path / "evaluation",
+        [(2.0, 2.0, 0.0, 0.5), (12.0, 30.0, 0.4, 2.0), (34.0, 35.0, 0.6, 1.0)],
+    )
+    seen_scenarios: list[dict[str, object]] = []
+
+    def fake_run_episode(**kwargs):
+        seen_scenarios.append(kwargs["scenario"])
+
+        class Result:
+            def to_dict(self):
+                episode_path = collection_episode if len(seen_scenarios) == 1 else evaluation_episode
+                return {
+                    "episode_id": f"episode_{len(seen_scenarios)}",
+                    "episode_path": str(episode_path),
+                    "metrics": {"horizontal_distance_traveled": 45.0, "collision_count": 0, "drive_mode": "manual"},
+                }
+
+        return Result()
+
+    with patch("desktop_app.services.run_episode", side_effect=fake_run_episode):
+        payload = services.run_region_self_supervised_world_model(
+            services.RegionSelfSupervisedWorldModelRequest(
+                task_path=str(task_path),
+                output_dir=str(tmp_path / "out"),
+                collect_steps=20,
+                eval_steps=20,
+                close_beamng=True,
+            )
+        )
+
+    evaluation_scenario = seen_scenarios[1]
+    evaluation_beamng = evaluation_scenario["metadata"]["beamng"]
+    evaluation_task = evaluation_scenario["metadata"]["task"]
+    experience_route = evaluation_task["experience_route"]
+
+    assert "route" not in evaluation_beamng
+    assert "expert_route" not in evaluation_task
+    assert len(experience_route) >= 4
+    assert experience_route[0] == [2.0, 2.0]
+    assert experience_route[-1] == [35.0, 35.0]
+    assert [2.0, 24.0] in experience_route
+    assert payload["region_navigation"]["experience_corridor"] is True
+    assert payload["region_navigation"]["experience_route_point_count"] == len(experience_route)
+    training_record = json.loads(Path(payload["training_run_path"]).read_text(encoding="utf-8"))
+    assert training_record["metrics"]["experience_route_point_count"] == len(experience_route)
+    assert training_record["parameters"]["use_experience_corridor"] is True
 
 
 def test_region_self_supervised_world_model_trains_from_multiple_collection_rollouts(tmp_path: Path) -> None:
@@ -568,6 +644,22 @@ def test_region_self_supervised_world_model_marks_too_short_collection_episode_i
     assert training_record["summary"]["diagnostics"]["status"] == "collection_insufficient"
 
 
+def test_region_episode_sequence_records_global_task_segment_reference(tmp_path: Path) -> None:
+    task_path = tmp_path / "task.yaml"
+    _write_task(task_path)
+    episode = _save_episode(
+        tmp_path / "collection_middle",
+        [(10.0, 30.0, 0.0, 0.5), (22.0, 32.0, 0.2, 1.2), (35.0, 35.0, 0.45, 1.5)],
+    )
+    task = services.load_navigation_region_task(str(task_path))
+
+    sequence = services._episode_trace_to_dataset_sequence(episode, task)
+
+    assert sequence.metadata["task_start_pos"] == [2.0, 2.0]
+    assert sequence.metadata["task_goal_pos"] == [35.0, 35.0]
+    assert sequence.goal == (35.0, 35.0)
+
+
 def test_region_world_model_evaluation_loads_existing_model_without_training(tmp_path: Path) -> None:
     task_path = tmp_path / "task.yaml"
     _write_task(task_path)
@@ -739,10 +831,15 @@ def test_route_aware_collection_can_spawn_multiple_starts_along_expert_route(tmp
         for index in range(3)
     ]
     seen_starts: list[list[float]] = []
+    seen_routes: list[list[list[float]]] = []
+    seen_task_routes: list[list[list[float]]] = []
 
     def fake_run_episode(**kwargs):
         beamng = kwargs["scenario"]["metadata"]["beamng"]
+        task_metadata = kwargs["scenario"]["metadata"]["task"]
         seen_starts.append(list(beamng["vehicle_start"]["pos"]))
+        seen_routes.append([list(point) for point in beamng["route"]])
+        seen_task_routes.append([list(point) for point in task_metadata["expert_route"]])
         index = len(seen_starts) - 1
 
         class Result:
@@ -771,6 +868,12 @@ def test_route_aware_collection_can_spawn_multiple_starts_along_expert_route(tmp
 
     assert [point[:2] for point in seen_starts] == [[2.0, 2.0], [10.0, 30.0], [10.0, 30.0]]
     assert all(math.hypot(point[0] - 35.0, point[1] - 35.0) > 5.0 for point in seen_starts)
+    assert seen_routes == [
+        [[2.0, 2.0], [10.0, 30.0], [35.0, 35.0]],
+        [[10.0, 30.0], [35.0, 35.0]],
+        [[10.0, 30.0], [35.0, 35.0]],
+    ]
+    assert seen_task_routes == seen_routes
 
 
 def test_region_training_data_collection_marks_insufficient_quality_gate(tmp_path: Path) -> None:

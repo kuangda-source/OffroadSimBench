@@ -288,8 +288,11 @@ def _train_validation_indices(sample_count: int, *, validation_fraction: float) 
 
 def _transition_segment(sequence: DatasetSequence, transition_index: int, state: VehicleState) -> str:
     if sequence.goal is not None and sequence.frames:
-        start = sequence.frames[0].vehicle_state
-        start_distance = math.hypot(float(start.x) - float(sequence.goal[0]), float(start.y) - float(sequence.goal[1]))
+        start_xy = _sequence_task_start(sequence) or (
+            float(sequence.frames[0].vehicle_state.x),
+            float(sequence.frames[0].vehicle_state.y),
+        )
+        start_distance = math.hypot(float(start_xy[0]) - float(sequence.goal[0]), float(start_xy[1]) - float(sequence.goal[1]))
         current_distance = math.hypot(float(state.x) - float(sequence.goal[0]), float(state.y) - float(sequence.goal[1]))
         progress = 0.0 if start_distance <= 1e-9 else max(0.0, min(1.0, (start_distance - current_distance) / start_distance))
     else:
@@ -300,6 +303,16 @@ def _transition_segment(sequence: DatasetSequence, transition_index: int, state:
     if progress < 2.0 / 3.0:
         return "middle"
     return "goal"
+
+
+def _sequence_task_start(sequence: DatasetSequence) -> tuple[float, float] | None:
+    raw = sequence.metadata.get("task_start_pos") if isinstance(sequence.metadata, dict) else None
+    if raw is None:
+        return None
+    try:
+        return (float(raw[0]), float(raw[1]))
+    except (TypeError, ValueError, IndexError):
+        return None
 
 
 def _segment_error_summary(residual: np.ndarray, labels: list[str]) -> tuple[dict[str, float | None], dict[str, int]]:

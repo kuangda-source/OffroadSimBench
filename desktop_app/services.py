@@ -177,7 +177,7 @@ class RegionSelfSupervisedWorldModelRequest:
     collection_multi_start_lateral_m: float = 0.0
     min_route_coverage_ratio: float = 0.0
     min_goal_zone_coverage: float = 0.0
-    eval_steps: int = 1000
+    eval_steps: int = 1200
     seed: int = 7
     planner: str = "navigation_mpc"
     planner_horizon: int = 6
@@ -185,6 +185,12 @@ class RegionSelfSupervisedWorldModelRequest:
     planner_iterations: int = 3
     evaluation_agent: str = "world_model_direct"
     evaluation_route_mode: str = "route_free"
+    use_experience_corridor: bool = True
+    experience_route_min_spacing_m: float = 4.0
+    experience_route_max_points: int = 120
+    evaluation_allow_reverse_recovery: bool = True
+    evaluation_reverse_recovery_after_steps: int = 96
+    evaluation_local_subgoal_distance_m: float = 12.0
     beamng_gfx: str = "vk"
     close_beamng: bool = True
     step_delay_sec: float = 0.0
@@ -1516,6 +1522,7 @@ def _world_model_training_quality_metrics(metadata: dict[str, Any]) -> dict[str,
         "segment_rmse",
         "segment_sample_count",
         "recorded_action_sample_count",
+        "experience_route_point_count",
     )
     return {key: metadata.get(key) for key in quality_keys if key in metadata}
 
@@ -2766,6 +2773,18 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
         grid_size=max(2, int(request.collection_coverage_grid_size)),
     )
     route_metrics = _collection_route_metrics(task, episode_paths)
+    use_experience_corridor = bool(request.use_experience_corridor) and evaluation_route_free
+    experience_route = (
+        _experience_route_from_episode_traces(
+            task,
+            episode_paths,
+            min_spacing_m=max(0.25, float(request.experience_route_min_spacing_m)),
+            max_points=max(2, int(request.experience_route_max_points)),
+        )
+        if use_experience_corridor
+        else []
+    )
+    experience_route_point_count = len(experience_route)
     quality_gate = _collection_quality_gate(
         task,
         collection_acceptance,
@@ -2793,6 +2812,8 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
                 "evaluation_agent": request.evaluation_agent,
                 "route_free": evaluation_route_free,
                 "evaluation_route_mode": "route_free" if evaluation_route_free else "task_route",
+                "experience_corridor": bool(experience_route),
+                "experience_route_point_count": experience_route_point_count,
             },
         )
         training_run = write_training_run_record(
@@ -2819,6 +2840,7 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
                 "unique_region_cells": coverage["cell_count"],
                 "route_coverage_ratio": route_metrics["route_coverage_ratio"],
                 "goal_zone_coverage": route_metrics["goal_zone_coverage"],
+                "experience_route_point_count": experience_route_point_count,
             },
             history={
                 "collection_min_goal_distance": [collection_acceptance.get("min_goal_distance")],
@@ -2850,12 +2872,20 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
                 "collection_multi_start_lateral_m": max(0.0, float(request.collection_multi_start_lateral_m)),
                 "min_route_coverage_ratio": max(0.0, float(request.min_route_coverage_ratio)),
                 "min_goal_zone_coverage": max(0.0, float(request.min_goal_zone_coverage)),
+                "use_experience_corridor": bool(use_experience_corridor),
+                "experience_route_min_spacing_m": max(0.25, float(request.experience_route_min_spacing_m)),
+                "experience_route_max_points": max(2, int(request.experience_route_max_points)),
+                "evaluation_allow_reverse_recovery": bool(request.evaluation_allow_reverse_recovery),
+                "evaluation_reverse_recovery_after_steps": max(18, int(request.evaluation_reverse_recovery_after_steps)),
+                "evaluation_local_subgoal_distance_m": max(1.0, float(request.evaluation_local_subgoal_distance_m)),
             },
             summary={
                 "task_path": str(Path(request.task_path).resolve()),
                 "quality_gate": quality_gate,
                 "coverage": coverage,
                 "route_metrics": route_metrics,
+                "experience_route_point_count": experience_route_point_count,
+                "experience_route": experience_route,
                 "diagnostics": diagnostics,
                 "collection_acceptance": collection_acceptance,
                 "collection_acceptances": collection_acceptances,
@@ -2880,6 +2910,8 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
                 "evaluation_agent": request.evaluation_agent,
                 "route_free": evaluation_route_free,
                 "evaluation_route_mode": "route_free" if evaluation_route_free else "task_route",
+                "experience_corridor": bool(experience_route),
+                "experience_route_point_count": experience_route_point_count,
             },
             "training_run_path": training_run["path"],
         }
@@ -2902,6 +2934,7 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
             "unique_region_cells": coverage["cell_count"],
             "route_coverage_ratio": route_metrics["route_coverage_ratio"],
             "goal_zone_coverage": route_metrics["goal_zone_coverage"],
+            "experience_route_point_count": experience_route_point_count,
         }
     )
     model_dir = output_dir / "model"
@@ -2913,6 +2946,9 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
         "metadata_path": str(metadata_path.resolve()),
         "metrics": model.metadata,
     }
+
+    if experience_route:
+        evaluation_scenario = _with_experience_corridor(evaluation_scenario, experience_route)
 
     evaluation_kwargs = {
         "scenario": evaluation_scenario,
@@ -2932,6 +2968,13 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
         "step_delay_sec": request.step_delay_sec,
         "post_run_hold_sec": request.post_run_hold_sec,
         "close_beamng": request.close_beamng,
+        "agent_options": {
+            "allow_reverse_recovery": bool(request.evaluation_allow_reverse_recovery),
+            "reverse_recovery_after_steps": max(18, int(request.evaluation_reverse_recovery_after_steps)),
+            "local_subgoal_distance_m": max(1.0, float(request.evaluation_local_subgoal_distance_m)),
+        }
+        if request.evaluation_agent == "world_model_direct"
+        else {},
     }
     evaluation = _run_region_beamng_episode_with_reconnect_retry(**evaluation_kwargs)
     acceptance = _navigation_acceptance(evaluation, task)
@@ -2942,6 +2985,8 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
         "evaluation_agent": request.evaluation_agent,
         "route_free": evaluation_route_free,
         "evaluation_route_mode": "route_free" if evaluation_route_free else "task_route",
+        "experience_corridor": bool(experience_route),
+        "experience_route_point_count": experience_route_point_count,
     }
     diagnostics = _region_self_supervised_diagnostics(
         quality_gate=quality_gate,
@@ -2981,6 +3026,7 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
             "unique_region_cells": coverage["cell_count"],
             "route_coverage_ratio": route_metrics["route_coverage_ratio"],
             "goal_zone_coverage": route_metrics["goal_zone_coverage"],
+            "experience_route_point_count": experience_route_point_count,
         },
         history={
             "train_rmse": [model.metadata.get("train_rmse")],
@@ -3017,12 +3063,20 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
             "collection_multi_start_lateral_m": max(0.0, float(request.collection_multi_start_lateral_m)),
             "min_route_coverage_ratio": max(0.0, float(request.min_route_coverage_ratio)),
             "min_goal_zone_coverage": max(0.0, float(request.min_goal_zone_coverage)),
+            "use_experience_corridor": bool(use_experience_corridor),
+            "experience_route_min_spacing_m": max(0.25, float(request.experience_route_min_spacing_m)),
+            "experience_route_max_points": max(2, int(request.experience_route_max_points)),
+            "evaluation_allow_reverse_recovery": bool(request.evaluation_allow_reverse_recovery),
+            "evaluation_reverse_recovery_after_steps": max(18, int(request.evaluation_reverse_recovery_after_steps)),
+            "evaluation_local_subgoal_distance_m": max(1.0, float(request.evaluation_local_subgoal_distance_m)),
         },
         summary={
             "task_path": str(Path(request.task_path).resolve()),
             "quality_gate": quality_gate,
             "coverage": coverage,
             "route_metrics": route_metrics,
+            "experience_route_point_count": experience_route_point_count,
+            "experience_route": experience_route,
             "model_quality_metrics": model_quality_metrics,
             "diagnostics": diagnostics,
             "collection_acceptance": collection_acceptance,
@@ -3461,7 +3515,42 @@ def _route_free_region_scenario(scenario: dict[str, Any]) -> dict[str, Any]:
         beamng["draw_route"] = False
         beamng["drive_mode"] = "manual"
         beamng["evaluation_route_mode"] = "none"
+    task_metadata = metadata.get("task")
+    if isinstance(task_metadata, dict):
+        task_metadata.pop("expert_route", None)
     return cleaned
+
+
+def _with_experience_corridor(scenario: dict[str, Any], experience_route: list[list[float]]) -> dict[str, Any]:
+    cleaned = json.loads(json.dumps(scenario, default=str))
+    route = _normalize_point_route(experience_route)
+    if len(route) < 2:
+        return cleaned
+    metadata = cleaned.setdefault("metadata", {})
+    task_metadata = metadata.setdefault("task", {})
+    if isinstance(task_metadata, dict):
+        task_metadata.pop("expert_route", None)
+        task_metadata["experience_route"] = route
+    beamng = metadata.setdefault("beamng", {})
+    if isinstance(beamng, dict):
+        beamng.pop("route", None)
+        beamng["draw_route"] = False
+        beamng["drive_mode"] = "manual"
+        beamng["evaluation_route_mode"] = "none"
+    return cleaned
+
+
+def _normalize_point_route(points: list[list[float]] | list[tuple[float, float]]) -> list[list[float]]:
+    route: list[list[float]] = []
+    for point in points:
+        try:
+            x = float(point[0])
+            y = float(point[1])
+        except (TypeError, ValueError, IndexError):
+            continue
+        if math.isfinite(x) and math.isfinite(y):
+            route.append([x, y])
+    return route
 
 
 def _route_guided_region_scenario(task: NavigationRegionTask) -> dict[str, Any]:
@@ -3519,12 +3608,17 @@ def _collection_rollout_scenario(
     vehicle_start["original_yaw"] = float(task.start_yaw)
     vehicle_start["yaw_source"] = "collection_multi_start_route"
     vehicle_start["rot_quat"] = _beamng_yaw_to_quat(yaw)
+    remaining_route = [list(item) for item in route[route_index:]]
+    if len(remaining_route) < 2:
+        remaining_route = [list(point), list(task.goal_pos)]
+    beamng["route"] = remaining_route
     task_metadata = metadata.get("task")
     if isinstance(task_metadata, dict):
         start_pose = task_metadata.setdefault("start_pose", {})
         if isinstance(start_pose, dict):
             start_pose["pos"] = start_pos
             start_pose["yaw"] = float(yaw)
+        task_metadata["expert_route"] = remaining_route
     return scenario
 
 
@@ -3666,6 +3760,61 @@ def _collection_route_metrics(task: NavigationRegionTask, episode_paths: list[st
     }
 
 
+def _experience_route_from_episode_traces(
+    task: NavigationRegionTask,
+    episode_paths: list[str],
+    *,
+    min_spacing_m: float,
+    max_points: int,
+) -> list[list[float]]:
+    episode_routes: list[tuple[float, list[tuple[float, float]]]] = []
+    for episode_path in episode_paths:
+        route: list[tuple[float, float]] = []
+        for row in load_episode_trace(episode_path):
+            x = _float_or_nan(row.get("x"))
+            y = _float_or_nan(row.get("y"))
+            if not math.isfinite(x) or not math.isfinite(y):
+                continue
+            point = (float(x), float(y))
+            if _point_in_or_on_task_region(task, point):
+                route.append(point)
+        if route:
+            episode_routes.append((_task_goal_progress(task, route[0]), route))
+    if not episode_routes:
+        return []
+    spacing = max(0.25, float(min_spacing_m))
+    limit = max(2, int(max_points))
+    merged: list[list[float]] = []
+
+    def append_point(point: tuple[float, float], *, force: bool = False) -> None:
+        if not force and merged:
+            previous = merged[-1]
+            if math.hypot(float(point[0]) - previous[0], float(point[1]) - previous[1]) < spacing:
+                return
+        if merged and math.hypot(float(point[0]) - merged[-1][0], float(point[1]) - merged[-1][1]) <= 1e-6:
+            return
+        merged.append([float(point[0]), float(point[1])])
+
+    append_point((float(task.start_pos[0]), float(task.start_pos[1])), force=True)
+    for _, route in sorted(episode_routes, key=lambda item: item[0]):
+        for point in route:
+            if len(merged) >= limit - 1:
+                break
+            append_point(point)
+        if len(merged) >= limit - 1:
+            break
+    append_point((float(task.goal_pos[0]), float(task.goal_pos[1])), force=True)
+    return merged
+
+
+def _task_goal_progress(task: NavigationRegionTask, point: tuple[float, float]) -> float:
+    start_distance = math.hypot(float(task.start_pos[0]) - float(task.goal_pos[0]), float(task.start_pos[1]) - float(task.goal_pos[1]))
+    if start_distance <= 1e-9:
+        return 1.0
+    distance = math.hypot(float(point[0]) - float(task.goal_pos[0]), float(point[1]) - float(task.goal_pos[1]))
+    return max(0.0, min(1.0, (start_distance - distance) / start_distance))
+
+
 def _coverage_total_cells(
     task: NavigationRegionTask,
     grid: int,
@@ -3746,7 +3895,12 @@ def _episode_trace_to_dataset_sequence(episode_path: str | Path, task: Navigatio
         root=str(Path(episode_path).resolve()),
         frames=frames,
         goal=task.goal_pos,
-        metadata={"task_id": task.task_id, "source": "beamng_region_self_supervised"},
+        metadata={
+            "task_id": task.task_id,
+            "source": "beamng_region_self_supervised",
+            "task_start_pos": [float(task.start_pos[0]), float(task.start_pos[1])],
+            "task_goal_pos": [float(task.goal_pos[0]), float(task.goal_pos[1])],
+        },
     )
 
 
@@ -4256,6 +4410,8 @@ def _region_self_supervised_diagnostics(
         "route_free": bool(region_navigation.get("route_free")),
         "evaluation_agent": str(region_navigation.get("evaluation_agent") or ""),
         "evaluation_route_mode": str(region_navigation.get("evaluation_route_mode") or ""),
+        "experience_corridor": bool(region_navigation.get("experience_corridor")),
+        "experience_route_point_count": int(region_navigation.get("experience_route_point_count", 0) or 0),
         "model_controlled": bool(acceptance.get("model_controlled", True)),
         "goal_success": bool(acceptance.get("goal_success")),
         "goal_reached": bool(acceptance.get("goal_reached")),

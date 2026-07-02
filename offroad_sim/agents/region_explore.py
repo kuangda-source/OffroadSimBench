@@ -75,7 +75,11 @@ class RegionExploreAgent(OffroadAgent):
             return action
 
         state = obs.vehicle_state
-        if self._target is None or self._target_steps >= self.max_target_steps or _distance((state.x, state.y), self._target) <= self.waypoint_radius_m:
+        current = (float(state.x), float(state.y))
+        target_reached = self._target is not None and _distance(current, self._target) <= self.waypoint_radius_m
+        target_timed_out = self._target_steps >= self.max_target_steps
+        can_timeout_target = self._target_source != "route"
+        if self._target is None or target_reached or (target_timed_out and can_timeout_target):
             self._target, self._target_source = self._next_target(obs, polygon)
             self._target_steps = 0
             self._target_count += 1

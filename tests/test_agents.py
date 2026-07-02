@@ -214,8 +214,10 @@ def test_region_explorer_can_follow_route_aware_curriculum_targets() -> None:
     )
 
     targets: list[tuple[float, float]] = []
-    for step in range(3):
+    positions = [(2.0, 2.0), (12.0, 8.0), (24.0, 24.0)]
+    for step, (x, y) in enumerate(positions):
         observation.timestamp = float(step)
+        observation.vehicle_state = VehicleState(x=x, y=y, yaw=0.0, speed=0.5)
         agent.act(observation)
         diagnostics = agent.diagnostics()
         targets.append(tuple(diagnostics["target"]))
@@ -224,6 +226,41 @@ def test_region_explorer_can_follow_route_aware_curriculum_targets() -> None:
         assert diagnostics["target_in_region"] is True
 
     assert targets == [(12.0, 8.0), (24.0, 24.0), (28.0, 28.0)]
+
+
+def test_region_explorer_holds_route_target_until_reached() -> None:
+    agent = make_agent(
+        "region_explorer",
+        seed=3,
+        goal_bias_interval=0,
+        goal_corridor_interval=0,
+        coverage_grid_size=0,
+        coverage_target_interval=0,
+        route_target_interval=1,
+        route_lateral_m=0.0,
+        max_target_steps=1,
+        waypoint_radius_m=2.0,
+    )
+    observation = Observation(
+        timestamp=0.0,
+        vehicle_state=VehicleState(x=2.0, y=2.0, yaw=0.0, speed=0.5),
+        goal=(28.0, 28.0),
+        info={
+            "route": [[2.0, 2.0], [12.0, 8.0], [24.0, 24.0], [28.0, 28.0]],
+            "navigation_region": {
+                "region": {"polygon": [[0.0, 0.0], [30.0, 0.0], [30.0, 30.0], [0.0, 30.0]]}
+            },
+        },
+    )
+
+    targets: list[tuple[float, float]] = []
+    for step in range(3):
+        observation.timestamp = float(step)
+        observation.vehicle_state = VehicleState(x=3.0 + step * 0.5, y=2.0, yaw=0.0, speed=0.5)
+        agent.act(observation)
+        targets.append(tuple(agent.diagnostics()["target"]))
+
+    assert targets == [(12.0, 8.0), (12.0, 8.0), (12.0, 8.0)]
 
 
 def test_world_model_direct_agent_ignores_expert_route_info() -> None:
@@ -266,6 +303,63 @@ def test_world_model_direct_agent_uses_local_subgoal_inside_region() -> None:
     assert diagnostics["local_subgoal"] == [14.0, 2.0]
     assert diagnostics["planner_goal"] == [14.0, 2.0]
     assert diagnostics["route_used"] is False
+
+
+def test_world_model_direct_agent_can_use_experience_corridor_for_local_subgoal() -> None:
+    agent = make_agent(
+        "world_model_direct",
+        planner_config={"horizon": 4, "num_samples": 16, "seed": 4},
+        local_subgoal_distance_m=12.0,
+    )
+    observation = Observation(
+        timestamp=0.0,
+        vehicle_state=VehicleState(x=2.0, y=2.0, yaw=0.0, speed=1.0),
+        goal=(35.0, 2.0),
+        info={
+            "navigation_region": {
+                "region": {"polygon": [[0.0, 0.0], [40.0, 0.0], [40.0, 25.0], [0.0, 25.0]]},
+                "goal": {"pos": [35.0, 2.0], "radius": 4.0},
+                "experience_route": [[2.0, 2.0], [2.0, 14.0], [20.0, 14.0], [35.0, 2.0]],
+            }
+        },
+    )
+
+    action = agent.act(observation)
+    diagnostics = agent.diagnostics()
+
+    assert action.throttle >= 0.0
+    assert diagnostics["target_goal"] == [35.0, 2.0]
+    assert diagnostics["local_subgoal"] == [2.0, 14.0]
+    assert diagnostics["planner_goal"] == [2.0, 14.0]
+    assert diagnostics["route_used"] is False
+    assert diagnostics["experience_corridor_used"] is True
+
+
+def test_world_model_direct_agent_interpolates_long_experience_corridor_segments() -> None:
+    agent = make_agent(
+        "world_model_direct",
+        planner_config={"horizon": 1, "num_samples": 4, "seed": 4},
+        local_subgoal_distance_m=22.0,
+    )
+    observation = Observation(
+        timestamp=0.0,
+        vehicle_state=VehicleState(x=0.0, y=0.0, yaw=0.0, speed=0.0),
+        goal=(60.0, 0.0),
+        info={
+            "navigation_region": {
+                "region": {"polygon": [[-5.0, -5.0], [70.0, -5.0], [70.0, 5.0], [-5.0, 5.0]]},
+                "goal": {"pos": [60.0, 0.0], "radius": 4.0},
+                "experience_route": [[0.0, 0.0], [4.0, 0.0], [60.0, 0.0]],
+            }
+        },
+    )
+
+    agent.act(observation)
+
+    diagnostics = agent.diagnostics()
+    assert diagnostics["local_subgoal"] == [22.0, 0.0]
+    assert diagnostics["planner_goal"] == [22.0, 0.0]
+    assert diagnostics["experience_corridor_used"] is True
 
 
 def test_world_model_direct_agent_brakes_inside_navigation_goal_radius() -> None:
@@ -442,6 +536,43 @@ def test_world_model_direct_agent_turns_again_after_straight_recovery_burst() ->
     assert 0.4 <= action.throttle <= 0.65
     assert action.brake == 0.0
     assert action.steer <= -0.65
+
+
+def test_world_model_direct_agent_uses_reverse_only_after_prolonged_stuck_when_enabled() -> None:
+    agent = make_agent(
+        "world_model_direct",
+        planner_config={"horizon": 4, "num_samples": 16, "seed": 4},
+        allow_reverse_recovery=True,
+        reverse_recovery_after_steps=48,
+    )
+    observation = Observation(
+        timestamp=0.0,
+        vehicle_state=VehicleState(x=0.0, y=0.0, yaw=0.0, speed=0.02),
+        goal=(0.0, -20.0),
+        info={},
+    )
+
+    for _ in range(24):
+        early_action, early_stuck = agent._progress_filter(
+            Action(steer=-0.75, throttle=0.4, brake=0.0),
+            Action(steer=-0.9, throttle=0.45, brake=0.0),
+            observation,
+        )
+
+    assert early_stuck is True
+    assert early_action.gear is None
+
+    for _ in range(31):
+        late_action, late_stuck = agent._progress_filter(
+            Action(steer=-0.75, throttle=0.4, brake=0.0),
+            Action(steer=-0.9, throttle=0.45, brake=0.0),
+            observation,
+        )
+
+    assert late_stuck is True
+    assert late_action.gear == -1
+    assert 0.4 <= late_action.throttle <= 0.65
+    assert abs(late_action.steer) <= 0.1
 
 
 def test_model_mpc_agent_uses_route_and_mpc_diagnostics() -> None:

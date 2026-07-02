@@ -145,6 +145,33 @@ def test_tiny_learned_world_model_records_validation_and_segment_errors() -> Non
     assert all(model.metadata["segment_rmse"][name] >= 0.0 for name in ("start", "middle", "goal"))
 
 
+def test_tiny_learned_world_model_segments_multistart_sequences_by_global_task_progress() -> None:
+    frames = [
+        DatasetFrame(
+            f"{index:06d}",
+            float(index),
+            VehicleState(x=x, y=0.0, yaw=0.0, speed=1.0),
+            action=Action(throttle=0.4),
+        )
+        for index, x in enumerate([30.0, 40.0, 50.0])
+    ]
+    sequence = DatasetSequence(
+        dataset_id="beamng_episode",
+        dataset_type="beamng_episode",
+        sequence_id="multistart_middle",
+        root=".",
+        frames=frames,
+        goal=(60.0, 0.0),
+        metadata={"task_start_pos": [0.0, 0.0]},
+    )
+
+    model = TinyLearnedWorldModel.fit([sequence], ridge=1e-4, validation_fraction=0.34)
+
+    assert model.metadata["segment_sample_count"]["start"] == 0
+    assert model.metadata["segment_sample_count"]["middle"] == 1
+    assert model.metadata["segment_sample_count"]["goal"] == 1
+
+
 def test_tiny_learned_world_model_loads_legacy_weights_without_gear(tmp_path) -> None:
     model_dir = tmp_path / "legacy_tiny"
     model_dir.mkdir()
