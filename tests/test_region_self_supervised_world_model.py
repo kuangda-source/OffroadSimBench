@@ -190,6 +190,7 @@ def test_region_self_supervised_world_model_trains_from_multiple_collection_roll
                 output_dir=str(tmp_path / "out"),
                 collect_steps=20,
                 collect_rollouts=2,
+                collection_coverage_grid_size=4,
                 eval_steps=20,
                 close_beamng=True,
             )
@@ -202,6 +203,10 @@ def test_region_self_supervised_world_model_trains_from_multiple_collection_roll
     assert training_record["metrics"]["collection_rollout_count"] == 2
     assert training_record["metrics"]["collection_distance_traveled"] == 49.0
     assert training_record["metrics"]["collection_min_goal_distance"] <= 10.0
+    assert training_record["metrics"]["collection_coverage_cell_count"] == 4
+    assert training_record["metrics"]["collection_coverage_total_cells"] == 16
+    assert training_record["metrics"]["collection_coverage_ratio"] == 0.25
+    assert training_record["summary"]["coverage"]["ratio"] == 0.25
 
 
 def test_region_training_data_collection_writes_reusable_collection_manifest(tmp_path: Path) -> None:
@@ -258,6 +263,49 @@ def test_region_training_data_collection_writes_reusable_collection_manifest(tmp
     assert training_record["artifact_path"] == str(manifest_path.resolve())
     assert training_record["metrics"]["collection_rollout_count"] == 2
     assert training_record["metrics"]["collection_distance_traveled"] == 41.0
+    assert training_record["metrics"]["collection_coverage_cell_count"] == 4
+    assert training_record["metrics"]["collection_coverage_total_cells"] == 16
+    assert training_record["metrics"]["collection_coverage_ratio"] == 0.25
+    assert manifest["metrics"]["collection_coverage_ratio"] == 0.25
+
+
+def test_region_training_data_collection_retries_beamng_reconnect_errors(tmp_path: Path) -> None:
+    task_path = tmp_path / "task.yaml"
+    _write_task(task_path)
+    collection_episode = _save_episode(
+        tmp_path / "collection",
+        [(2.0, 2.0, 0.0, 0.5), (12.0, 12.0, 0.2, 1.2), (25.0, 25.0, 0.45, 1.5)],
+    )
+    calls = 0
+
+    def fake_run_region_beamng_episode(**kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("BNGDisconnectedError: Connecting to the simulator failed.")
+        return {
+            "episode_id": "collection_retry",
+            "episode_path": str(collection_episode),
+            "metrics": {"horizontal_distance_traveled": 30.0, "collision_count": 0, "drive_mode": "manual"},
+        }
+
+    with (
+        patch("desktop_app.services._run_region_beamng_episode", side_effect=fake_run_region_beamng_episode),
+        patch("desktop_app.services.time.sleep", return_value=None),
+    ):
+        payload = services.collect_region_training_data(
+            services.RegionTrainingDataCollectionRequest(
+                task_path=str(task_path),
+                output_dir=str(tmp_path / "collection_run"),
+                collect_steps=20,
+                collect_rollouts=1,
+                close_beamng=True,
+            )
+        )
+
+    assert calls == 2
+    assert payload["status"] == "completed"
+    assert payload["episode_paths"] == [str(collection_episode.resolve())]
 
 
 def test_region_world_model_training_from_collection_registers_model_config(tmp_path: Path) -> None:

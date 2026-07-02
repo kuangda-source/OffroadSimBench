@@ -157,6 +157,38 @@ def test_region_explorer_can_cycle_coverage_targets_inside_region() -> None:
     assert len(set(targets)) == len(targets)
 
 
+def test_region_explorer_shuffles_coverage_targets_by_seed() -> None:
+    observation = Observation(
+        timestamp=0.0,
+        vehicle_state=VehicleState(x=2.0, y=2.0, yaw=0.0, speed=0.5),
+        goal=(28.0, 28.0),
+        info={
+            "navigation_region": {
+                "region": {"polygon": [[0.0, 0.0], [30.0, 0.0], [30.0, 30.0], [0.0, 30.0]]}
+            }
+        },
+    )
+
+    def first_targets(seed: int) -> list[tuple[float, float]]:
+        agent = make_agent(
+            "region_explorer",
+            seed=seed,
+            goal_bias_interval=0,
+            goal_corridor_interval=0,
+            coverage_grid_size=4,
+            coverage_target_interval=1,
+            max_target_steps=1,
+        )
+        targets: list[tuple[float, float]] = []
+        for step in range(6):
+            observation.timestamp = float(step)
+            agent.act(observation)
+            targets.append(tuple(agent.diagnostics()["target"]))
+        return targets
+
+    assert first_targets(3) != first_targets(4)
+
+
 def test_world_model_direct_agent_ignores_expert_route_info() -> None:
     agent = make_agent("world_model_direct", planner_config={"horizon": 4, "num_samples": 16, "seed": 4})
     observation = Observation(

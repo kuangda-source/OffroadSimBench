@@ -2209,7 +2209,7 @@ def run_region_navigation_closed_loop(request: RegionNavigationClosedLoopRequest
         training = {"status": "skipped", "output_dir": existing_model_path, "checkpoint_path": existing_model_path}
         model_path = existing_model_path
     else:
-        collection = _run_region_beamng_episode(
+        collection = _run_region_beamng_episode_with_reconnect_retry(
             scenario=collection_scenario,
             vehicle=request.vehicle,
             max_steps=min(max(1, int(request.collect_steps)), task.max_steps),
@@ -2239,7 +2239,7 @@ def run_region_navigation_closed_loop(request: RegionNavigationClosedLoopRequest
         training = {"output_dir": trained.output_dir, "checkpoint_path": trained.checkpoint_path, **trained.metadata}
         model_path = str(training.get("output_dir") or model_dir)
 
-    evaluation = _run_region_beamng_episode(
+    evaluation = _run_region_beamng_episode_with_reconnect_retry(
         scenario=evaluation_scenario,
         vehicle=request.vehicle,
         max_steps=min(max(1, int(request.eval_steps)), task.max_steps),
@@ -2364,7 +2364,7 @@ def collect_region_training_data(request: RegionTrainingDataCollectionRequest) -
     episode_paths: list[str] = []
     rollout_count = max(1, int(request.collect_rollouts))
     for rollout_index in range(rollout_count):
-        collection = _run_region_beamng_episode(
+        collection = _run_region_beamng_episode_with_reconnect_retry(
             scenario=collection_scenario,
             vehicle=request.vehicle,
             max_steps=min(max(1, int(request.collect_steps)), task.max_steps),
@@ -2405,6 +2405,11 @@ def collect_region_training_data(request: RegionTrainingDataCollectionRequest) -
     best_acceptance = min(collection_acceptances, key=lambda row: _finite_or_inf(row.get("min_goal_distance")))
     collection_distance_total = float(sum(collection_distances)) if collection_distances else math.nan
     quality_gate = _collection_quality_gate(task, best_acceptance, min_progress_ratio=request.min_collection_goal_progress_ratio)
+    coverage = _collection_coverage_metrics(
+        task,
+        episode_paths,
+        grid_size=max(2, int(request.collection_coverage_grid_size)),
+    )
     metrics = {
         "collection_rollout_count": rollout_count,
         "collection_distance_traveled": collection_distance_total,
@@ -2414,6 +2419,9 @@ def collect_region_training_data(request: RegionTrainingDataCollectionRequest) -
         "collection_collision_count": best_acceptance.get("collision_count"),
         "collection_progress_ratio": quality_gate.get("progress_ratio"),
         "required_collection_progress_ratio": quality_gate.get("required_progress_ratio"),
+        "collection_coverage_cell_count": coverage["cell_count"],
+        "collection_coverage_total_cells": coverage["total_cells"],
+        "collection_coverage_ratio": coverage["ratio"],
     }
     payload: dict[str, Any] = {
         "status": "completed",
@@ -2459,6 +2467,7 @@ def collect_region_training_data(request: RegionTrainingDataCollectionRequest) -
         summary={
             "task_path": str(Path(request.task_path).resolve()),
             "quality_gate": quality_gate,
+            "coverage": coverage,
             "collection_acceptance": best_acceptance,
             "collection_acceptances": collection_acceptances,
             "episode_paths": episode_paths,
@@ -2600,7 +2609,7 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
     sequences: list[DatasetSequence] = []
     rollout_count = max(1, int(request.collect_rollouts))
     for rollout_index in range(rollout_count):
-        collection = _run_region_beamng_episode(
+        collection = _run_region_beamng_episode_with_reconnect_retry(
             scenario=collection_scenario,
             vehicle=request.vehicle,
             max_steps=min(max(1, int(request.collect_steps)), task.max_steps),
@@ -2641,6 +2650,11 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
     collection_acceptance = min(collection_acceptances, key=lambda row: _finite_or_inf(row.get("min_goal_distance")))
     collection_distance = float(sum(collection_distances)) if collection_distances else math.nan
     quality_gate = _collection_quality_gate(task, collection_acceptance, min_progress_ratio=request.min_collection_goal_progress_ratio)
+    coverage = _collection_coverage_metrics(
+        task,
+        episode_paths,
+        grid_size=max(2, int(request.collection_coverage_grid_size)),
+    )
     if not quality_gate["passed"]:
         diagnostics = _region_self_supervised_diagnostics(
             quality_gate=quality_gate,
@@ -2672,10 +2686,14 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
                 "collection_collision_count": collection_acceptance.get("collision_count"),
                 "collection_progress_ratio": quality_gate.get("progress_ratio"),
                 "required_collection_progress_ratio": quality_gate.get("required_progress_ratio"),
+                "collection_coverage_cell_count": coverage["cell_count"],
+                "collection_coverage_total_cells": coverage["total_cells"],
+                "collection_coverage_ratio": coverage["ratio"],
             },
             history={
                 "collection_min_goal_distance": [collection_acceptance.get("min_goal_distance")],
                 "collection_progress_ratio": [quality_gate.get("progress_ratio")],
+                "collection_coverage_ratio": [coverage["ratio"]],
             },
             parameters={
                 "world_model_type": request.world_model_type,
@@ -2697,6 +2715,7 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
             summary={
                 "task_path": str(Path(request.task_path).resolve()),
                 "quality_gate": quality_gate,
+                "coverage": coverage,
                 "diagnostics": diagnostics,
                 "collection_acceptance": collection_acceptance,
                 "collection_acceptances": collection_acceptances,
@@ -2713,6 +2732,7 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
             "evaluation": {},
             "acceptance": {},
             "quality_gate": quality_gate,
+            "coverage": coverage,
             "diagnostics": diagnostics,
             "region_navigation": {
                 "collection_agent": "region_explorer",
@@ -2735,6 +2755,9 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
             "episode_path": episode_paths[0],
             "episode_paths": episode_paths,
             "collection_rollout_count": rollout_count,
+            "collection_coverage_cell_count": coverage["cell_count"],
+            "collection_coverage_total_cells": coverage["total_cells"],
+            "collection_coverage_ratio": coverage["ratio"],
         }
     )
     model_dir = output_dir / "model"
@@ -2766,13 +2789,7 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
         "post_run_hold_sec": request.post_run_hold_sec,
         "close_beamng": request.close_beamng,
     }
-    try:
-        evaluation = _run_region_beamng_episode(**evaluation_kwargs)
-    except Exception as exc:
-        if not _looks_like_beamng_reconnect_error(exc):
-            raise
-        time.sleep(6.0)
-        evaluation = _run_region_beamng_episode(**evaluation_kwargs)
+    evaluation = _run_region_beamng_episode_with_reconnect_retry(**evaluation_kwargs)
     acceptance = _navigation_acceptance(evaluation, task)
     region_navigation = evaluation.get("region_navigation", {}) if isinstance(evaluation.get("region_navigation"), dict) else {}
     region_navigation_payload = {
@@ -2814,12 +2831,16 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
             "collection_collision_count": collection_acceptance.get("collision_count"),
             "collection_progress_ratio": quality_gate.get("progress_ratio"),
             "required_collection_progress_ratio": quality_gate.get("required_progress_ratio"),
+            "collection_coverage_cell_count": coverage["cell_count"],
+            "collection_coverage_total_cells": coverage["total_cells"],
+            "collection_coverage_ratio": coverage["ratio"],
         },
         history={
             "train_rmse": [model.metadata.get("train_rmse")],
             "train_mse": [model.metadata.get("train_mse")],
             "collection_min_goal_distance": [collection_acceptance.get("min_goal_distance")],
             "collection_progress_ratio": [quality_gate.get("progress_ratio")],
+            "collection_coverage_ratio": [coverage["ratio"]],
             "evaluation_min_goal_distance": [acceptance.get("min_goal_distance")],
         },
         parameters={
@@ -2842,6 +2863,7 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
         summary={
             "task_path": str(Path(request.task_path).resolve()),
             "quality_gate": quality_gate,
+            "coverage": coverage,
             "diagnostics": diagnostics,
             "collection_acceptance": collection_acceptance,
             "collection_acceptances": collection_acceptances,
@@ -2859,6 +2881,7 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
         "evaluation": evaluation,
         "acceptance": acceptance,
         "quality_gate": quality_gate,
+        "coverage": coverage,
         "diagnostics": diagnostics,
         "region_navigation": region_navigation_payload,
         "training_run_path": training_run["path"],
@@ -2888,7 +2911,7 @@ def run_region_world_model_evaluation(request: RegionWorldModelEvaluationRequest
     output_dir = Path(request.output_dir or ROOT / "outputs" / "region_world_model_eval" / _safe_name(task.task_id) / stamp)
     output_dir.mkdir(parents=True, exist_ok=True)
     scenario = _route_free_region_scenario(task.to_beamng_scenario(mode="evaluation"))
-    evaluation = _run_region_beamng_episode(
+    evaluation = _run_region_beamng_episode_with_reconnect_retry(
         scenario=scenario,
         vehicle=request.vehicle,
         max_steps=min(max(1, int(request.eval_steps)), task.max_steps),
@@ -3225,6 +3248,80 @@ def _navigation_task_from_collection_manifest(collection: dict[str, Any], manife
     raise ValueError(f"Collection manifest has no task data: {manifest_path}")
 
 
+def _collection_coverage_metrics(task: NavigationRegionTask, episode_paths: list[str], *, grid_size: int) -> dict[str, Any]:
+    grid = max(2, int(grid_size))
+    xs = [float(point[0]) for point in task.region_polygon]
+    ys = [float(point[1]) for point in task.region_polygon]
+    min_x, max_x = min(xs), max(xs)
+    min_y, max_y = min(ys), max(ys)
+    span_x = max(max_x - min_x, 1e-6)
+    span_y = max(max_y - min_y, 1e-6)
+    total_cells = _coverage_total_cells(task, grid, min_x, min_y, span_x, span_y)
+    visited: set[tuple[int, int]] = set()
+    for episode_path in episode_paths:
+        for row in load_episode_trace(episode_path):
+            x = _float_or_nan(row.get("x"))
+            y = _float_or_nan(row.get("y"))
+            if not math.isfinite(x) or not math.isfinite(y):
+                continue
+            point = (float(x), float(y))
+            if not _point_in_or_on_task_region(task, point):
+                continue
+            col = min(grid - 1, max(0, int((point[0] - min_x) / span_x * grid)))
+            row_index = min(grid - 1, max(0, int((point[1] - min_y) / span_y * grid)))
+            visited.add((col, row_index))
+    cell_count = len(visited)
+    ratio = float(cell_count / total_cells) if total_cells > 0 else math.nan
+    return {
+        "grid_size": grid,
+        "cell_count": cell_count,
+        "total_cells": total_cells,
+        "ratio": ratio,
+        "visited_cells": [[int(col), int(row)] for col, row in sorted(visited)],
+    }
+
+
+def _coverage_total_cells(
+    task: NavigationRegionTask,
+    grid: int,
+    min_x: float,
+    min_y: float,
+    span_x: float,
+    span_y: float,
+) -> int:
+    count = 0
+    for col in range(grid):
+        for row in range(grid):
+            point = (min_x + (col + 0.5) / grid * span_x, min_y + (row + 0.5) / grid * span_y)
+            if task.contains_point(point):
+                count += 1
+    return max(1, count)
+
+
+def _point_in_or_on_task_region(task: NavigationRegionTask, point: tuple[float, float]) -> bool:
+    if task.contains_point(point):
+        return True
+    vertices = task.region_polygon
+    for start, end in zip(vertices, vertices[1:] + vertices[:1], strict=False):
+        if _point_segment_distance(point, start, end) <= 1e-6:
+            return True
+    return False
+
+
+def _point_segment_distance(point: tuple[float, float], start: tuple[float, float], end: tuple[float, float]) -> float:
+    px, py = point
+    sx, sy = start
+    ex, ey = end
+    dx = ex - sx
+    dy = ey - sy
+    denom = dx * dx + dy * dy
+    if denom <= 1e-12:
+        return math.hypot(px - sx, py - sy)
+    t = max(0.0, min(1.0, ((px - sx) * dx + (py - sy) * dy) / denom))
+    closest = (sx + t * dx, sy + t * dy)
+    return math.hypot(px - closest[0], py - closest[1])
+
+
 def _episode_trace_to_dataset_sequence(episode_path: str | Path, task: NavigationRegionTask) -> DatasetSequence:
     rows = load_episode_trace(episode_path)
     frames: list[DatasetFrame] = []
@@ -3271,6 +3368,16 @@ def _episode_trace_to_dataset_sequence(episode_path: str | Path, task: Navigatio
 def _looks_like_beamng_reconnect_error(exc: Exception) -> bool:
     text = f"{type(exc).__name__}: {exc}"
     return "BNGDisconnectedError" in text or "Connecting to the simulator failed" in text or "ConnectionResetError" in text
+
+
+def _run_region_beamng_episode_with_reconnect_retry(**kwargs: Any) -> dict[str, Any]:
+    try:
+        return _run_region_beamng_episode(**kwargs)
+    except Exception as exc:
+        if not _looks_like_beamng_reconnect_error(exc):
+            raise
+        time.sleep(6.0)
+        return _run_region_beamng_episode(**kwargs)
 
 
 def _run_region_beamng_episode(

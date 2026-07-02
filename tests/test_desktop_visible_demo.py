@@ -1212,12 +1212,12 @@ def test_gui_exposes_region_self_supervised_training(monkeypatch) -> None:
     assert captured["request"].evaluation_agent == "world_model_direct"
     assert captured["request"].evaluation_route_mode == "route_free"
     assert captured["request"].collect_steps >= 1000
-    assert captured["request"].collect_rollouts >= 3
-    assert captured["request"].min_collection_goal_progress_ratio >= 0.25
-    assert captured["request"].collection_coverage_grid_size >= 4
+    assert captured["request"].collect_rollouts >= 6
+    assert captured["request"].min_collection_goal_progress_ratio >= 0.35
+    assert captured["request"].collection_coverage_grid_size >= 6
     assert captured["request"].collection_coverage_target_interval == 1
-    assert captured["request"].collection_max_target_steps <= 40
-    assert captured["request"].eval_steps >= 1000
+    assert captured["request"].collection_max_target_steps <= 30
+    assert captured["request"].eval_steps >= 1200
     assert captured["request"].close_beamng is False
     window.close()
 
@@ -1260,9 +1260,11 @@ def test_gui_collects_region_training_data_from_selected_task(monkeypatch) -> No
     window.collect_region_training_data()
 
     assert captured["request"].task_path == "configs/tasks/beamng_johnson_valley_nav_001.yaml"
-    assert captured["request"].collect_steps >= 1000
-    assert captured["request"].collect_rollouts >= 3
-    assert captured["request"].collection_coverage_grid_size >= 4
+    assert captured["request"].collect_steps >= 1500
+    assert captured["request"].collect_rollouts >= 6
+    assert captured["request"].min_collection_goal_progress_ratio >= 0.35
+    assert captured["request"].collection_coverage_grid_size >= 6
+    assert captured["request"].collection_max_target_steps <= 30
     assert captured["request"].close_beamng is False
     assert window.region_collection_manifest_edit.text() == "outputs/beamng_region_training_data/run/region_training_collection.json"
     assert "collection_manifest_path" in window.beamng_summary.toPlainText()

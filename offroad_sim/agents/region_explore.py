@@ -146,7 +146,9 @@ class RegionExploreAgent(OffroadAgent):
         signature = tuple((round(float(x), 3), round(float(y), 3)) for x, y in polygon)
         if signature != self._coverage_signature:
             self._coverage_signature = signature
-            self._coverage_targets = _coverage_points_in_polygon(polygon, self.coverage_grid_size)
+            targets = _coverage_points_in_polygon(polygon, self.coverage_grid_size)
+            order = self.rng.permutation(len(targets)) if len(targets) > 1 else range(len(targets))
+            self._coverage_targets = [targets[int(index)] for index in order]
             self._coverage_index = 0
         if not self._coverage_targets:
             return None
