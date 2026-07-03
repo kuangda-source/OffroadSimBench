@@ -509,7 +509,7 @@ experience corridor, the same model did not make meaningful progress
 `stuck_recovery_count=1016`). A later stall-memory fix keeps recovery active
 through low-speed BeamNG body jitter and, with reverse enabled as a last resort,
 improved the strict direct 1200-step baseline to
-`min_goal_distance=98.203 m`, `final_goal_distance=98.272 m`, zero collisions,
+`min_goal_distance=98.138 m`, `final_goal_distance=98.233 m`, zero collisions,
 and `reverse_count=302`; this is measurable progress but still well short of
 the `<50 m` first-stage target. The route-guided baseline on the same task did
 succeed (`final_goal_distance=11.752 m`, zero collisions), proving that the
@@ -530,7 +530,7 @@ recovery settings stored in the selected world-model config. With scenario
 `experience_corridor` disabled and zero route waypoints, the validated
 support-route run on `beamng_johnson_valley_nav_test.yaml` reached the 12 m
 goal radius in BeamNG manual-control evaluation: final/minimum goal distance
-11.808 m, distance traveled 176.404 m, zero collisions, zero stuck recovery,
+11.071 m, distance traveled 179.324 m, zero collisions, zero stuck recovery,
 and zero reverse steps. This is still not the pure strict-direct baseline, but
 it replaces the earlier flat support-point stitching with an explicit
 model-owned support-route graph and remains the first validated model-owned

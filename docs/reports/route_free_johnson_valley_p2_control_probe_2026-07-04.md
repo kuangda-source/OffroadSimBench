@@ -81,6 +81,64 @@ from the `<50 m` first-stage target. The remaining blocker is not a transient
 stuck counter reset; direct control still lacks a traversability-aware way to
 choose a better local direction after escaping the first obstacle cluster.
 
+Follow-up negative experiment: treating every low-throttle/braking/no-progress
+state as stuck made the BeamNG closed loop worse. It triggered recovery too
+early during a slow but still useful turn and regressed the 420-step strict
+direct probe:
+
+- Broad conservative-stuck output:
+  `outputs/region_world_model_eval/p2_conservative_stuck_physical_direct_420_20260704/region_world_model_evaluation_summary.json`.
+- Minimum/final goal distance: `104.437 m` / `104.437 m`.
+- Collision count: `0`.
+- Distance traveled: `27.222 m`.
+- Stuck recovery count: `342`.
+- Reverse count: `74`.
+
+This rule was not kept in code. The next productive direction is a
+traversability-aware local direction prior, not a broader stuck trigger.
+
+## Support-Risk Data-Flow Retest
+
+Another trace issue was in `TinyLearnedWorldModel` support risk. The model used
+the minimum distance from any predicted state to any support point, so a
+trajectory could report `support_risk=0` just because its first predicted state
+was still near known data, even if later predicted states left the known
+drivable support. This prevented the planner risk term from expressing
+"trajectory leaves known feasible data."
+
+Using the maximum predicted support distance made the risk signal too
+conservative and regressed the strict direct 420-step probe:
+
+- Max-distance output:
+  `outputs/region_world_model_eval/p2_support_risk_worst_direct_420_20260704/region_world_model_evaluation_summary.json`.
+- Minimum/final goal distance: `104.436 m` / `104.438 m`.
+- Final planner `risk_cost`: `0.420`.
+
+The retained implementation uses the mean nearest-support distance over the
+predicted trajectory. This keeps nonzero risk for trajectories that leave known
+support while avoiding one-step over-penalization.
+
+- Mean-risk 420-step output:
+  `outputs/region_world_model_eval/p2_support_risk_mean_direct_420_20260704/region_world_model_evaluation_summary.json`.
+- Mean-risk 420-step minimum/final goal distance: `98.292 m` / `98.314 m`.
+- Mean-risk 1200-step output:
+  `outputs/region_world_model_eval/p2_support_risk_mean_direct_1200_20260704/region_world_model_evaluation_summary.json`.
+- Mean-risk 1200-step minimum/final goal distance: `98.138 m` / `98.233 m`.
+- Mean-risk 1200-step collision count: `0`.
+- Mean-risk 1200-step distance traveled: `35.234 m`.
+- Mean-risk 1200-step stuck recovery count: `1092`.
+- Mean-risk 1200-step reverse count: `302`.
+
+The same mean-risk change preserves the model-owned support-route demo:
+
+- Support-route output:
+  `outputs/region_world_model_eval/p2_support_risk_mean_support_route_1200_20260704/region_world_model_evaluation_summary.json`.
+- Goal success: `true`.
+- Final/minimum goal distance: `11.071 m` / `11.071 m`.
+- Collision count: `0`.
+- Stuck recovery count: `0`.
+- Reverse count: `0`.
+
 ## Experience-Corridor Evaluation
 
 Standalone model evaluation can now explicitly rebuild an experience corridor from the model training episode metadata. This corridor comes from collected BeamNG episode traces, not from the expert route injected into the evaluation scenario.

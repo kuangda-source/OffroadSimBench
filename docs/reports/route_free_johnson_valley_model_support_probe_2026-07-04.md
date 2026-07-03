@@ -110,6 +110,18 @@ Validated segmented-support run:
 - `stuck_recovery_count=0`
 - `reverse_count=0`
 
+Mean support-risk retest:
+
+- Summary:
+  `outputs/region_world_model_eval/p2_support_risk_mean_support_route_1200_20260704/region_world_model_evaluation_summary.json`
+- `goal_success=true`
+- `final_goal_distance=11.070667805902877`
+- `min_goal_distance=11.070667805902877`
+- `collision_count=0`
+- `distance_traveled=179.3240986832698`
+- `stuck_recovery_count=0`
+- `reverse_count=0`
+
 ## Interpretation
 
 This is not a pure "only start, goal, and polygon" strict-direct success.

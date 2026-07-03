@@ -299,7 +299,8 @@ def _support_distance_and_risk(states: list[VehicleState], support_points: np.nd
     predicted = np.asarray([[float(state.x), float(state.y)] for state in states], dtype=np.float64)
     deltas = predicted[:, None, :] - support_points[None, :, :]
     distances = np.sqrt(np.sum(deltas * deltas, axis=2))
-    support_distance = float(np.min(distances))
+    nearest_distance_by_state = np.min(distances, axis=1)
+    support_distance = float(np.mean(nearest_distance_by_state))
     radius = max(1.0, float(support_radius_m))
     support_risk = max(0.0, support_distance - radius) / radius
     return support_distance, support_risk

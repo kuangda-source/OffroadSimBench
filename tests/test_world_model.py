@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from offroad_sim.agents import WorldModelAgent, make_agent
 from offroad_sim.core import Action, Observation, VehicleState
 from offroad_sim.datasets import DatasetFrame, DatasetSequence, create_mock_orfd_dataset, default_dataset_registry
 from offroad_sim.world_models import SimpleKinematicWorldModel, TinyLearnedWorldModel, default_world_model_registry, make_world_model
+from offroad_sim.world_models.tiny_learned import FEATURE_NAMES, OUTPUT_NAMES
 
 
 def _observation(risk: float = 0.0) -> Observation:
@@ -206,6 +208,29 @@ def test_tiny_learned_world_model_scores_distance_from_training_support() -> Non
     assert near.metadata["support_distance_m"] < 8.0
     assert far.metadata["support_distance_m"] > near.metadata["support_distance_m"]
     assert far.metadata["max_risk"] > near.metadata["max_risk"]
+
+
+def test_tiny_learned_world_model_risk_uses_trajectory_support_distance() -> None:
+    weights = np.zeros((len(FEATURE_NAMES), len(OUTPUT_NAMES)), dtype=np.float64)
+    weights[FEATURE_NAMES.index("throttle"), OUTPUT_NAMES.index("dx")] = 10.0
+    model = TinyLearnedWorldModel(
+        weights=weights,
+        metadata={
+            "support_points": [[10.0, 0.0]],
+            "support_radius_m": 4.0,
+        },
+    )
+    observation = Observation(
+        timestamp=0.0,
+        vehicle_state=VehicleState(x=0.0, y=0.0, yaw=0.0, speed=0.0),
+        goal=(30.0, 0.0),
+    )
+
+    prediction = model.predict(observation, Action(throttle=1.0), horizon=2)
+
+    assert prediction.metadata["support_distance_m"] == pytest.approx(5.0)
+    assert prediction.metadata["support_risk"] > 0.0
+    assert prediction.metadata["max_risk"] > 0.0
 
 
 def test_tiny_learned_world_model_preserves_support_routes_per_sequence() -> None:
