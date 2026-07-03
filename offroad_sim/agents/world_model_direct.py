@@ -15,6 +15,10 @@ from offroad_sim.planning.navigation_mpc import NavigationMPCPlanner
 from offroad_sim.world_models import make_world_model
 
 
+SUPPORT_ROUTE_BRIDGE_MAX_M = 32.0
+SUPPORT_ROUTE_MIN_GOAL_PROGRESS_M = 1.0
+
+
 class WorldModelDirectAgent(OffroadAgent):
     """Drive toward the task goal with a world-model planner and no expert route."""
 
@@ -252,8 +256,8 @@ class WorldModelDirectAgent(OffroadAgent):
             self._experience_corridor_used = True
             return experience_subgoal
         if self.use_model_support_subgoals:
-            support_subgoal = _support_route_subgoal(
-                _model_support_route(self.world_model),
+            support_subgoal = _support_routes_subgoal(
+                _model_support_routes(self.world_model),
                 info=obs.info,
                 start=start,
                 lookahead_m=self.local_subgoal_distance_m,
@@ -420,9 +424,101 @@ def _support_route_subgoal(
     return final if not polygon or _point_in_polygon(final, polygon) else None
 
 
-def _model_support_route(world_model: Any) -> list[tuple[float, float]]:
+def _support_routes_subgoal(
+    routes: list[list[tuple[float, float]]],
+    *,
+    info: dict[str, Any],
+    start: tuple[float, float],
+    lookahead_m: float,
+    goal: tuple[float, float],
+) -> tuple[float, float] | None:
+    if not routes:
+        return None
+    stitched = _stitched_support_route(
+        routes,
+        start=start,
+        goal=goal,
+        max_bridge_m=max(SUPPORT_ROUTE_BRIDGE_MAX_M, float(lookahead_m) * 2.0),
+    )
+    if stitched:
+        subgoal = _support_route_subgoal(stitched, info=info, start=start, lookahead_m=lookahead_m, goal=goal)
+        if subgoal is not None:
+            return subgoal
+    candidates = sorted(
+        routes,
+        key=lambda route: min(math.hypot(point[0] - start[0], point[1] - start[1]) for point in route),
+    )
+    for route in candidates:
+        subgoal = _support_route_subgoal(route, info=info, start=start, lookahead_m=lookahead_m, goal=goal)
+        if subgoal is not None:
+            return subgoal
+    return None
+
+
+def _stitched_support_route(
+    routes: list[list[tuple[float, float]]],
+    *,
+    start: tuple[float, float],
+    goal: tuple[float, float],
+    max_bridge_m: float,
+) -> list[tuple[float, float]]:
+    if not routes:
+        return []
+    remaining = set(range(len(routes)))
+    current_index = min(
+        remaining,
+        key=lambda route_index: min(math.hypot(point[0] - start[0], point[1] - start[1]) for point in routes[route_index]),
+    )
+    stitched = list(routes[current_index])
+    remaining.remove(current_index)
+    current_end = stitched[-1]
+    current_goal_distance = math.hypot(current_end[0] - goal[0], current_end[1] - goal[1])
+
+    while remaining:
+        best: tuple[float, float, int] | None = None
+        for route_index in remaining:
+            route = routes[route_index]
+            bridge_distance = math.hypot(route[0][0] - current_end[0], route[0][1] - current_end[1])
+            route_goal_distance = math.hypot(route[-1][0] - goal[0], route[-1][1] - goal[1])
+            if bridge_distance > max_bridge_m:
+                continue
+            if route_goal_distance >= current_goal_distance - SUPPORT_ROUTE_MIN_GOAL_PROGRESS_M:
+                continue
+            candidate = (bridge_distance, route_goal_distance, route_index)
+            if best is None or candidate < best:
+                best = candidate
+        if best is None:
+            break
+        _, current_goal_distance, current_index = best
+        next_route = routes[current_index]
+        if math.hypot(next_route[0][0] - current_end[0], next_route[0][1] - current_end[1]) <= 1e-6:
+            stitched.extend(next_route[1:])
+        else:
+            stitched.extend(next_route)
+        current_end = stitched[-1]
+        remaining.remove(current_index)
+
+    return stitched if len(stitched) >= 2 else []
+
+
+def _model_support_routes(world_model: Any) -> list[list[tuple[float, float]]]:
     metadata = getattr(world_model, "metadata", {})
-    raw = metadata.get("support_points", []) if isinstance(metadata, dict) else []
+    if not isinstance(metadata, dict):
+        return []
+    raw_routes = metadata.get("support_routes")
+    routes: list[list[tuple[float, float]]] = []
+    if isinstance(raw_routes, list):
+        for raw_route in raw_routes:
+            route = _coerce_route(raw_route)
+            if len(route) >= 2:
+                routes.append(route)
+    if routes:
+        return routes
+    route = _coerce_route(metadata.get("support_points", []))
+    return [route] if len(route) >= 2 else []
+
+
+def _coerce_route(raw: Any) -> list[tuple[float, float]]:
     route: list[tuple[float, float]] = []
     for point in raw or []:
         try:

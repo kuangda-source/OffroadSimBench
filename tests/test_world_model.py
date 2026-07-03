@@ -208,6 +208,45 @@ def test_tiny_learned_world_model_scores_distance_from_training_support() -> Non
     assert far.metadata["max_risk"] > near.metadata["max_risk"]
 
 
+def test_tiny_learned_world_model_preserves_support_routes_per_sequence() -> None:
+    first = DatasetSequence(
+        dataset_id="beamng_episode",
+        dataset_type="beamng_episode",
+        sequence_id="support_a",
+        root=".",
+        frames=[
+            DatasetFrame("a0", 0.0, VehicleState(x=0.0, y=0.0, yaw=0.0, speed=1.0), action=Action(throttle=0.4)),
+            DatasetFrame("a1", 1.0, VehicleState(x=0.0, y=10.0, yaw=0.0, speed=1.0), action=Action(throttle=0.4)),
+        ],
+        goal=(100.0, 10.0),
+    )
+    second = DatasetSequence(
+        dataset_id="beamng_episode",
+        dataset_type="beamng_episode",
+        sequence_id="support_b",
+        root=".",
+        frames=[
+            DatasetFrame("b0", 0.0, VehicleState(x=100.0, y=0.0, yaw=0.0, speed=1.0), action=Action(throttle=0.4)),
+            DatasetFrame("b1", 1.0, VehicleState(x=100.0, y=10.0, yaw=0.0, speed=1.0), action=Action(throttle=0.4)),
+        ],
+        goal=(100.0, 10.0),
+    )
+
+    model = TinyLearnedWorldModel.fit([first, second], ridge=1e-4)
+
+    assert model.metadata["support_route_count"] == 2
+    assert model.metadata["support_routes"] == [
+        [[0.0, 0.0], [0.0, 10.0]],
+        [[100.0, 0.0], [100.0, 10.0]],
+    ]
+    assert model.metadata["support_points"] == [
+        [0.0, 0.0],
+        [0.0, 10.0],
+        [100.0, 0.0],
+        [100.0, 10.0],
+    ]
+
+
 def test_tiny_learned_world_model_loads_legacy_weights_without_gear(tmp_path) -> None:
     model_dir = tmp_path / "legacy_tiny"
     model_dir.mkdir()

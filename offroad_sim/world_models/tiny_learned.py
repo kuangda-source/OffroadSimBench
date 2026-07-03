@@ -74,13 +74,20 @@ class TinyLearnedWorldModel(BaseWorldModel):
         sequence_count = 0
         recorded_action_sample_count = 0
         support_points: list[tuple[float, float]] = []
+        support_routes: list[list[list[float]]] = []
 
         for sequence in sequences:
             sequence_count += 1
             frames = sequence.frames
             frame_count += len(frames)
+            sequence_support_points: list[tuple[float, float]] = []
             for frame in frames:
-                support_points.append((float(frame.vehicle_state.x), float(frame.vehicle_state.y)))
+                point = (float(frame.vehicle_state.x), float(frame.vehicle_state.y))
+                support_points.append(point)
+                sequence_support_points.append(point)
+            route = _downsample_support_points(sequence_support_points, max_points=MAX_SUPPORT_POINTS)
+            if len(route) >= 2:
+                support_routes.append(route)
             for transition_index, (current, nxt) in enumerate(zip(frames, frames[1:])):
                 action, action_source = _transition_action(current, nxt)
                 if action_source == "recorded":
@@ -121,6 +128,8 @@ class TinyLearnedWorldModel(BaseWorldModel):
             "feature_names": list(FEATURE_NAMES),
             "output_names": list(OUTPUT_NAMES),
             "support_points": _downsample_support_points(support_points, max_points=MAX_SUPPORT_POINTS),
+            "support_routes": support_routes,
+            "support_route_count": len(support_routes),
             "support_point_count": len(support_points),
             "support_radius_m": DEFAULT_SUPPORT_RADIUS_M,
         }

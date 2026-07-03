@@ -24,7 +24,7 @@ and task expert route metadata from the scenario; it does not use BeamNG
 Task:
 `configs/tasks/beamng_johnson_valley_nav_test.yaml`
 
-Model:
+Initial flat-support model:
 `outputs/region_self_supervised/p2_support_risk_direct_20260704_022138/model`
 
 Successful run:
@@ -70,6 +70,46 @@ Acceptance:
   collisions or stuck recovery.
 - The validated 1200-step support-subgoal probe reached the goal radius.
 
+## Segmented Support Route Retest
+
+The first implementation stored all rollout states as one flat
+`support_points` sequence. That reached the goal, but it could silently bridge
+the tail of one collection rollout into the head of another. The follow-up
+change stores per-rollout `support_routes` and keeps the flat `support_points`
+only for legacy risk scoring.
+
+Naively selecting the nearest support route segment failed:
+
+- Run:
+  `outputs/region_world_model_eval/p2_support_routes_reverse_1200_20260704_031554/region_world_model_evaluation_summary.json`
+- Final/minimum goal distance: `121.845 m` / `108.391 m`
+- `stuck_recovery_count=660`, `reverse_count=132`
+- Root cause: the agent stayed on segment 0 and kept targeting that segment's
+  end point instead of advancing to the next rollout segment.
+
+The corrected version builds an explicit support-route graph at runtime. It
+starts from the nearest support route, then bridges only to a next segment whose
+start is within a bounded gap and whose end is closer to the final goal. Large
+gaps remain unbridged, so unrelated rollouts are not stitched together.
+
+Validated segmented-support run:
+
+- Model:
+  `outputs/region_self_supervised/p2_support_routes_direct_20260704_031554/model`
+- Summary:
+  `outputs/region_world_model_eval/p2_support_routes_bridged_reverse_1200_20260704_032050/region_world_model_evaluation_summary.json`
+- `support_route_count=4`
+- `goal_success=true`
+- `final_goal_distance=11.807668899363438`
+- `min_goal_distance=11.807668899363438`
+- `goal_radius=12.0`
+- `route_waypoint_count=0`
+- `drive_mode=manual`
+- `collision_count=0`
+- `distance_traveled=176.40412352208287`
+- `stuck_recovery_count=0`
+- `reverse_count=0`
+
 ## Interpretation
 
 This is not a pure "only start, goal, and polygon" strict-direct success.
@@ -81,8 +121,9 @@ traversability, latent map, or policy models.
 ## Remaining Risks
 
 - The strict-direct baseline still fails and remains a useful diagnostic gate.
-- The support route currently comes from ordered support points; future training
-  should segment multiple rollouts more explicitly to avoid nearest-point jumps.
+- The support route is now segmented per rollout and bridged with distance and
+  goal-progress constraints, but it still represents a model-owned navigation
+  aid rather than a fully learned route-free policy.
 - Stability needs repeated multi-seed BeamNG validation before promoting this as
   the default demo.
 - Generalization to a new Johnson Valley start/goal is not yet proven.

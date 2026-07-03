@@ -517,16 +517,19 @@ and
 [`docs/reports/route_free_johnson_valley_p2_control_probe_2026-07-04.md`](docs/reports/route_free_johnson_valley_p2_control_probe_2026-07-04.md).
 
 The next 2026-07-04 probe added a stricter model-owned navigation aid:
-`tiny_learned` now saves training support points, `world_model_direct` can
-optionally derive local subgoals from those model support points, and GUI/demo
-requests preserve the validated planner weights and recovery settings stored in
-the selected world-model config. With scenario `experience_corridor` disabled
-and zero route waypoints, the validated support-subgoal run on
-`beamng_johnson_valley_nav_test.yaml` reached the 12 m goal radius in BeamNG
-manual-control evaluation: final/minimum goal distance 11.769 m, distance
-traveled 176.710 m, zero collisions, zero stuck recovery, and zero reverse
-steps. This is still not the pure strict-direct baseline, but it is the first
-validated model-owned support route-free demo config:
+`tiny_learned` now saves training support points and per-rollout
+`support_routes`; `world_model_direct` can derive local subgoals from those
+model routes using bounded, goal-progress-only bridges between connected
+segments; and GUI/demo requests preserve the validated planner weights and
+recovery settings stored in the selected world-model config. With scenario
+`experience_corridor` disabled and zero route waypoints, the validated
+support-route run on `beamng_johnson_valley_nav_test.yaml` reached the 12 m
+goal radius in BeamNG manual-control evaluation: final/minimum goal distance
+11.808 m, distance traveled 176.404 m, zero collisions, zero stuck recovery,
+and zero reverse steps. This is still not the pure strict-direct baseline, but
+it replaces the earlier flat support-point stitching with an explicit
+model-owned support-route graph and remains the first validated model-owned
+support route-free demo config:
 `johnson_valley_tiny_model_support_20260704`. Detailed notes are in
 [`docs/reports/route_free_johnson_valley_model_support_probe_2026-07-04.md`](docs/reports/route_free_johnson_valley_model_support_probe_2026-07-04.md).
 
