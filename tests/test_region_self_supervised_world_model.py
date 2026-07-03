@@ -716,6 +716,85 @@ def test_region_world_model_evaluation_loads_existing_model_without_training(tmp
     assert payload["region_navigation"]["evaluation_agent"] == "world_model_direct"
 
 
+def test_region_world_model_evaluation_can_use_model_experience_corridor(tmp_path: Path) -> None:
+    task_path = tmp_path / "task.yaml"
+    _write_task(task_path)
+    collection_episode = _save_episode(
+        tmp_path / "collection",
+        [
+            (2.0, 2.0, 0.0, 0.5),
+            (2.0, 12.0, 0.4, 1.0),
+            (2.0, 24.0, 0.6, 1.2),
+            (12.0, 30.0, 0.4, 1.4),
+            (24.0, 34.0, 0.2, 1.5),
+            (34.0, 35.0, 0.0, 0.8),
+        ],
+    )
+    evaluation_episode = _save_episode(
+        tmp_path / "evaluation",
+        [(2.0, 2.0, 0.0, 0.5), (12.0, 30.0, 0.4, 2.0), (34.0, 35.0, 0.6, 1.0)],
+    )
+    model_dir = tmp_path / "model"
+    model_dir.mkdir()
+    (model_dir / "model.json").write_text(
+        json.dumps(
+            {
+                "model_type": "tiny_learned",
+                "config": {
+                    "metadata": {
+                        "episode_paths": [str(collection_episode)],
+                    }
+                },
+                "weights": "weights.npz",
+            }
+        ),
+        encoding="utf-8",
+    )
+    seen: dict[str, object] = {}
+
+    def fake_run_episode(**kwargs):
+        seen["scenario"] = kwargs["scenario"]
+
+        class Result:
+            def to_dict(self):
+                return {
+                    "episode_id": "eval",
+                    "episode_path": str(evaluation_episode),
+                    "metrics": {"horizontal_distance_traveled": 40.0, "collision_count": 0, "drive_mode": "manual"},
+                }
+
+        return Result()
+
+    with patch("desktop_app.services.run_episode", side_effect=fake_run_episode):
+        payload = services.run_region_world_model_evaluation(
+            services.RegionWorldModelEvaluationRequest(
+                task_path=str(task_path),
+                world_model_type="tiny_learned",
+                world_model_path=str(model_dir),
+                output_dir=str(tmp_path / "out"),
+                eval_steps=20,
+                close_beamng=True,
+                use_experience_corridor=True,
+                experience_route_min_spacing_m=4.0,
+                experience_route_max_points=20,
+            )
+        )
+
+    scenario = seen["scenario"]
+    assert isinstance(scenario, dict)
+    beamng = scenario["metadata"]["beamng"]
+    task = scenario["metadata"]["task"]
+    experience_route = task["experience_route"]
+
+    assert "route" not in beamng
+    assert "expert_route" not in task
+    assert experience_route[0] == [2.0, 2.0]
+    assert experience_route[-1] == [35.0, 35.0]
+    assert [2.0, 24.0] in experience_route
+    assert payload["region_navigation"]["experience_corridor"] is True
+    assert payload["region_navigation"]["experience_route_point_count"] == len(experience_route)
+
+
 def test_region_world_model_evaluation_compares_route_free_and_route_guided_baselines(tmp_path: Path) -> None:
     task_path = tmp_path / "task.yaml"
     _write_task(task_path)
@@ -738,10 +817,12 @@ def test_region_world_model_evaluation_compares_route_free_and_route_guided_base
     episodes = [route_free_episode, route_guided_episode]
     seen_agents: list[str] = []
     seen_scenarios: list[dict[str, object]] = []
+    seen_agent_options: list[dict[str, object]] = []
 
     def fake_run_episode(**kwargs):
         seen_agents.append(kwargs["agent_name"])
         seen_scenarios.append(kwargs["scenario"])
+        seen_agent_options.append(kwargs["agent_options"])
         index = len(seen_agents) - 1
 
         class Result:
@@ -769,12 +850,18 @@ def test_region_world_model_evaluation_compares_route_free_and_route_guided_base
                 eval_steps=20,
                 close_beamng=True,
                 include_route_guided_baseline=True,
+                evaluation_allow_reverse_recovery=True,
+                evaluation_reverse_recovery_after_steps=144,
+                evaluation_local_subgoal_distance_m=16.0,
             )
         )
 
     assert seen_agents == ["world_model_direct", "route_world_model"]
     assert "route" not in seen_scenarios[0]["metadata"]["beamng"]
     assert seen_scenarios[1]["metadata"]["beamng"]["route"] == [[2.0, 2.0], [10.0, 30.0], [35.0, 35.0]]
+    assert seen_agent_options[0]["allow_reverse_recovery"] is True
+    assert seen_agent_options[0]["reverse_recovery_after_steps"] == 144
+    assert seen_agent_options[0]["local_subgoal_distance_m"] == 16.0
     assert payload["baselines"]["route_free"]["acceptance"]["goal_success"] is False
     assert payload["baselines"]["route_guided"]["acceptance"]["goal_success"] is True
     assert payload["comparison"]["route_free_goal_success"] is False

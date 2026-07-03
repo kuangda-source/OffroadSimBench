@@ -5,6 +5,7 @@ import pytest
 from offroad_sim.agents import KeyboardAgent, ModelMPCAgent, RandomAgent, RuleBasedGoalAgent, StopAgent, make_agent
 from offroad_sim.agents.world_model_direct import _stabilize_action
 from offroad_sim.core import Action, Observation, VehicleState
+from offroad_sim.planning.types import PlanningResult
 
 
 def make_observation() -> Observation:
@@ -305,6 +306,74 @@ def test_world_model_direct_agent_uses_local_subgoal_inside_region() -> None:
     assert diagnostics["route_used"] is False
 
 
+def test_world_model_direct_agent_offsets_local_subgoal_after_stuck() -> None:
+    agent = make_agent("world_model_direct", planner_config={"horizon": 1, "num_samples": 4, "seed": 4}, local_subgoal_distance_m=12.0)
+    agent._stuck_steps = 24
+    observation = Observation(
+        timestamp=0.0,
+        vehicle_state=VehicleState(x=2.0, y=2.0, yaw=0.0, speed=0.0),
+        goal=(35.0, 2.0),
+        info={
+            "navigation_region": {
+                "region": {"polygon": [[0.0, -10.0], [40.0, -10.0], [40.0, 20.0], [0.0, 20.0]]},
+                "goal": {"pos": [35.0, 2.0], "radius": 4.0},
+            }
+        },
+    )
+
+    subgoal = agent._local_subgoal(observation)
+
+    assert subgoal[0] > 10.0
+    assert abs(subgoal[1] - 2.0) >= 3.0
+    assert 0.0 <= subgoal[0] <= 40.0
+    assert -10.0 <= subgoal[1] <= 20.0
+
+
+def test_world_model_direct_agent_can_escape_laterally_when_direct_goal_side_is_blocked() -> None:
+    agent = make_agent("world_model_direct", planner_config={"horizon": 1, "num_samples": 4, "seed": 4}, local_subgoal_distance_m=12.0)
+    agent._stuck_steps = 36
+    observation = Observation(
+        timestamp=0.0,
+        vehicle_state=VehicleState(x=1317.08, y=-107.46, yaw=-2.57, speed=0.0),
+        goal=(1245.995, -189.268),
+        info={
+            "navigation_region": {
+                "region": {
+                    "polygon": [[1173.822, -138.863], [1217.423, -222.645], [1376.998, -124.37], [1311.841, -37.816]]
+                },
+                "goal": {"pos": [1245.995, -189.268], "radius": 12.0},
+            }
+        },
+    )
+
+    subgoal = agent._local_subgoal(observation)
+
+    assert subgoal[0] < observation.vehicle_state.x
+    assert subgoal[1] > observation.vehicle_state.y
+
+
+def test_world_model_direct_agent_uses_turn_arc_subgoal_for_large_heading_error() -> None:
+    agent = make_agent("world_model_direct", planner_config={"horizon": 1, "num_samples": 4, "seed": 4}, local_subgoal_distance_m=12.0)
+    observation = Observation(
+        timestamp=0.0,
+        vehicle_state=VehicleState(x=1329.177, y=-109.397, yaw=2.001, speed=0.1),
+        goal=(1245.995, -189.268),
+        info={
+            "navigation_region": {
+                "region": {
+                    "polygon": [[1173.822, -138.863], [1217.423, -222.645], [1376.998, -124.37], [1311.841, -37.816]]
+                },
+                "goal": {"pos": [1245.995, -189.268], "radius": 12.0},
+            }
+        },
+    )
+
+    subgoal = agent._local_subgoal(observation)
+
+    assert subgoal[0] < observation.vehicle_state.x
+    assert subgoal[1] > observation.vehicle_state.y
+
+
 def test_world_model_direct_agent_can_use_experience_corridor_for_local_subgoal() -> None:
     agent = make_agent(
         "world_model_direct",
@@ -333,6 +402,66 @@ def test_world_model_direct_agent_can_use_experience_corridor_for_local_subgoal(
     assert diagnostics["planner_goal"] == [2.0, 14.0]
     assert diagnostics["route_used"] is False
     assert diagnostics["experience_corridor_used"] is True
+
+
+def test_world_model_direct_agent_uses_local_subgoal_progress_for_stuck_detection() -> None:
+    agent = make_agent(
+        "world_model_direct",
+        planner_config={"horizon": 4, "num_samples": 16, "seed": 4},
+        local_subgoal_distance_m=12.0,
+    )
+
+    class ForwardPlanner:
+        def plan(self, observation, world_model, *, reference_action=None, score_actions=None):
+            return PlanningResult(
+                actions=[Action(steer=0.0, throttle=0.55, brake=0.0)],
+                predicted_states=[],
+                costs=[0.0],
+                best_cost=0.0,
+                metadata={"planner": "forward_test"},
+            )
+
+    agent.planner = ForwardPlanner()
+    info = {
+        "navigation_region": {
+            "region": {"polygon": [[-5.0, -5.0], [30.0, -5.0], [30.0, 20.0], [-5.0, 20.0]]},
+            "experience_route": [[0.0, 0.0], [0.0, 12.0], [20.0, 12.0], [20.0, 0.0]],
+        }
+    }
+
+    for step in range(24):
+        obs = Observation(
+            timestamp=float(step),
+            vehicle_state=VehicleState(x=0.0, y=float(step) * 0.4, yaw=1.57, speed=0.05),
+            goal=(20.0, 0.0),
+            info=info,
+        )
+        action = agent.act(obs)
+
+    diagnostics = agent.diagnostics()
+    assert action.gear is None
+    assert diagnostics["experience_corridor_used"] is True
+    assert diagnostics["stuck_recovery"] is False
+
+
+def test_world_model_direct_agent_detects_physical_stall_when_subgoal_changes() -> None:
+    agent = make_agent("world_model_direct", planner_config={"horizon": 4, "num_samples": 16, "seed": 4})
+
+    for step in range(24):
+        observation = Observation(
+            timestamp=float(step),
+            vehicle_state=VehicleState(x=0.0, y=0.0, yaw=0.0, speed=0.02),
+            goal=(12.0, float(step % 2) * 2.0),
+            info={},
+        )
+        action, stuck = agent._progress_filter(
+            Action(steer=0.05, throttle=0.55, brake=0.0),
+            Action(steer=0.08, throttle=0.45, brake=0.0),
+            observation,
+        )
+
+    assert stuck is True
+    assert action.gear is None
 
 
 def test_world_model_direct_agent_interpolates_long_experience_corridor_segments() -> None:
@@ -456,8 +585,8 @@ def test_world_model_direct_agent_uses_controlled_sharp_turn_from_low_speed() ->
         observation,
     )
 
-    assert action.steer <= -0.7
-    assert 0.35 <= action.throttle <= 0.5
+    assert -0.4 <= action.steer <= -0.25
+    assert action.throttle >= 0.75
     assert action.brake == 0.0
 
 
@@ -517,6 +646,29 @@ def test_world_model_direct_agent_recovers_from_low_speed_no_progress() -> None:
     assert 0.2 <= action.throttle <= 0.55
     assert action.brake <= 0.25
     assert abs(action.steer) <= 0.9
+
+
+def test_world_model_direct_agent_straight_low_speed_recovery_releases_brake() -> None:
+    agent = make_agent("world_model_direct", planner_config={"horizon": 4, "num_samples": 16, "seed": 4})
+    observation = Observation(
+        timestamp=0.0,
+        vehicle_state=VehicleState(x=0.0, y=0.0, yaw=0.0, speed=0.02),
+        goal=(20.0, 0.0),
+        info={},
+    )
+
+    for _ in range(24):
+        action, stuck = agent._progress_filter(
+            Action(steer=0.05, throttle=0.45, brake=0.0),
+            Action(steer=0.08, throttle=0.45, brake=0.0),
+            observation,
+        )
+
+    assert stuck is True
+    assert action.gear is None
+    assert action.throttle >= 0.32
+    assert action.brake == 0.0
+    assert abs(action.steer) <= 0.25
 
 
 def test_world_model_direct_agent_turns_again_after_straight_recovery_burst() -> None:

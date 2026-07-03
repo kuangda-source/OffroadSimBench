@@ -1785,6 +1785,8 @@ class MainWindow(QMainWindow):
         algorithm = str(config.get("algorithm") or self.algorithm_combo.currentData() or self.algorithm_combo.currentText() or "stablewm_lewm")
         world_model = str(config.get("world_model") or self.world_model_combo.currentData() or self.world_model_combo.currentText() or "le_wm")
         model_path = str(config.get("model_path") or self._path_combo_value(self.home_model_combo)).strip()
+        validation = config.get("validation") if isinstance(config.get("validation"), dict) else {}
+        use_experience_corridor = bool(validation.get("experience_corridor"))
         if not task_path:
             self.log("开始测试需要先选择 BeamNG region task。")
             return
@@ -1808,6 +1810,7 @@ class MainWindow(QMainWindow):
                 planner_samples=self.settings.planner_samples,
                 planner_iterations=self.settings.planner_iterations,
                 include_route_guided_baseline=True,
+                use_experience_corridor=use_experience_corridor,
                 close_beamng=False,
                 step_delay_sec=0.02,
                 post_run_hold_sec=20.0,
@@ -2420,6 +2423,8 @@ class MainWindow(QMainWindow):
         algorithm = str(config.get("algorithm") or self.algorithm_combo.currentData() or self.algorithm_combo.currentText() or "local_lewm_cost")
         world_model = str(config.get("world_model") or self.world_model_combo.currentData() or self.world_model_combo.currentText() or "le_wm")
         model_path = str(config.get("model_path") or self.model_path_edit.text().strip()).strip()
+        validation = config.get("validation") if isinstance(config.get("validation"), dict) else {}
+        use_experience_corridor = bool(validation.get("experience_corridor"))
         if algorithm == "world_model_direct" or world_model == "tiny_learned":
             if not model_path:
                 self.log("direct world-model evaluation requires a model path.")
@@ -2440,6 +2445,7 @@ class MainWindow(QMainWindow):
                 planner_samples=self.settings.planner_samples,
                 planner_iterations=self.settings.planner_iterations,
                 include_route_guided_baseline=True,
+                use_experience_corridor=use_experience_corridor,
                 close_beamng=False,
                 step_delay_sec=0.02,
                 post_run_hold_sec=20.0,

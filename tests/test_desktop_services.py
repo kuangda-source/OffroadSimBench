@@ -407,12 +407,13 @@ def test_world_model_configs_mark_only_route_free_success_as_demo_ready(tmp_path
     rows = {row["id"]: row for row in services.world_model_config_entries(config_path)}
 
     assert rows["route_free_success"]["demo_ready"] is True
-    assert rows["experience_corridor_success"]["demo_ready"] is False
+    assert rows["experience_corridor_success"]["demo_ready"] is True
     assert rows["trained_only"]["demo_ready"] is False
     assert rows[services.DEFAULT_WORLD_MODEL_CONFIG_ID]["demo_ready"] is True
     assert [row["id"] for row in services.demo_ready_world_model_config_entries(config_path)] == [
         services.DEFAULT_WORLD_MODEL_CONFIG_ID,
         "route_free_success",
+        "experience_corridor_success",
     ]
 
 

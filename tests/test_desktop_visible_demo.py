@@ -1061,7 +1061,7 @@ def test_gui_home_world_model_config_combo_only_shows_demo_ready_configs(tmp_pat
     beamng_ids = [window.beamng_model_config_combo.itemData(index)["id"] for index in range(window.beamng_model_config_combo.count())]
 
     assert "direct_ready" in home_ids
-    assert "experience_only" not in home_ids
+    assert "experience_only" in home_ids
     assert "experience_only" in beamng_ids
     window.close()
 
@@ -1457,6 +1457,7 @@ def test_gui_home_start_uses_direct_world_model_evaluation_for_tiny_model(tmp_pa
     assert captured["request"].world_model_path == "outputs/region_self_supervised/model"
     assert captured["request"].eval_steps >= 900
     assert captured["request"].include_route_guided_baseline is True
+    assert captured["request"].use_experience_corridor is False
     assert captured["request"].step_delay_sec == 0.02
     assert captured["request"].close_beamng is False
     window.close()
@@ -1470,6 +1471,17 @@ def test_gui_beamng_start_uses_direct_world_model_evaluation_for_tiny_model(tmp_
         algorithm="world_model_direct",
         world_model="tiny_learned",
         model_path="outputs/beamng_region_world_models/run/model",
+        validation={
+            "goal_success": True,
+            "route_free": True,
+            "route_free_direct": False,
+            "experience_corridor": True,
+            "model_controlled": True,
+            "route_waypoint_count": 0,
+            "collision_count": 0,
+            "final_goal_distance": 5.0,
+            "goal_radius": 12.0,
+        },
     )
     _ensure_app()
     window = MainWindow()
@@ -1493,6 +1505,7 @@ def test_gui_beamng_start_uses_direct_world_model_evaluation_for_tiny_model(tmp_
     assert captured["request"].world_model_path == "outputs/beamng_region_world_models/run/model"
     assert captured["request"].eval_steps >= 900
     assert captured["request"].include_route_guided_baseline is True
+    assert captured["request"].use_experience_corridor is True
     assert captured["request"].step_delay_sec == 0.02
     assert captured["request"].close_beamng is False
     window.close()

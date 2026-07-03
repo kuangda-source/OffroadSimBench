@@ -252,6 +252,12 @@ class RegionWorldModelEvaluationRequest:
     planner_samples: int = 32
     planner_iterations: int = 3
     evaluation_agent: str = "world_model_direct"
+    evaluation_allow_reverse_recovery: bool = False
+    evaluation_reverse_recovery_after_steps: int = 96
+    evaluation_local_subgoal_distance_m: float = 12.0
+    use_experience_corridor: bool = False
+    experience_route_min_spacing_m: float = 4.0
+    experience_route_max_points: int = 120
     include_route_guided_baseline: bool = False
     write_trajectory_plot: bool = True
     beamng_gfx: str = "vk"
@@ -3167,6 +3173,24 @@ def run_region_world_model_evaluation(request: RegionWorldModelEvaluationRequest
     output_dir = Path(request.output_dir or ROOT / "outputs" / "region_world_model_eval" / _safe_name(task.task_id) / stamp)
     output_dir.mkdir(parents=True, exist_ok=True)
     scenario = _route_free_region_scenario(task.to_beamng_scenario(mode="evaluation"))
+    experience_route = (
+        _experience_route_from_model_metadata(
+            task,
+            request.world_model_path,
+            min_spacing_m=max(0.25, float(request.experience_route_min_spacing_m)),
+            max_points=max(2, int(request.experience_route_max_points)),
+        )
+        if bool(request.use_experience_corridor) and request.evaluation_agent == "world_model_direct"
+        else []
+    )
+    if experience_route:
+        scenario = _with_experience_corridor(scenario, experience_route)
+    experience_route_point_count = len(experience_route)
+    direct_agent_options = {
+        "allow_reverse_recovery": bool(request.evaluation_allow_reverse_recovery),
+        "reverse_recovery_after_steps": max(18, int(request.evaluation_reverse_recovery_after_steps)),
+        "local_subgoal_distance_m": max(1.0, float(request.evaluation_local_subgoal_distance_m)),
+    } if request.evaluation_agent == "world_model_direct" else {}
     evaluation = _run_region_beamng_episode_with_reconnect_retry(
         scenario=scenario,
         vehicle=request.vehicle,
@@ -3185,6 +3209,7 @@ def run_region_world_model_evaluation(request: RegionWorldModelEvaluationRequest
         step_delay_sec=request.step_delay_sec,
         post_run_hold_sec=request.post_run_hold_sec,
         close_beamng=request.close_beamng,
+        agent_options=direct_agent_options,
     )
     acceptance = _navigation_acceptance(evaluation, task)
     region_navigation = evaluation.get("region_navigation", {}) if isinstance(evaluation.get("region_navigation"), dict) else {}
@@ -3197,6 +3222,9 @@ def run_region_world_model_evaluation(request: RegionWorldModelEvaluationRequest
                 "evaluation_agent": request.evaluation_agent,
                 "route_free": True,
                 "evaluation_route_mode": "route_free",
+                "agent_options": direct_agent_options,
+                "experience_corridor": bool(experience_route),
+                "experience_route_point_count": experience_route_point_count,
             },
         }
     }
@@ -3264,7 +3292,11 @@ def run_region_world_model_evaluation(request: RegionWorldModelEvaluationRequest
             "evaluation_agent": request.evaluation_agent,
             "route_free": True,
             "evaluation_route_mode": "route_free",
+            "agent_options": direct_agent_options,
+            "experience_corridor": bool(experience_route),
+            "experience_route_point_count": experience_route_point_count,
         },
+        "experience_route": experience_route,
     }
     summary_path = output_dir / "region_world_model_evaluation_summary.json"
     summary_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
@@ -3845,6 +3877,36 @@ def _experience_route_from_episode_traces(
             break
     append_point((float(task.goal_pos[0]), float(task.goal_pos[1])), force=True)
     return merged
+
+
+def _experience_route_from_model_metadata(
+    task: NavigationRegionTask,
+    model_path: str | Path,
+    *,
+    min_spacing_m: float,
+    max_points: int,
+) -> list[list[float]]:
+    path = Path(model_path)
+    model_json = path / "model.json" if path.is_dir() else path
+    try:
+        model_data = _read_json(model_json)
+    except (OSError, json.JSONDecodeError):
+        return []
+    config = model_data.get("config") if isinstance(model_data.get("config"), dict) else {}
+    metadata = config.get("metadata") if isinstance(config.get("metadata"), dict) else {}
+    raw_paths = metadata.get("episode_paths")
+    if not isinstance(raw_paths, list):
+        raw_path = metadata.get("episode_path")
+        raw_paths = [raw_path] if raw_path else []
+    episode_paths = [str(path) for path in raw_paths if str(path or "").strip()]
+    if not episode_paths:
+        return []
+    return _experience_route_from_episode_traces(
+        task,
+        episode_paths,
+        min_spacing_m=min_spacing_m,
+        max_points=max_points,
+    )
 
 
 def _task_goal_progress(task: NavigationRegionTask, point: tuple[float, float]) -> float:
@@ -4747,12 +4809,12 @@ def _world_model_config_demo_ready(row: dict[str, Any]) -> bool:
         route_mode = str(validation.get("evaluation_route_mode") or "").strip().lower()
         route_free = bool(validation.get("route_free")) or route_mode in {"route_free", "none", "direct"}
         route_free_direct = bool(validation.get("route_free_direct")) or route_mode == "route_free_direct"
-        if bool(validation.get("experience_corridor")):
-            return False
-        if not route_free_direct:
-            return False
         route_waypoint_count = _coerce_int(validation.get("route_waypoint_count"), default=-1)
         if not route_free and route_waypoint_count != 0:
+            return False
+        if bool(validation.get("experience_corridor")):
+            return route_free and route_waypoint_count == 0
+        if not route_free_direct:
             return False
     return True
 
