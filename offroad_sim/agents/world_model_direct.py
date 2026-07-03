@@ -17,6 +17,7 @@ from offroad_sim.world_models import make_world_model
 
 SUPPORT_ROUTE_BRIDGE_MAX_M = 32.0
 SUPPORT_ROUTE_MIN_GOAL_PROGRESS_M = 1.0
+STALL_MOVEMENT_EPS_M = 0.12
 
 
 class WorldModelDirectAgent(OffroadAgent):
@@ -132,7 +133,7 @@ class WorldModelDirectAgent(OffroadAgent):
         goal_distance = math.hypot(float(state.x) - progress_goal[0], float(state.y) - progress_goal[1])
         speed = max(0.0, float(state.speed))
         improving = self._last_goal_distance is None or goal_distance < self._last_goal_distance - 0.05
-        moved = self._last_position is None or math.hypot(position[0] - self._last_position[0], position[1] - self._last_position[1]) >= 0.03
+        moved = self._last_position is None or math.hypot(position[0] - self._last_position[0], position[1] - self._last_position[1]) >= STALL_MOVEMENT_EPS_M
         self._last_position = position
         physically_stalled = speed < 0.08 and not moved
         if speed < 0.4 and action.throttle > 0.35 and (not improving or physically_stalled):

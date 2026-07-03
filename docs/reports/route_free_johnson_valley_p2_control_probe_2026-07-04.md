@@ -44,6 +44,43 @@ Representative 420-step probe with last-resort reverse enabled:
 
 Conclusion: reverse recovery alone does not solve route-free navigation and can add unhelpful maneuvering.
 
+## Stall-Memory Retest
+
+Follow-up trace analysis found that BeamNG low-speed body jitter could clear
+`_stuck_steps` before `_local_subgoal()` had a chance to keep using a recovery
+target. The controller now treats movement below `0.12 m` per control step as
+stall jitter, so direct control keeps its recovery state instead of repeatedly
+returning to the same straight-line local subgoal.
+
+Strict direct without reverse still does not escape the first local trap:
+
+- Output: `outputs/region_world_model_eval/p2_stall_memory_strict_direct_420_20260704/region_world_model_evaluation_summary.json`.
+- Minimum goal distance: `110.958 m`.
+- Final goal distance: `110.958 m`.
+- Distance traveled: `12.317 m`.
+- Stuck recovery count: `376`.
+- Reverse count: `0`.
+
+With reverse enabled as a last resort, strict direct now escapes the first trap
+but stalls on a second local platform:
+
+- 420-step output:
+  `outputs/region_world_model_eval/p2_stall_memory_reverse_direct_420_20260704/region_world_model_evaluation_summary.json`.
+- 420-step minimum/final goal distance: `98.373 m` / `98.373 m`.
+- 1200-step output:
+  `outputs/region_world_model_eval/p2_stall_memory_reverse_direct_1200_20260704/region_world_model_evaluation_summary.json`.
+- 1200-step minimum/final goal distance: `98.203 m` / `98.272 m`.
+- 1200-step collision count: `0`.
+- 1200-step distance traveled: `34.139 m`.
+- 1200-step stuck recovery count: `1095`.
+- 1200-step reverse count: `302`.
+
+Conclusion: persistent stall memory plus last-resort reverse improves the strict
+direct baseline from the old `~108-110 m` plateau to `~98 m`, but it is still far
+from the `<50 m` first-stage target. The remaining blocker is not a transient
+stuck counter reset; direct control still lacks a traversability-aware way to
+choose a better local direction after escaping the first obstacle cluster.
+
 ## Experience-Corridor Evaluation
 
 Standalone model evaluation can now explicitly rebuild an experience corridor from the model training episode metadata. This corridor comes from collected BeamNG episode traces, not from the expert route injected into the evaluation scenario.

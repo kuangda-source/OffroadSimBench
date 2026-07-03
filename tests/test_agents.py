@@ -354,6 +354,56 @@ def test_world_model_direct_agent_can_escape_laterally_when_direct_goal_side_is_
     assert subgoal[1] > observation.vehicle_state.y
 
 
+def test_world_model_direct_agent_keeps_stall_memory_through_low_speed_jitter() -> None:
+    agent = make_agent("world_model_direct", planner_config={"horizon": 1, "num_samples": 4, "seed": 4}, local_subgoal_distance_m=22.0)
+
+    class SlowPlanner:
+        def plan(self, observation, world_model, *, reference_action=None, score_actions=None):
+            return PlanningResult(
+                actions=[Action(steer=0.08, throttle=0.78, brake=0.0)],
+                predicted_states=[],
+                costs=[0.0],
+                best_cost=0.0,
+                metadata={"planner": "slow_test"},
+            )
+
+    agent.planner = SlowPlanner()
+    info = {
+        "navigation_region": {
+            "region": {
+                "polygon": [[1173.822, -138.863], [1217.423, -222.645], [1376.998, -124.37], [1311.841, -37.816]]
+            },
+            "goal": {"pos": [1245.995, -189.268], "radius": 12.0},
+        }
+    }
+
+    action = Action()
+    for step in range(44):
+        jitter = 0.04 if step % 2 else 0.0
+        observation = Observation(
+            timestamp=float(step),
+            vehicle_state=VehicleState(x=1318.88 + jitter, y=-107.10 - jitter * 0.5, yaw=-2.24, speed=0.02),
+            goal=(1245.995, -189.268),
+            info=info,
+        )
+        action = agent.act(observation)
+
+    diagnostics = agent.diagnostics()
+    local_subgoal = diagnostics["local_subgoal"]
+    dx = observation.goal[0] - observation.vehicle_state.x
+    dy = observation.goal[1] - observation.vehicle_state.y
+    distance = math.hypot(dx, dy)
+    direct_subgoal = (
+        observation.vehicle_state.x + dx / distance * agent.local_subgoal_distance_m,
+        observation.vehicle_state.y + dy / distance * agent.local_subgoal_distance_m,
+    )
+    assert diagnostics["stuck_recovery"] is True
+    assert action.gear is None
+    assert math.hypot(local_subgoal[0] - direct_subgoal[0], local_subgoal[1] - direct_subgoal[1]) > 8.0
+    assert 1173.0 <= local_subgoal[0] <= 1377.5
+    assert -223.0 <= local_subgoal[1] <= -37.0
+
+
 def test_world_model_direct_agent_uses_turn_arc_subgoal_for_large_heading_error() -> None:
     agent = make_agent("world_model_direct", planner_config={"horizon": 1, "num_samples": 4, "seed": 4}, local_subgoal_distance_m=12.0)
     observation = Observation(

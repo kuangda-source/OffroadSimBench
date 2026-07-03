@@ -506,7 +506,12 @@ not the strict direct route-free baseline. In the stricter direct route-free
 baseline, which receives only region/start/goal and no expert route or
 experience corridor, the same model did not make meaningful progress
 (`min_goal_distance=109.825 m`, `final_goal_distance=109.835 m`,
-`stuck_recovery_count=1016`). The route-guided baseline on the same run did
+`stuck_recovery_count=1016`). A later stall-memory fix keeps recovery active
+through low-speed BeamNG body jitter and, with reverse enabled as a last resort,
+improved the strict direct 1200-step baseline to
+`min_goal_distance=98.203 m`, `final_goal_distance=98.272 m`, zero collisions,
+and `reverse_count=302`; this is measurable progress but still well short of
+the `<50 m` first-stage target. The route-guided baseline on the same task did
 succeed (`final_goal_distance=11.752 m`, zero collisions), proving that the
 map, vehicle, and expert route are drivable while direct route-free model
 control still needs improvement. Experience-corridor success is now selectable
