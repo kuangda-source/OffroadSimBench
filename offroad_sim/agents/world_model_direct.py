@@ -27,6 +27,7 @@ class WorldModelDirectAgent(OffroadAgent):
         allow_reverse_recovery: bool = False,
         reverse_recovery_after_steps: int = 96,
         local_subgoal_distance_m: float = 22.0,
+        use_model_support_subgoals: bool = False,
         **_: Any,
     ) -> None:
         self.world_model_name = str(world_model_name or "simple_kinematic")
@@ -41,6 +42,7 @@ class WorldModelDirectAgent(OffroadAgent):
         self.allow_reverse_recovery = bool(allow_reverse_recovery)
         self.reverse_recovery_after_steps = max(18, int(reverse_recovery_after_steps))
         self.local_subgoal_distance_m = max(1.0, float(local_subgoal_distance_m))
+        self.use_model_support_subgoals = bool(use_model_support_subgoals)
         self._last_diagnostics: dict[str, Any] = {}
         self._stuck_steps = 0
         self._last_goal_distance: float | None = None
@@ -48,6 +50,7 @@ class WorldModelDirectAgent(OffroadAgent):
         self._last_position: tuple[float, float] | None = None
         self._goal_hold_latched = False
         self._experience_corridor_used = False
+        self._model_support_subgoal_used = False
 
     def reset(self, scenario_info: Any) -> None:
         self.world_model.reset(scenario_info if isinstance(scenario_info, dict) else {"scenario": scenario_info})
@@ -59,6 +62,7 @@ class WorldModelDirectAgent(OffroadAgent):
         self._last_position = None
         self._goal_hold_latched = False
         self._experience_corridor_used = False
+        self._model_support_subgoal_used = False
 
     def act(self, obs: Observation) -> Action:
         terminal_stop = self._terminal_stop_action(obs)
@@ -73,6 +77,7 @@ class WorldModelDirectAgent(OffroadAgent):
                 "planner_goal": [float(obs.goal[0]), float(obs.goal[1])],
                 "route_used": False,
                 "experience_corridor_used": False,
+                "model_support_subgoal_used": False,
                 "goal_stop": True,
                 "goal_hold_latched": self._goal_hold_latched,
                 "executed_action": _action_dict(terminal_stop),
@@ -96,6 +101,7 @@ class WorldModelDirectAgent(OffroadAgent):
             "planner_goal": [float(planning_obs.goal[0]), float(planning_obs.goal[1])],
             "route_used": False,
             "experience_corridor_used": self._experience_corridor_used,
+            "model_support_subgoal_used": self._model_support_subgoal_used,
             "reference_action": _action_dict(reference_action),
             "executed_action": _action_dict(action),
             "stuck_recovery": stuck_recovery,
@@ -232,6 +238,7 @@ class WorldModelDirectAgent(OffroadAgent):
 
     def _local_subgoal(self, obs: Observation) -> tuple[float, float]:
         self._experience_corridor_used = False
+        self._model_support_subgoal_used = False
         state = obs.vehicle_state
         start = (float(state.x), float(state.y))
         goal = (float(obs.goal[0]), float(obs.goal[1]))
@@ -244,6 +251,17 @@ class WorldModelDirectAgent(OffroadAgent):
         if experience_subgoal is not None:
             self._experience_corridor_used = True
             return experience_subgoal
+        if self.use_model_support_subgoals:
+            support_subgoal = _support_route_subgoal(
+                _model_support_route(self.world_model),
+                info=obs.info,
+                start=start,
+                lookahead_m=self.local_subgoal_distance_m,
+                goal=goal,
+            )
+            if support_subgoal is not None:
+                self._model_support_subgoal_used = True
+                return support_subgoal
         dx = goal[0] - start[0]
         dy = goal[1] - start[1]
         distance = math.hypot(dx, dy)
@@ -364,6 +382,17 @@ def _experience_route_subgoal(
     goal: tuple[float, float],
 ) -> tuple[float, float] | None:
     route = _experience_route(info)
+    return _support_route_subgoal(route, info=info, start=start, lookahead_m=lookahead_m, goal=goal)
+
+
+def _support_route_subgoal(
+    route: list[tuple[float, float]],
+    *,
+    info: dict[str, Any],
+    start: tuple[float, float],
+    lookahead_m: float,
+    goal: tuple[float, float],
+) -> tuple[float, float] | None:
     if len(route) < 2:
         return None
     polygon = _navigation_polygon(info)
@@ -389,6 +418,21 @@ def _experience_route_subgoal(
     if math.hypot(final[0] - goal[0], final[1] - goal[1]) <= max(lookahead_m, 1.0):
         return goal
     return final if not polygon or _point_in_polygon(final, polygon) else None
+
+
+def _model_support_route(world_model: Any) -> list[tuple[float, float]]:
+    metadata = getattr(world_model, "metadata", {})
+    raw = metadata.get("support_points", []) if isinstance(metadata, dict) else []
+    route: list[tuple[float, float]] = []
+    for point in raw or []:
+        try:
+            x = float(point[0])
+            y = float(point[1])
+        except (TypeError, ValueError, IndexError):
+            continue
+        if math.isfinite(x) and math.isfinite(y):
+            route.append((x, y))
+    return route
 
 
 def _experience_route(info: dict[str, Any]) -> list[tuple[float, float]]:

@@ -183,6 +183,10 @@ class RegionSelfSupervisedWorldModelRequest:
     planner_horizon: int = 6
     planner_samples: int = 32
     planner_iterations: int = 3
+    planner_goal_weight: float | None = None
+    planner_progress_weight: float | None = None
+    planner_risk_weight: float | None = None
+    planner_heading_weight: float | None = None
     evaluation_agent: str = "world_model_direct"
     evaluation_route_mode: str = "route_free"
     use_experience_corridor: bool = True
@@ -191,6 +195,7 @@ class RegionSelfSupervisedWorldModelRequest:
     evaluation_allow_reverse_recovery: bool = False
     evaluation_reverse_recovery_after_steps: int = 96
     evaluation_local_subgoal_distance_m: float = 12.0
+    evaluation_use_model_support_subgoals: bool = False
     beamng_gfx: str = "vk"
     close_beamng: bool = True
     step_delay_sec: float = 0.0
@@ -251,10 +256,15 @@ class RegionWorldModelEvaluationRequest:
     planner_horizon: int = 6
     planner_samples: int = 32
     planner_iterations: int = 3
+    planner_goal_weight: float | None = None
+    planner_progress_weight: float | None = None
+    planner_risk_weight: float | None = None
+    planner_heading_weight: float | None = None
     evaluation_agent: str = "world_model_direct"
     evaluation_allow_reverse_recovery: bool = False
     evaluation_reverse_recovery_after_steps: int = 96
     evaluation_local_subgoal_distance_m: float = 12.0
+    evaluation_use_model_support_subgoals: bool = False
     use_experience_corridor: bool = False
     experience_route_min_spacing_m: float = 4.0
     experience_route_max_points: int = 120
@@ -2368,6 +2378,7 @@ def run_demo_acceptance(request: DemoAcceptanceRequest) -> dict[str, Any]:
     algorithm = str(world_model_config.get("algorithm") or "stablewm_lewm")
     world_model = str(world_model_config.get("world_model") or "le_wm")
     model_path = str(world_model_config.get("model_path") or "")
+    validation = world_model_config.get("validation") if isinstance(world_model_config.get("validation"), dict) else {}
     task_path = str(demo.get("task_path") or DEFAULT_NAVIGATION_TASK_PATH)
     planner = str(demo.get("planner") or "navigation_mpc")
     run_rows: list[dict[str, Any]] = []
@@ -2386,6 +2397,22 @@ def run_demo_acceptance(request: DemoAcceptanceRequest) -> dict[str, Any]:
                     planner_horizon=request.planner_horizon,
                     planner_samples=request.planner_samples,
                     planner_iterations=request.planner_iterations,
+                    planner_goal_weight=_validation_float_or_none(validation, "planner_goal_weight"),
+                    planner_progress_weight=_validation_float_or_none(validation, "planner_progress_weight"),
+                    planner_risk_weight=_validation_float_or_none(validation, "planner_risk_weight"),
+                    planner_heading_weight=_validation_float_or_none(validation, "planner_heading_weight"),
+                    evaluation_allow_reverse_recovery=bool(validation.get("evaluation_allow_reverse_recovery")),
+                    evaluation_reverse_recovery_after_steps=_coerce_int(
+                        validation.get("evaluation_reverse_recovery_after_steps"),
+                        default=96,
+                    ),
+                    evaluation_local_subgoal_distance_m=_validation_float_or_default(
+                        validation,
+                        "evaluation_local_subgoal_distance_m",
+                        12.0,
+                    ),
+                    use_experience_corridor=bool(validation.get("experience_corridor")),
+                    evaluation_use_model_support_subgoals=bool(validation.get("model_support_subgoals")),
                     beamng_gfx=request.beamng_gfx or str(demo.get("beamng_gfx") or "vk"),
                     close_beamng=request.close_beamng,
                     step_delay_sec=request.step_delay_sec,
@@ -2913,6 +2940,7 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
                 "evaluation_allow_reverse_recovery": bool(request.evaluation_allow_reverse_recovery),
                 "evaluation_reverse_recovery_after_steps": max(18, int(request.evaluation_reverse_recovery_after_steps)),
                 "evaluation_local_subgoal_distance_m": max(1.0, float(request.evaluation_local_subgoal_distance_m)),
+                "evaluation_use_model_support_subgoals": bool(request.evaluation_use_model_support_subgoals),
             },
             summary={
                 "task_path": str(Path(request.task_path).resolve()),
@@ -3005,10 +3033,12 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
         "step_delay_sec": request.step_delay_sec,
         "post_run_hold_sec": request.post_run_hold_sec,
         "close_beamng": request.close_beamng,
+        "planner_config_overrides": _region_evaluation_planner_overrides(request),
         "agent_options": {
             "allow_reverse_recovery": bool(request.evaluation_allow_reverse_recovery),
             "reverse_recovery_after_steps": max(18, int(request.evaluation_reverse_recovery_after_steps)),
             "local_subgoal_distance_m": max(1.0, float(request.evaluation_local_subgoal_distance_m)),
+            "use_model_support_subgoals": bool(request.evaluation_use_model_support_subgoals),
         }
         if request.evaluation_agent == "world_model_direct"
         else {},
@@ -3112,6 +3142,7 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
             "evaluation_allow_reverse_recovery": bool(request.evaluation_allow_reverse_recovery),
             "evaluation_reverse_recovery_after_steps": max(18, int(request.evaluation_reverse_recovery_after_steps)),
             "evaluation_local_subgoal_distance_m": max(1.0, float(request.evaluation_local_subgoal_distance_m)),
+            "evaluation_use_model_support_subgoals": bool(request.evaluation_use_model_support_subgoals),
         },
         summary={
             "task_path": str(Path(request.task_path).resolve()),
@@ -3186,10 +3217,12 @@ def run_region_world_model_evaluation(request: RegionWorldModelEvaluationRequest
     if experience_route:
         scenario = _with_experience_corridor(scenario, experience_route)
     experience_route_point_count = len(experience_route)
+    planner_config_overrides = _region_evaluation_planner_overrides(request)
     direct_agent_options = {
         "allow_reverse_recovery": bool(request.evaluation_allow_reverse_recovery),
         "reverse_recovery_after_steps": max(18, int(request.evaluation_reverse_recovery_after_steps)),
         "local_subgoal_distance_m": max(1.0, float(request.evaluation_local_subgoal_distance_m)),
+        "use_model_support_subgoals": bool(request.evaluation_use_model_support_subgoals),
     } if request.evaluation_agent == "world_model_direct" else {}
     evaluation = _run_region_beamng_episode_with_reconnect_retry(
         scenario=scenario,
@@ -3210,6 +3243,7 @@ def run_region_world_model_evaluation(request: RegionWorldModelEvaluationRequest
         post_run_hold_sec=request.post_run_hold_sec,
         close_beamng=request.close_beamng,
         agent_options=direct_agent_options,
+        planner_config_overrides=planner_config_overrides,
     )
     acceptance = _navigation_acceptance(evaluation, task)
     region_navigation = evaluation.get("region_navigation", {}) if isinstance(evaluation.get("region_navigation"), dict) else {}
@@ -3249,6 +3283,7 @@ def run_region_world_model_evaluation(request: RegionWorldModelEvaluationRequest
             step_delay_sec=request.step_delay_sec,
             post_run_hold_sec=request.post_run_hold_sec,
             close_beamng=request.close_beamng,
+            planner_config_overrides=planner_config_overrides,
         )
         route_guided_acceptance = _navigation_acceptance(route_guided_evaluation, task)
         route_guided_region_navigation = (
@@ -3302,6 +3337,23 @@ def run_region_world_model_evaluation(request: RegionWorldModelEvaluationRequest
     summary_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
     payload["summary_path"] = str(summary_path.resolve())
     return payload
+
+
+def _region_evaluation_planner_overrides(request: Any) -> dict[str, float]:
+    candidates = {
+        "goal_weight": request.planner_goal_weight,
+        "progress_weight": request.planner_progress_weight,
+        "risk_weight": request.planner_risk_weight,
+        "heading_weight": request.planner_heading_weight,
+    }
+    overrides: dict[str, float] = {}
+    for key, value in candidates.items():
+        if value is None:
+            continue
+        number = float(value)
+        if math.isfinite(number):
+            overrides[key] = number
+    return overrides
 
 
 def save_manual_navigation_task(request: ManualNavigationTaskRequest) -> dict[str, Any]:
@@ -4043,12 +4095,14 @@ def _run_region_beamng_episode(
     agent_options: dict[str, Any] | None = None,
     algorithm_name: str = "",
     algorithm_model_path: str = "",
+    planner_config_overrides: dict[str, float] | None = None,
 ) -> dict[str, Any]:
     planner_config = {
         "horizon": max(1, int(planner_horizon)),
         "num_samples": max(4, int(planner_samples)),
         "iterations": max(1, int(planner_iterations)),
     }
+    planner_config.update(dict(planner_config_overrides or {}))
     if agent_name == "model_mpc":
         agent_options_payload = {
             "world_model_name": world_model_type,
@@ -4812,7 +4866,7 @@ def _world_model_config_demo_ready(row: dict[str, Any]) -> bool:
         route_waypoint_count = _coerce_int(validation.get("route_waypoint_count"), default=-1)
         if not route_free and route_waypoint_count != 0:
             return False
-        if bool(validation.get("experience_corridor")):
+        if bool(validation.get("experience_corridor")) or bool(validation.get("model_support_subgoals")):
             return route_free and route_waypoint_count == 0
         if not route_free_direct:
             return False
@@ -4835,6 +4889,16 @@ def _coerce_float(value: Any) -> float:
         return float(value)
     except (TypeError, ValueError):
         return math.nan
+
+
+def _validation_float_or_none(validation: dict[str, Any], key: str) -> float | None:
+    value = _coerce_float(validation.get(key))
+    return value if math.isfinite(value) else None
+
+
+def _validation_float_or_default(validation: dict[str, Any], key: str, default: float) -> float:
+    value = _coerce_float(validation.get(key))
+    return value if math.isfinite(value) else float(default)
 
 
 def _infer_world_model_type(path: Path) -> str:

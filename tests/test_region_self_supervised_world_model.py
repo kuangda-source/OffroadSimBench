@@ -146,6 +146,10 @@ def test_region_self_supervised_world_model_trains_and_evaluates_without_route(t
                 collect_steps=20,
                 eval_steps=20,
                 close_beamng=True,
+                planner_goal_weight=0.7,
+                planner_progress_weight=1.4,
+                planner_risk_weight=5.0,
+                planner_heading_weight=0.3,
             )
         )
 
@@ -158,7 +162,15 @@ def test_region_self_supervised_world_model_trains_and_evaluates_without_route(t
     assert seen_agent_options[0]["coverage_target_interval"] == 0
     assert seen_agent_options[0]["max_target_steps"] == 80
     assert seen_agent_options[1]["world_model_name"] == "tiny_learned"
-    assert seen_agent_options[1]["planner_config"] == {"horizon": 6, "num_samples": 32, "iterations": 3}
+    assert seen_agent_options[1]["planner_config"] == {
+        "horizon": 6,
+        "num_samples": 32,
+        "iterations": 3,
+        "goal_weight": 0.7,
+        "progress_weight": 1.4,
+        "risk_weight": 5.0,
+        "heading_weight": 0.3,
+    }
     assert seen_agent_options[1]["allow_reverse_recovery"] is False
     assert seen_agent_options[1]["reverse_recovery_after_steps"] == 96
     assert seen_agent_options[1]["local_subgoal_distance_m"] == 12.0
@@ -853,6 +865,11 @@ def test_region_world_model_evaluation_compares_route_free_and_route_guided_base
                 evaluation_allow_reverse_recovery=True,
                 evaluation_reverse_recovery_after_steps=144,
                 evaluation_local_subgoal_distance_m=16.0,
+                evaluation_use_model_support_subgoals=True,
+                planner_goal_weight=0.8,
+                planner_progress_weight=1.2,
+                planner_risk_weight=8.0,
+                planner_heading_weight=0.6,
             )
         )
 
@@ -862,6 +879,11 @@ def test_region_world_model_evaluation_compares_route_free_and_route_guided_base
     assert seen_agent_options[0]["allow_reverse_recovery"] is True
     assert seen_agent_options[0]["reverse_recovery_after_steps"] == 144
     assert seen_agent_options[0]["local_subgoal_distance_m"] == 16.0
+    assert seen_agent_options[0]["use_model_support_subgoals"] is True
+    assert seen_agent_options[0]["planner_config"]["goal_weight"] == 0.8
+    assert seen_agent_options[0]["planner_config"]["progress_weight"] == 1.2
+    assert seen_agent_options[0]["planner_config"]["risk_weight"] == 8.0
+    assert seen_agent_options[0]["planner_config"]["heading_weight"] == 0.6
     assert payload["baselines"]["route_free"]["acceptance"]["goal_success"] is False
     assert payload["baselines"]["route_guided"]["acceptance"]["goal_success"] is True
     assert payload["comparison"]["route_free_goal_success"] is False

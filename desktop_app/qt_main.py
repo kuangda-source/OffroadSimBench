@@ -1787,6 +1787,7 @@ class MainWindow(QMainWindow):
         model_path = str(config.get("model_path") or self._path_combo_value(self.home_model_combo)).strip()
         validation = config.get("validation") if isinstance(config.get("validation"), dict) else {}
         use_experience_corridor = bool(validation.get("experience_corridor"))
+        use_model_support_subgoals = bool(validation.get("model_support_subgoals"))
         if not task_path:
             self.log("开始测试需要先选择 BeamNG region task。")
             return
@@ -1809,8 +1810,16 @@ class MainWindow(QMainWindow):
                 planner_horizon=self.settings.planner_horizon,
                 planner_samples=self.settings.planner_samples,
                 planner_iterations=self.settings.planner_iterations,
+                planner_goal_weight=_validation_float(validation, "planner_goal_weight"),
+                planner_progress_weight=_validation_float(validation, "planner_progress_weight"),
+                planner_risk_weight=_validation_float(validation, "planner_risk_weight"),
+                planner_heading_weight=_validation_float(validation, "planner_heading_weight"),
                 include_route_guided_baseline=True,
+                evaluation_allow_reverse_recovery=bool(validation.get("evaluation_allow_reverse_recovery")),
+                evaluation_reverse_recovery_after_steps=_validation_int(validation, "evaluation_reverse_recovery_after_steps", 96),
+                evaluation_local_subgoal_distance_m=_validation_float(validation, "evaluation_local_subgoal_distance_m", 12.0) or 12.0,
                 use_experience_corridor=use_experience_corridor,
+                evaluation_use_model_support_subgoals=use_model_support_subgoals,
                 close_beamng=False,
                 step_delay_sec=0.02,
                 post_run_hold_sec=20.0,
@@ -2425,6 +2434,7 @@ class MainWindow(QMainWindow):
         model_path = str(config.get("model_path") or self.model_path_edit.text().strip()).strip()
         validation = config.get("validation") if isinstance(config.get("validation"), dict) else {}
         use_experience_corridor = bool(validation.get("experience_corridor"))
+        use_model_support_subgoals = bool(validation.get("model_support_subgoals"))
         if algorithm == "world_model_direct" or world_model == "tiny_learned":
             if not model_path:
                 self.log("direct world-model evaluation requires a model path.")
@@ -2444,8 +2454,16 @@ class MainWindow(QMainWindow):
                 planner_horizon=self.settings.planner_horizon,
                 planner_samples=self.settings.planner_samples,
                 planner_iterations=self.settings.planner_iterations,
+                planner_goal_weight=_validation_float(validation, "planner_goal_weight"),
+                planner_progress_weight=_validation_float(validation, "planner_progress_weight"),
+                planner_risk_weight=_validation_float(validation, "planner_risk_weight"),
+                planner_heading_weight=_validation_float(validation, "planner_heading_weight"),
                 include_route_guided_baseline=True,
+                evaluation_allow_reverse_recovery=bool(validation.get("evaluation_allow_reverse_recovery")),
+                evaluation_reverse_recovery_after_steps=_validation_int(validation, "evaluation_reverse_recovery_after_steps", 96),
+                evaluation_local_subgoal_distance_m=_validation_float(validation, "evaluation_local_subgoal_distance_m", 12.0) or 12.0,
                 use_experience_corridor=use_experience_corridor,
+                evaluation_use_model_support_subgoals=use_model_support_subgoals,
                 close_beamng=False,
                 step_delay_sec=0.02,
                 post_run_hold_sec=20.0,
@@ -3586,6 +3604,21 @@ def _first_goal(trace: list[dict[str, Any]]) -> tuple[float, float] | None:
         if isinstance(goal, list) and len(goal) >= 2 and _is_finite(goal[0]) and _is_finite(goal[1]):
             return float(goal[0]), float(goal[1])
     return None
+
+
+def _validation_float(validation: dict[str, Any], key: str, default: float | None = None) -> float | None:
+    try:
+        value = float(validation.get(key))
+    except (TypeError, ValueError):
+        return default
+    return value if math.isfinite(value) else default
+
+
+def _validation_int(validation: dict[str, Any], key: str, default: int) -> int:
+    try:
+        return int(validation.get(key))
+    except (TypeError, ValueError):
+        return int(default)
 
 
 def _compact_json(payload: Any) -> str:

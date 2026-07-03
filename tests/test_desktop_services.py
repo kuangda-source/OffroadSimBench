@@ -395,6 +395,25 @@ def test_world_model_configs_mark_only_route_free_success_as_demo_ready(tmp_path
         path=config_path,
     )
     services.save_world_model_config(
+        config_id="model_support_success",
+        label="Model Support Success",
+        algorithm="world_model_direct",
+        world_model="tiny_learned",
+        model_path=str(model_dir),
+        validation={
+            "goal_success": True,
+            "route_free": True,
+            "route_free_direct": False,
+            "model_support_subgoals": True,
+            "model_controlled": True,
+            "route_waypoint_count": 0,
+            "collision_count": 0,
+            "final_goal_distance": 11.8,
+            "goal_radius": 12.0,
+        },
+        path=config_path,
+    )
+    services.save_world_model_config(
         config_id="trained_only",
         label="Trained Only",
         algorithm="world_model_direct",
@@ -408,12 +427,14 @@ def test_world_model_configs_mark_only_route_free_success_as_demo_ready(tmp_path
 
     assert rows["route_free_success"]["demo_ready"] is True
     assert rows["experience_corridor_success"]["demo_ready"] is True
+    assert rows["model_support_success"]["demo_ready"] is True
     assert rows["trained_only"]["demo_ready"] is False
     assert rows[services.DEFAULT_WORLD_MODEL_CONFIG_ID]["demo_ready"] is True
     assert [row["id"] for row in services.demo_ready_world_model_config_entries(config_path)] == [
         services.DEFAULT_WORLD_MODEL_CONFIG_ID,
         "route_free_success",
         "experience_corridor_success",
+        "model_support_success",
     ]
 
 
@@ -814,6 +835,80 @@ def test_demo_acceptance_runs_multiple_trials_and_summarizes_metrics(tmp_path, m
     assert report["runs"][0]["trajectory_length_m"] > 0.0
     assert report["runs"][0]["average_speed"] > 0.0
     assert captured[0].task_path.endswith("beamng_johnson_valley_nav_001.yaml")
+
+
+def test_demo_acceptance_passes_direct_world_model_validation_options(tmp_path, monkeypatch) -> None:
+    config_path = tmp_path / "world_model_configs.json"
+    model_dir = tmp_path / "trained_tiny"
+    model_dir.mkdir()
+    (model_dir / "model.json").write_text('{"model_type": "tiny_learned", "weights": "weights.npz"}', encoding="utf-8")
+    services.save_world_model_config(
+        config_id="model_support_success",
+        label="Model Support Success",
+        algorithm="world_model_direct",
+        world_model="tiny_learned",
+        model_path=str(model_dir),
+        validation={
+            "demo_ready": True,
+            "goal_success": True,
+            "model_controlled": True,
+            "route_free": True,
+            "route_free_direct": False,
+            "model_support_subgoals": True,
+            "route_waypoint_count": 0,
+            "planner_goal_weight": 0.25,
+            "planner_progress_weight": 0.4,
+            "planner_risk_weight": 12.0,
+            "planner_heading_weight": 0.25,
+            "evaluation_local_subgoal_distance_m": 16.0,
+            "evaluation_allow_reverse_recovery": True,
+            "evaluation_reverse_recovery_after_steps": 144,
+        },
+        path=config_path,
+    )
+    monkeypatch.setattr(services, "WORLD_MODEL_CONFIGS_PATH", config_path)
+    monkeypatch.setattr(
+        services,
+        "resolve_demo_config",
+        lambda config_id: {
+            "id": config_id,
+            "task_path": "configs/tasks/beamng_johnson_valley_nav_test.yaml",
+            "world_model_config_id": "model_support_success",
+            "planner": "navigation_mpc",
+        },
+    )
+    captured: list[services.RegionWorldModelEvaluationRequest] = []
+
+    def fake_run_region_eval(request: services.RegionWorldModelEvaluationRequest) -> dict[str, object]:
+        captured.append(request)
+        return {
+            "status": "completed",
+            "evaluation": {"episode_path": "", "metrics": {"collision_count": 0, "drive_mode": "manual"}},
+            "acceptance": {
+                "goal_success": True,
+                "goal_reached": True,
+                "final_goal_distance": 11.0,
+                "min_goal_distance": 11.0,
+                "collision_count": 0,
+                "stuck_recovery_count": 0,
+                "reverse_count": 0,
+                "distance_traveled": 170.0,
+            },
+        }
+
+    monkeypatch.setattr(services, "run_region_world_model_evaluation", fake_run_region_eval)
+
+    report = services.run_demo_acceptance(services.DemoAcceptanceRequest(runs=1, max_steps=1200))
+
+    assert report["status"] == "accepted"
+    assert captured[0].evaluation_use_model_support_subgoals is True
+    assert captured[0].planner_goal_weight == 0.25
+    assert captured[0].planner_progress_weight == 0.4
+    assert captured[0].planner_risk_weight == 12.0
+    assert captured[0].planner_heading_weight == 0.25
+    assert captured[0].evaluation_local_subgoal_distance_m == 16.0
+    assert captured[0].evaluation_allow_reverse_recovery is True
+    assert captured[0].evaluation_reverse_recovery_after_steps == 144
 
 
 def _write_trace_episode(path: Path, points: list[tuple[float, float, float, bool]]) -> Path:

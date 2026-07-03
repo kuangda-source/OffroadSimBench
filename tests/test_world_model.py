@@ -172,6 +172,42 @@ def test_tiny_learned_world_model_segments_multistart_sequences_by_global_task_p
     assert model.metadata["segment_sample_count"]["goal"] == 1
 
 
+def test_tiny_learned_world_model_scores_distance_from_training_support() -> None:
+    sequence = DatasetSequence(
+        dataset_id="beamng_episode",
+        dataset_type="beamng_episode",
+        sequence_id="support_path",
+        root=".",
+        frames=[
+            DatasetFrame(
+                f"{index:06d}",
+                float(index),
+                VehicleState(x=float(index * 5), y=0.0, yaw=0.0, speed=1.0),
+                action=Action(throttle=0.4),
+            )
+            for index in range(6)
+        ],
+        goal=(25.0, 0.0),
+    )
+    model = TinyLearnedWorldModel.fit([sequence], ridge=1e-4)
+
+    near = model.predict(
+        Observation(timestamp=0.0, vehicle_state=VehicleState(x=10.0, y=0.0, yaw=0.0, speed=1.0), goal=(25.0, 0.0)),
+        Action(throttle=0.4),
+        horizon=1,
+    )
+    far = model.predict(
+        Observation(timestamp=0.0, vehicle_state=VehicleState(x=10.0, y=40.0, yaw=0.0, speed=1.0), goal=(25.0, 0.0)),
+        Action(throttle=0.4),
+        horizon=1,
+    )
+
+    assert model.metadata["support_point_count"] >= 6
+    assert near.metadata["support_distance_m"] < 8.0
+    assert far.metadata["support_distance_m"] > near.metadata["support_distance_m"]
+    assert far.metadata["max_risk"] > near.metadata["max_risk"]
+
+
 def test_tiny_learned_world_model_loads_legacy_weights_without_gear(tmp_path) -> None:
     model_dir = tmp_path / "legacy_tiny"
     model_dir.mkdir()

@@ -16,6 +16,8 @@ from offroad_sim.world_models.base import BaseWorldModel, WorldModelPrediction
 
 FEATURE_NAMES = ("bias", "speed", "yaw_sin", "yaw_cos", "steer", "throttle", "brake", "gear")
 OUTPUT_NAMES = ("dx", "dy", "dyaw", "dspeed")
+MAX_SUPPORT_POINTS = 512
+DEFAULT_SUPPORT_RADIUS_M = 8.0
 
 
 def _wrap_angle(angle: float) -> float:
@@ -60,6 +62,8 @@ class TinyLearnedWorldModel(BaseWorldModel):
         self.metadata = dict(metadata or {})
         self.metadata["feature_names"] = list(FEATURE_NAMES)
         self.metadata["output_names"] = list(OUTPUT_NAMES)
+        self.support_points = _support_points_array(self.metadata.get("support_points"))
+        self.support_radius_m = max(1.0, float(self.metadata.get("support_radius_m", DEFAULT_SUPPORT_RADIUS_M) or DEFAULT_SUPPORT_RADIUS_M))
 
     @classmethod
     def fit(cls, sequences: Iterable[DatasetSequence], *, ridge: float = 1e-4, validation_fraction: float = 0.2) -> "TinyLearnedWorldModel":
@@ -69,11 +73,14 @@ class TinyLearnedWorldModel(BaseWorldModel):
         frame_count = 0
         sequence_count = 0
         recorded_action_sample_count = 0
+        support_points: list[tuple[float, float]] = []
 
         for sequence in sequences:
             sequence_count += 1
             frames = sequence.frames
             frame_count += len(frames)
+            for frame in frames:
+                support_points.append((float(frame.vehicle_state.x), float(frame.vehicle_state.y)))
             for transition_index, (current, nxt) in enumerate(zip(frames, frames[1:])):
                 action, action_source = _transition_action(current, nxt)
                 if action_source == "recorded":
@@ -113,6 +120,9 @@ class TinyLearnedWorldModel(BaseWorldModel):
             "recorded_action_sample_count": recorded_action_sample_count,
             "feature_names": list(FEATURE_NAMES),
             "output_names": list(OUTPUT_NAMES),
+            "support_points": _downsample_support_points(support_points, max_points=MAX_SUPPORT_POINTS),
+            "support_point_count": len(support_points),
+            "support_radius_m": DEFAULT_SUPPORT_RADIUS_M,
         }
         return cls(weights=weights, ridge=ridge, metadata=metadata)
 
@@ -144,12 +154,17 @@ class TinyLearnedWorldModel(BaseWorldModel):
             states.append(VehicleState(x=x, y=y, z=z, yaw=yaw, pitch=pitch, roll=roll, speed=speed))
 
         risk_map, risk_samples = self._risk_from_observation(observation)
+        support_distance, support_risk = _support_distance_and_risk(states, self.support_points, self.support_radius_m)
+        if math.isfinite(support_risk) and support_risk > 0.0:
+            risk_samples.append(float(support_risk))
         metadata: dict[str, Any] = {
             "model_type": self.model_type,
             "horizon": horizon,
             "mean_risk": float(np.mean(risk_samples)) if risk_samples else 0.0,
             "max_risk": float(np.max(risk_samples)) if risk_samples else 0.0,
             "train_rmse": self.metadata.get("train_rmse"),
+            "support_distance_m": float(support_distance),
+            "support_risk": float(support_risk),
         }
         return WorldModelPrediction(states=states, actions=actions, risk_map=risk_map, metadata=metadata)
 
@@ -230,6 +245,55 @@ def _features(state: VehicleState, action: Action) -> np.ndarray:
         ],
         dtype=np.float64,
     )
+
+
+def _downsample_support_points(points: list[tuple[float, float]], *, max_points: int) -> list[list[float]]:
+    if not points:
+        return []
+    limit = max(1, int(max_points))
+    if len(points) <= limit:
+        selected = points
+    else:
+        indices = np.linspace(0, len(points) - 1, num=limit, dtype=np.int64)
+        selected = [points[int(index)] for index in indices]
+    deduped: list[list[float]] = []
+    seen: set[tuple[float, float]] = set()
+    for x, y in selected:
+        key = (round(float(x), 3), round(float(y), 3))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append([float(x), float(y)])
+    return deduped
+
+
+def _support_points_array(raw: Any) -> np.ndarray:
+    if not isinstance(raw, list):
+        return np.empty((0, 2), dtype=np.float64)
+    points: list[tuple[float, float]] = []
+    for point in raw:
+        try:
+            x = float(point[0])
+            y = float(point[1])
+        except (TypeError, ValueError, IndexError):
+            continue
+        if math.isfinite(x) and math.isfinite(y):
+            points.append((x, y))
+    if not points:
+        return np.empty((0, 2), dtype=np.float64)
+    return np.asarray(points, dtype=np.float64)
+
+
+def _support_distance_and_risk(states: list[VehicleState], support_points: np.ndarray, support_radius_m: float) -> tuple[float, float]:
+    if support_points.size == 0 or not states:
+        return math.nan, 0.0
+    predicted = np.asarray([[float(state.x), float(state.y)] for state in states], dtype=np.float64)
+    deltas = predicted[:, None, :] - support_points[None, :, :]
+    distances = np.sqrt(np.sum(deltas * deltas, axis=2))
+    support_distance = float(np.min(distances))
+    radius = max(1.0, float(support_radius_m))
+    support_risk = max(0.0, support_distance - radius) / radius
+    return support_distance, support_risk
 
 
 def _target(current: VehicleState, nxt: VehicleState) -> np.ndarray:

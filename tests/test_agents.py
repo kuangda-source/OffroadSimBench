@@ -404,6 +404,40 @@ def test_world_model_direct_agent_can_use_experience_corridor_for_local_subgoal(
     assert diagnostics["experience_corridor_used"] is True
 
 
+def test_world_model_direct_agent_can_use_model_support_points_for_local_subgoal() -> None:
+    agent = make_agent(
+        "world_model_direct",
+        planner_config={"horizon": 4, "num_samples": 16, "seed": 4},
+        local_subgoal_distance_m=12.0,
+        use_model_support_subgoals=True,
+    )
+    agent.world_model.metadata = {
+        "support_points": [[2.0, 2.0], [2.0, 14.0], [20.0, 14.0], [35.0, 2.0]],
+    }
+    observation = Observation(
+        timestamp=0.0,
+        vehicle_state=VehicleState(x=2.0, y=2.0, yaw=0.0, speed=1.0),
+        goal=(35.0, 2.0),
+        info={
+            "navigation_region": {
+                "region": {"polygon": [[0.0, 0.0], [40.0, 0.0], [40.0, 25.0], [0.0, 25.0]]},
+                "goal": {"pos": [35.0, 2.0], "radius": 4.0},
+            }
+        },
+    )
+
+    action = agent.act(observation)
+    diagnostics = agent.diagnostics()
+
+    assert action.throttle >= 0.0
+    assert diagnostics["target_goal"] == [35.0, 2.0]
+    assert diagnostics["local_subgoal"] == [2.0, 14.0]
+    assert diagnostics["planner_goal"] == [2.0, 14.0]
+    assert diagnostics["route_used"] is False
+    assert diagnostics["experience_corridor_used"] is False
+    assert diagnostics["model_support_subgoal_used"] is True
+
+
 def test_world_model_direct_agent_uses_local_subgoal_progress_for_stuck_detection() -> None:
     agent = make_agent(
         "world_model_direct",
