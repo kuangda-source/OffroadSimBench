@@ -6,7 +6,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication, QComboBox, QGroupBox, QLabel, QLineEdit, QPushButton, QScrollArea, QSpinBox, QWidget
 
-from desktop_app.qt_main import MainWindow, _region_world_model_summary_text, _training_run_overview_text
+from desktop_app.qt_main import MainWindow, _beamng_quality_report_text, _region_world_model_summary_text, _training_run_overview_text
 
 
 def _ensure_app() -> QApplication:
@@ -117,21 +117,56 @@ def test_dataset_training_page_separates_dataset_trainer_config_and_results() ->
     window.close()
 
 
-def test_beamng_run_page_uses_compact_config_and_action_toolbar() -> None:
+def test_beamng_run_page_uses_compact_config_and_workflow_toolbars() -> None:
     _ensure_app()
     window = MainWindow()
     beamng_page = window.page_stack.widget(2)
     group_titles = {group.title() for group in beamng_page.findChildren(QGroupBox)}
-    action_toolbars = [widget for widget in beamng_page.findChildren(QWidget) if widget.objectName() == "beamngActionToolbar"]
+    workflow_toolbars = [
+        widget
+        for widget in beamng_page.findChildren(QWidget)
+        if widget.objectName().startswith("beamngWorkflow") and widget.objectName().endswith("Toolbar")
+    ]
     compact_fields = [widget for widget in beamng_page.findChildren(QWidget) if widget.objectName() == "compactField"]
 
     assert "Run configuration" in group_titles
-    assert "Actions" in group_titles
     assert "BeamNG task and model" not in group_titles
-    assert action_toolbars
+    assert len(workflow_toolbars) == 3
     assert len(compact_fields) >= 3
     for field in compact_fields:
         assert field.maximumHeight() <= 64
+
+    window.close()
+
+
+def test_beamng_page_separates_training_workflow_and_quality_report() -> None:
+    _ensure_app()
+    window = MainWindow()
+    beamng_page = window.page_stack.widget(2)
+    workflow_groups = {
+        group.objectName()
+        for group in beamng_page.findChildren(QGroupBox)
+        if group.objectName().startswith("beamngWorkflow")
+    }
+    workflow_toolbars = {
+        widget.objectName()
+        for widget in beamng_page.findChildren(QWidget)
+        if widget.objectName().startswith("beamngWorkflow") and widget.objectName().endswith("Toolbar")
+    }
+
+    assert workflow_groups == {
+        "beamngWorkflowCollect",
+        "beamngWorkflowTrain",
+        "beamngWorkflowEvaluate",
+    }
+    assert workflow_toolbars == {
+        "beamngWorkflowCollectToolbar",
+        "beamngWorkflowTrainToolbar",
+        "beamngWorkflowEvaluateToolbar",
+    }
+    assert any(group.objectName() == "beamngQualityReport" for group in beamng_page.findChildren(QGroupBox))
+    assert hasattr(window, "beamng_quality_report")
+    assert window.beamng_quality_report.placeholderText() == "Training quality report: NaN"
 
     window.close()
 
@@ -207,4 +242,44 @@ def test_region_world_model_summary_surfaces_baseline_comparison() -> None:
     assert "stuck_recovery_count: 3" in text
     assert "route_free_min_goal_distance: 52" in text
     assert "route_guided_goal_success: true" in text
+    assert "trajectory_plot_path: outputs/eval/region_world_model_trajectory.svg" in text
+
+
+def test_beamng_quality_report_surfaces_training_and_evaluation_evidence() -> None:
+    text = _beamng_quality_report_text(
+        {
+            "preset_label": "Evaluate BeamNG model control",
+            "status": "completed",
+            "quality_gate": {
+                "passed": True,
+                "route_coverage_ratio": 0.8,
+                "goal_zone_coverage": 0.5,
+                "collection_min_goal_distance": 11.0,
+                "unique_region_cells": 5,
+            },
+            "metrics": {
+                "train_rmse": 0.12,
+                "validation_rmse": 0.2,
+                "segment_rmse": {"start": 0.1, "middle": 0.2, "goal": 0.3},
+            },
+            "comparison": {
+                "route_free_goal_success": True,
+                "route_free_min_goal_distance": 9.0,
+                "route_guided_goal_success": True,
+                "route_guided_final_goal_distance": 8.0,
+            },
+            "collection_manifest_path": "outputs/collection/region_training_collection.json",
+            "model_dir": "outputs/model",
+            "trajectory_plot_path": "outputs/eval/region_world_model_trajectory.svg",
+        }
+    )
+
+    assert "quality_gate.passed: true" in text
+    assert "quality_gate.route_coverage_ratio: 0.8" in text
+    assert "train_rmse: 0.12" in text
+    assert "validation_rmse: 0.2" in text
+    assert "segment_rmse.goal: 0.3" in text
+    assert "route_free_goal_success: true" in text
+    assert "route_guided_final_goal_distance: 8" in text
+    assert "collection_manifest_path: outputs/collection/region_training_collection.json" in text
     assert "trajectory_plot_path: outputs/eval/region_world_model_trajectory.svg" in text

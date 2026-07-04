@@ -484,14 +484,16 @@ markers; region points are draggable in the editor, invalid regions only show
 blocking warnings when saving, and the GUI canvas preserves the same world-axis
 scale as the BeamNG map.
 
-BeamNG training v1 is exposed as an explicit two-step GUI workflow on the
-BeamNG Simulation page. Select a Johnson Valley region task, click
-`采集训练数据` to run `region_explorer` rollouts and save a reusable
-`region_training_collection.json`, then click `训练模型` to fit a
-`tiny_learned` world model from those recorded episodes. The training step
-writes `training_run.json`, registers the trained model as a selectable world
-model config, and updates the BeamNG page so `开始评估` can immediately run the
-same task with the trained model.
+BeamNG training v1 is exposed as an explicit three-step GUI workflow on the
+BeamNG Simulation page: collect training data, train a world model, then
+evaluate model control. Select a Johnson Valley region task, click
+`采集训练数据` to run route-aware `region_explorer` rollouts and save a reusable
+`region_training_collection.json`, click `训练模型` to fit a world model from
+those recorded episodes, then click `开始评估` to run route-free model control
+with an automatic route-guided baseline comparison. The BeamNG page now includes
+a `训练质量报告` panel that summarizes collection quality gates, coverage, train
+and validation RMSE, segment errors, route-free/route-guided metrics, the
+generated trajectory plot path, and the latest available metric curve.
 
 Route-free training diagnostics are intentionally stricter than "a model file
 was produced." Region self-supervised runs now record train/validation RMSE,

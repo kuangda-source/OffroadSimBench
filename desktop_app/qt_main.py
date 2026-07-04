@@ -1492,20 +1492,52 @@ class MainWindow(QMainWindow):
                 self._compact_field("Region task", self.beamng_task_combo),
                 self._compact_field("World model config", self.beamng_model_config_combo),
                 self._compact_field("Resolved task path", self.task_path_edit),
-                self._compact_field("Collection manifest", self.region_collection_manifest_edit),
             ],
         )
-        actions_box, actions_layout = self._new_group("Actions")
-        actions_layout.addWidget(
+        collect_box, collect_layout = self._new_group("采集训练数据")
+        collect_box.setObjectName("beamngWorkflowCollect")
+        collect_hint = QLabel("按当前区域任务沿专家路线分段采集，并生成 coverage/goal-zone 质量门槛报告。")
+        collect_hint.setObjectName("mutedText")
+        collect_hint.setWordWrap(True)
+        collect_layout.addWidget(collect_hint)
+        collect_layout.addWidget(
             self._action_toolbar(
                 [
                     self._action_button("编辑/预览区域", self.open_region_task_editor),
                     self._action_button("采集训练数据", self.collect_region_training_data),
+                ],
+                object_name="beamngWorkflowCollectToolbar",
+            )
+        )
+        train_box, train_layout = self._new_group("训练模型")
+        train_box.setObjectName("beamngWorkflowTrain")
+        train_hint = QLabel("从 collection manifest 训练 world model；采集质量不达标时会拒绝训练。")
+        train_hint.setObjectName("mutedText")
+        train_hint.setWordWrap(True)
+        train_layout.addWidget(train_hint)
+        train_layout.addWidget(self._compact_field("Collection manifest", self.region_collection_manifest_edit))
+        train_layout.addWidget(
+            self._action_toolbar(
+                [
                     self._action_button("训练模型", self.train_region_world_model_from_collection),
+                    self._action_button("区域自监督训练", self.train_region_self_supervised_world_model),
+                ],
+                object_name="beamngWorkflowTrainToolbar",
+            )
+        )
+        evaluate_box, evaluate_layout = self._new_group("评估模型控车")
+        evaluate_box.setObjectName("beamngWorkflowEvaluate")
+        evaluate_hint = QLabel("使用当前任务和模型配置运行 route-free，并同时生成 route-guided baseline 对比。")
+        evaluate_hint.setObjectName("mutedText")
+        evaluate_hint.setWordWrap(True)
+        evaluate_layout.addWidget(evaluate_hint)
+        evaluate_layout.addWidget(
+            self._action_toolbar(
+                [
                     self._action_button("开始评估", self.run_region_navigation_loop, primary=True),
                     self._action_button("检查 BeamNG", self.check_beamng),
                 ],
-                object_name="beamngActionToolbar",
+                object_name="beamngWorkflowEvaluateToolbar",
             )
         )
         left_column = QWidget()
@@ -1513,15 +1545,39 @@ class MainWindow(QMainWindow):
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.setSpacing(PAGE_SPACING)
         left_layout.addWidget(config_box)
-        left_layout.addWidget(actions_box)
+        left_layout.addWidget(collect_box)
+        left_layout.addWidget(train_box)
+        left_layout.addWidget(evaluate_box)
         left_layout.addStretch(1)
         setup_layout.addWidget(left_column, 1)
+        right_column = QWidget()
+        right_layout = QVBoxLayout(right_column)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(PAGE_SPACING)
+        quality_box, quality_layout = self._new_group("训练质量报告")
+        quality_box.setObjectName("beamngQualityReport")
+        self.beamng_quality_report = QTextEdit()
+        self.beamng_quality_report.setReadOnly(True)
+        self.beamng_quality_report.setPlaceholderText("Training quality report: NaN")
+        self.beamng_quality_report.setMinimumHeight(150)
+        quality_layout.addWidget(self._section_label("Coverage / evaluation metrics"))
+        quality_layout.addWidget(self.beamng_quality_report, 1)
+        self.beamng_quality_curve = TrainingCurveWidget()
+        self.beamng_quality_curve.setMinimumHeight(160)
+        quality_layout.addWidget(self._section_label("Latest metric curve"))
+        quality_layout.addWidget(self.beamng_quality_curve)
+        self.beamng_trajectory_plot = self._preview_label("Trajectory plot: NaN")
+        self.beamng_trajectory_plot.setMinimumHeight(180)
+        quality_layout.addWidget(self._section_label("Trajectory plot"))
+        quality_layout.addWidget(self.beamng_trajectory_plot, 1)
         summary_box, summary_layout = self._new_group("Simulation status")
         self.beamng_summary = QTextEdit()
         self.beamng_summary.setReadOnly(True)
         self.beamng_summary.setPlaceholderText("BeamNG 状态、任务分析与运行结果：NaN")
         summary_layout.addWidget(self.beamng_summary, 1)
-        setup_layout.addWidget(summary_box, 2)
+        right_layout.addWidget(quality_box, 2)
+        right_layout.addWidget(summary_box, 1)
+        setup_layout.addWidget(right_column, 2)
         tabs.addTab(setup_tab, "运行配置")
 
         map_tab = QWidget()
@@ -2634,6 +2690,7 @@ class MainWindow(QMainWindow):
             self.trajectory.set_trace(services.load_episode_trace(path) if path else [])
         self.model_summary.setText(_compact_json(payload))
         self._set_training_run_views(payload)
+        self._set_beamng_quality_views(payload)
         if hasattr(self, "demo_result_summary"):
             self.demo_result_summary.setText(_compact_json(_demo_result_payload(payload)))
         region_summary = _region_world_model_summary_text(payload)
@@ -2658,6 +2715,7 @@ class MainWindow(QMainWindow):
         self.beamng_summary.setText(_compact_json(view_payload))
         self.model_summary.setText(_compact_json(view_payload))
         self._set_training_run_views(view_payload)
+        self._set_beamng_quality_views(view_payload)
         self.log(f"BeamNG 训练数据采集完成: {manifest_path or services.NAN_TEXT}")
         self.refresh_catalogs()
 
@@ -2678,6 +2736,7 @@ class MainWindow(QMainWindow):
         self.model_summary.setText(_compact_json(view_payload))
         self.beamng_summary.setText(_compact_json(view_payload))
         self._set_training_run_views(view_payload)
+        self._set_beamng_quality_views(view_payload)
         self.log(f"BeamNG world model 训练完成: {model_dir or services.NAN_TEXT}")
         self.refresh_catalogs()
         config = payload.get("world_model_config") if isinstance(payload.get("world_model_config"), dict) else {}
@@ -3101,6 +3160,17 @@ class MainWindow(QMainWindow):
         if hasattr(self, "latest_training_curve"):
             self.latest_training_curve.set_history(history)
         return run
+
+    def _set_beamng_quality_views(self, payload: dict[str, Any]) -> None:
+        if hasattr(self, "beamng_quality_report"):
+            self.beamng_quality_report.setText(_beamng_quality_report_text(payload))
+        run = _training_run_record_from_payload(payload)
+        history = services.training_metric_history(run)
+        if hasattr(self, "beamng_quality_curve"):
+            self.beamng_quality_curve.set_history(history)
+        plot_path = _payload_trajectory_plot_path(payload, run)
+        if hasattr(self, "beamng_trajectory_plot"):
+            self._set_preview(self.beamng_trajectory_plot, plot_path, "Trajectory plot: NaN")
 
     def _fill_episode_list(self) -> None:
         self.episode_list.clear()
@@ -3811,6 +3881,125 @@ def _region_world_model_summary_text(payload: dict[str, Any]) -> str:
         value = str(payload.get(key) or "").strip()
         if value:
             lines.append(f"{key}: {value}")
+    return "\n".join(lines)
+
+
+def _payload_trajectory_plot_path(*payloads: dict[str, Any]) -> str:
+    for payload in payloads:
+        if not isinstance(payload, dict):
+            continue
+        direct = str(payload.get("trajectory_plot_path") or "").strip()
+        if direct:
+            return direct
+        summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+        summary_path = str(summary.get("trajectory_plot_path") or "").strip()
+        if summary_path:
+            return summary_path
+    return ""
+
+
+def _first_nested_dict(payloads: list[dict[str, Any]], key: str) -> dict[str, Any]:
+    for payload in payloads:
+        value = payload.get(key) if isinstance(payload, dict) else None
+        if isinstance(value, dict) and value:
+            return value
+        summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+        value = summary.get(key)
+        if isinstance(value, dict) and value:
+            return value
+    return {}
+
+
+def _beamng_quality_report_text(payload: dict[str, Any]) -> str:
+    run = _training_run_record_from_payload(payload)
+    payloads = [payload, run]
+    lines = ["BeamNG training quality report"]
+
+    label = str(payload.get("preset_label") or run.get("preset_label") or run.get("preset_id") or "").strip()
+    status = str(payload.get("status") or run.get("status") or "").strip()
+    if label:
+        lines.append(f"workflow: {label}")
+    if status:
+        lines.append(f"status: {status}")
+
+    quality = _first_nested_dict(payloads, "quality_gate")
+    if quality:
+        for key in [
+            "passed",
+            "reason",
+            "progress_ratio",
+            "required_progress_ratio",
+            "route_coverage_ratio",
+            "goal_zone_coverage",
+            "collection_min_goal_distance",
+            "unique_region_cells",
+        ]:
+            if key in quality:
+                lines.append(f"quality_gate.{key}: {services.display_value(quality[key])}")
+
+    merged_metrics: dict[str, Any] = {}
+    for source in payloads:
+        metrics = source.get("metrics") if isinstance(source.get("metrics"), dict) else {}
+        merged_metrics.update(metrics)
+        training = source.get("training") if isinstance(source.get("training"), dict) else {}
+        training_metrics = training.get("metrics") if isinstance(training.get("metrics"), dict) else {}
+        merged_metrics.update(training_metrics)
+        summary = source.get("summary") if isinstance(source.get("summary"), dict) else {}
+        summary_metrics = summary.get("metrics") if isinstance(summary.get("metrics"), dict) else {}
+        merged_metrics.update(summary_metrics)
+    for key in [
+        "route_coverage_ratio",
+        "goal_zone_coverage",
+        "collection_min_goal_distance",
+        "unique_region_cells",
+        "train_rmse",
+        "validation_rmse",
+        "validation_sample_count",
+    ]:
+        if key in merged_metrics:
+            lines.append(f"{key}: {services.display_value(merged_metrics[key])}")
+    segment_rmse = merged_metrics.get("segment_rmse")
+    if isinstance(segment_rmse, dict):
+        for segment in ["start", "middle", "goal"]:
+            if segment in segment_rmse:
+                lines.append(f"segment_rmse.{segment}: {services.display_value(segment_rmse[segment])}")
+
+    comparison = _first_nested_dict(payloads, "comparison")
+    if comparison:
+        for key in [
+            "route_free_goal_success",
+            "route_free_min_goal_distance",
+            "route_free_final_goal_distance",
+            "route_free_collision_count",
+            "route_free_distance_traveled",
+            "route_free_stuck_recovery_count",
+            "route_free_reverse_count",
+            "route_guided_goal_success",
+            "route_guided_min_goal_distance",
+            "route_guided_final_goal_distance",
+            "route_guided_collision_count",
+        ]:
+            if key in comparison:
+                lines.append(f"{key}: {services.display_value(comparison[key])}")
+
+    acceptance = _first_nested_dict(payloads, "acceptance")
+    if acceptance:
+        for key in ["goal_success", "min_goal_distance", "final_goal_distance", "collision_count", "stuck_recovery_count", "reverse_count"]:
+            if key in acceptance:
+                lines.append(f"acceptance.{key}: {services.display_value(acceptance[key])}")
+
+    trajectory_plot_path = _payload_trajectory_plot_path(payload, run)
+    paths = {
+        "collection_manifest_path": payload.get("collection_manifest_path") or run.get("collection_manifest_path"),
+        "model_dir": payload.get("model_dir") or run.get("model_dir") or run.get("artifact_path"),
+        "training_run_path": payload.get("training_run_path") or run.get("path"),
+        "trajectory_plot_path": trajectory_plot_path,
+    }
+    for key, value in paths.items():
+        text = str(value or "").strip()
+        if text:
+            lines.append(f"{key}: {text}")
+
     return "\n".join(lines)
 
 
