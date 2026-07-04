@@ -432,6 +432,7 @@ def test_world_model_configs_mark_only_route_free_success_as_demo_ready(tmp_path
     assert rows[services.DEFAULT_WORLD_MODEL_CONFIG_ID]["demo_ready"] is True
     assert [row["id"] for row in services.demo_ready_world_model_config_entries(config_path)] == [
         services.DEFAULT_WORLD_MODEL_CONFIG_ID,
+        services.DEFAULT_LEWM_WORLD_MODEL_CONFIG_ID,
         "route_free_success",
         "experience_corridor_success",
         "model_support_success",
@@ -790,12 +791,13 @@ def test_demo_config_entries_use_standard_johnson_valley_task() -> None:
     rows = services.demo_config_entries()
 
     assert rows[0]["id"] == services.DEFAULT_DEMO_CONFIG_ID
-    assert rows[0]["task_path"].replace("\\", "/").endswith("configs/tasks/beamng_johnson_valley_nav_001.yaml")
+    assert rows[0]["task_path"].replace("\\", "/").endswith("configs/tasks/beamng_johnson_valley_nav_test.yaml")
     assert rows[0]["world_model_config_id"] == services.DEFAULT_WORLD_MODEL_CONFIG_ID
+    assert rows[0]["evaluation_agent"] == "world_model_direct"
     assert rows[0]["planner"] == "navigation_mpc"
 
 
-def test_demo_acceptance_runs_multiple_trials_and_summarizes_metrics(tmp_path, monkeypatch) -> None:
+def test_demo_acceptance_runs_multiple_direct_world_model_trials_and_summarizes_metrics(tmp_path, monkeypatch) -> None:
     episode_a = _write_trace_episode(
         tmp_path / "episode_a",
         [(1329.0, -109.0, 2.0, False), (1280.0, -145.0, 5.0, True), (1246.0, -189.0, 1.5, False)],
@@ -805,9 +807,9 @@ def test_demo_acceptance_runs_multiple_trials_and_summarizes_metrics(tmp_path, m
         [(1329.0, -109.0, 1.0, False), (1290.0, -140.0, 2.5, False), (1247.0, -188.5, 1.0, False)],
     )
     episodes = [episode_a, episode_b]
-    captured: list[services.RegionNavigationClosedLoopRequest] = []
+    captured: list[services.RegionWorldModelEvaluationRequest] = []
 
-    def fake_run_region_navigation(request: services.RegionNavigationClosedLoopRequest) -> dict[str, object]:
+    def fake_run_region_world_model(request: services.RegionWorldModelEvaluationRequest) -> dict[str, object]:
         captured.append(request)
         episode = episodes[len(captured) - 1]
         task = load_navigation_region_task(request.task_path)
@@ -822,7 +824,7 @@ def test_demo_acceptance_runs_multiple_trials_and_summarizes_metrics(tmp_path, m
         }
         return {"status": "completed", "evaluation": evaluation, "acceptance": services._navigation_acceptance(evaluation, task)}
 
-    monkeypatch.setattr(services, "run_region_navigation_closed_loop", fake_run_region_navigation)
+    monkeypatch.setattr(services, "run_region_world_model_evaluation", fake_run_region_world_model)
 
     report = services.run_demo_acceptance(services.DemoAcceptanceRequest(runs=2, max_steps=30, step_delay_sec=0.0, post_run_hold_sec=0.0))
 
@@ -834,7 +836,10 @@ def test_demo_acceptance_runs_multiple_trials_and_summarizes_metrics(tmp_path, m
     assert report["runs"][0]["goal_reached"] is True
     assert report["runs"][0]["trajectory_length_m"] > 0.0
     assert report["runs"][0]["average_speed"] > 0.0
-    assert captured[0].task_path.endswith("beamng_johnson_valley_nav_001.yaml")
+    assert captured[0].task_path.endswith("beamng_johnson_valley_nav_test.yaml")
+    assert captured[0].world_model_type == "mlp_dynamics"
+    assert captured[0].evaluation_use_model_support_subgoals is True
+    assert captured[0].include_route_guided_baseline is True
 
 
 def test_demo_acceptance_passes_direct_world_model_validation_options(tmp_path, monkeypatch) -> None:

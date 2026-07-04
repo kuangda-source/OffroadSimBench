@@ -20,7 +20,10 @@ offroad-sim-gui
   owns the BeamNG region task, saved world-model config, planner, and visible
   runtime defaults.
 - The standard demo config is `johnson_valley_standard_demo`, backed by
-  `configs/tasks/beamng_johnson_valley_nav_001.yaml`.
+  `configs/tasks/beamng_johnson_valley_nav_test.yaml` and the validated
+  `Johnson Valley MLP support-route` world-model config. The default demo runs
+  `world_model_direct` route-free evaluation with model-owned support subgoals
+  and also records a route-guided comparison baseline.
 - The Dataset and Training workbench owns dataset import/preview, HDF5 export,
   checkpoint path, algorithm, world-model type, model training, and saved
   world-model configs.

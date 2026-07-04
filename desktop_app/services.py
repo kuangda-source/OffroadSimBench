@@ -32,7 +32,7 @@ from offroad_sim.world_models import MLPDynamicsWorldModel, TinyLearnedWorldMode
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_ROOT = ROOT / "configs"
-DEFAULT_NAVIGATION_TASK_PATH = CONFIG_ROOT / "tasks" / "beamng_johnson_valley_nav_001.yaml"
+DEFAULT_NAVIGATION_TASK_PATH = CONFIG_ROOT / "tasks" / "beamng_johnson_valley_nav_test.yaml"
 DEFAULT_LEWM_CHECKPOINT_PATH = (
     ROOT
     / "outputs"
@@ -41,8 +41,25 @@ DEFAULT_LEWM_CHECKPOINT_PATH = (
     / "model"
     / "lewm_cost_object.ckpt"
 )
+DEFAULT_ROUTE_FREE_MODEL_PATH = (
+    ROOT
+    / "outputs"
+    / "region_world_model_compare"
+    / "johnson_valley_strict_collect_tiny_vs_mlp_1200_20260704"
+    / "mlp_dynamics"
+    / "training"
+    / "model"
+)
+DEFAULT_ROUTE_FREE_VALIDATION_SOURCE = (
+    ROOT
+    / "outputs"
+    / "region_world_model_eval"
+    / "p2_mlp_support_subgoals_strict_1200_20260704"
+    / "region_world_model_evaluation_summary.json"
+)
 WORLD_MODEL_CONFIGS_PATH = CONFIG_ROOT / "world_model_configs.json"
-DEFAULT_WORLD_MODEL_CONFIG_ID = "johnson_valley_lewm_validated"
+DEFAULT_WORLD_MODEL_CONFIG_ID = "johnson_valley_mlp_model_support_20260704"
+DEFAULT_LEWM_WORLD_MODEL_CONFIG_ID = "johnson_valley_lewm_validated"
 DEFAULT_DEMO_CONFIG_ID = "johnson_valley_standard_demo"
 TRAINING_CONFIGS_PATH = CONFIG_ROOT / "training_configs.json"
 SMOKE_TRAINING_DATASET_ROOT = ROOT / "outputs" / "training_studio_smoke" / "datasets" / "mock_orfd"
@@ -1335,12 +1352,12 @@ def demo_config_entries() -> list[dict[str, Any]]:
         {
             "id": DEFAULT_DEMO_CONFIG_ID,
             "label": "Johnson Valley standard demo",
-            "description": "BeamNG Johnson Valley region navigation with the validated LE-WM-compatible checkpoint.",
+            "description": "BeamNG Johnson Valley route-free model-control demo with the validated MLP dynamics model.",
             "task_path": str(DEFAULT_NAVIGATION_TASK_PATH.resolve()),
             "task_relative_path": _relative_to_root(DEFAULT_NAVIGATION_TASK_PATH),
             "world_model_config_id": DEFAULT_WORLD_MODEL_CONFIG_ID,
             "planner": "navigation_mpc",
-            "evaluation_agent": "model_mpc",
+            "evaluation_agent": "world_model_direct",
             "beamng_gfx": "vk",
         }
     ]
@@ -1391,6 +1408,44 @@ def world_model_config_entries(path: str | Path | None = None) -> list[dict[str,
         DEFAULT_WORLD_MODEL_CONFIG_ID: _world_model_config_row(
             {
                 "id": DEFAULT_WORLD_MODEL_CONFIG_ID,
+                "label": "Johnson Valley MLP support-route validated",
+                "algorithm": "world_model_direct",
+                "world_model": "mlp_dynamics",
+                "model_path": str(DEFAULT_ROUTE_FREE_MODEL_PATH),
+                "source_training_run_path": str(DEFAULT_ROUTE_FREE_MODEL_PATH.parent / "training_run.json"),
+                "validation": {
+                    "demo_ready": True,
+                    "validation_source": str(DEFAULT_ROUTE_FREE_VALIDATION_SOURCE),
+                    "goal_success": True,
+                    "goal_reached": True,
+                    "final_goal_reached": True,
+                    "min_goal_distance": 11.897536452288634,
+                    "final_goal_distance": 11.897536452288634,
+                    "goal_radius": 12.0,
+                    "model_controlled": True,
+                    "route_free": True,
+                    "route_free_direct": False,
+                    "model_support_subgoals": True,
+                    "model_support_field_subgoals": False,
+                    "evaluation_route_mode": "route_free",
+                    "route_waypoint_count": 0,
+                    "collision_count": 0,
+                    "max_collision_count": 0,
+                    "distance_traveled": 193.88469705904217,
+                    "stuck_recovery_count": 0,
+                    "reverse_count": 0,
+                    "support_route_count": 6,
+                    "support_point_count": 2038,
+                    "evaluation_local_subgoal_distance_m": 12.0,
+                    "evaluation_allow_reverse_recovery": False,
+                    "route_guided_goal_success": True,
+                    "route_guided_final_goal_distance": 11.599028573749857,
+                },
+            }
+        ),
+        DEFAULT_LEWM_WORLD_MODEL_CONFIG_ID: _world_model_config_row(
+            {
+                "id": DEFAULT_LEWM_WORLD_MODEL_CONFIG_ID,
                 "label": "Johnson Valley LE-WM validated",
                 "algorithm": "stablewm_lewm",
                 "world_model": "le_wm",
@@ -2459,6 +2514,7 @@ def run_demo_acceptance(request: DemoAcceptanceRequest) -> dict[str, Any]:
                     planner_horizon=request.planner_horizon,
                     planner_samples=request.planner_samples,
                     planner_iterations=request.planner_iterations,
+                    include_route_guided_baseline=True,
                     planner_goal_weight=_validation_float_or_none(validation, "planner_goal_weight"),
                     planner_progress_weight=_validation_float_or_none(validation, "planner_progress_weight"),
                     planner_risk_weight=_validation_float_or_none(validation, "planner_risk_weight"),

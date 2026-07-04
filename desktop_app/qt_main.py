@@ -1074,7 +1074,7 @@ class MainWindow(QMainWindow):
         self.training_output_edit = QLineEdit()
         self.training_output_edit.setPlaceholderText(r"outputs\models\custom_training_run")
         self.model_config_name_edit = QLineEdit()
-        self.model_config_name_edit.setPlaceholderText("Johnson Valley LE-WM validated")
+        self.model_config_name_edit.setPlaceholderText("Johnson Valley MLP support-route validated")
 
         self.dataset_catalog_combo = self._combo()
         self.dataset_manifest_name_edit = QLineEdit()

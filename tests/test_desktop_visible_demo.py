@@ -220,19 +220,26 @@ def test_gui_start_demo_uses_standard_demo_config(monkeypatch) -> None:
     _ensure_app()
     window = MainWindow()
     window.settings.max_steps = 12
-    captured: dict[str, services.RegionNavigationClosedLoopRequest] = {}
+    captured: dict[str, services.RegionWorldModelEvaluationRequest] = {}
 
-    monkeypatch.setattr(services, "run_region_navigation_closed_loop", lambda request: captured.setdefault("request", request))
+    monkeypatch.setattr(services, "run_region_world_model_evaluation", lambda request: captured.setdefault("request", request))
+    monkeypatch.setattr(
+        services,
+        "run_region_navigation_closed_loop",
+        lambda request: (_ for _ in ()).throw(AssertionError("default demo should use direct world-model evaluation")),
+    )
     monkeypatch.setattr(window, "_run_task", lambda task, callback, label, **kwargs: task())
 
     window.run_guided_demo()
 
     request = captured["request"]
-    assert request.task_path.endswith("configs\\tasks\\beamng_johnson_valley_nav_001.yaml")
-    assert request.algorithm == "stablewm_lewm"
-    assert request.algorithm_model_path.endswith("lewm_cost_object.ckpt")
+    assert request.task_path.endswith("configs\\tasks\\beamng_johnson_valley_nav_test.yaml")
+    assert request.world_model_type == "mlp_dynamics"
+    assert request.world_model_path.endswith("mlp_dynamics\\training\\model")
     assert request.planner == "navigation_mpc"
-    assert request.evaluation_agent == "model_mpc"
+    assert request.evaluation_agent == "world_model_direct"
+    assert request.evaluation_use_model_support_subgoals is True
+    assert request.include_route_guided_baseline is True
     assert request.close_beamng is False
     assert window.demo_config_combo.currentData()["id"] == services.DEFAULT_DEMO_CONFIG_ID
     window.close()
@@ -1244,15 +1251,22 @@ def test_gui_region_navigation_loop_uses_task_path(monkeypatch) -> None:
     window = MainWindow()
     window.settings.max_steps = 5
     window.task_path_edit.setText("configs/tasks/beamng_johnson_valley_nav_001.yaml")
-    captured: dict[str, services.RegionNavigationClosedLoopRequest] = {}
+    captured: dict[str, services.RegionWorldModelEvaluationRequest] = {}
 
-    monkeypatch.setattr(services, "run_region_navigation_closed_loop", lambda request: captured.setdefault("request", request))
+    monkeypatch.setattr(services, "run_region_world_model_evaluation", lambda request: captured.setdefault("request", request))
+    monkeypatch.setattr(
+        services,
+        "run_region_navigation_closed_loop",
+        lambda request: (_ for _ in ()).throw(AssertionError("default BeamNG model config should use direct world-model evaluation")),
+    )
     monkeypatch.setattr(window, "_run_task", lambda task, callback, label, **kwargs: task())
 
     window.run_region_navigation_loop()
 
     assert captured["request"].task_path == "configs/tasks/beamng_johnson_valley_nav_001.yaml"
-    assert captured["request"].collect_steps >= 160
+    assert captured["request"].eval_steps >= 900
+    assert captured["request"].world_model_type == "mlp_dynamics"
+    assert captured["request"].evaluation_use_model_support_subgoals is True
     assert captured["request"].close_beamng is False
     window.close()
 

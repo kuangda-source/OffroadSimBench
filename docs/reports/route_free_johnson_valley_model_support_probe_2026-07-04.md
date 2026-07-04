@@ -122,6 +122,43 @@ Mean support-risk retest:
 - `stuck_recovery_count=0`
 - `reverse_count=0`
 
+## Strict Collection MLP Retest And Default Demo Promotion
+
+After the stricter route-aware collection gate was added, a new collection was
+captured with full route coverage and goal-zone coverage:
+
+- Collection manifest:
+  `outputs/beamng_training_acceptance/route_aware_strict_20260704_collect/region_training_collection.json`
+- `route_coverage_ratio=1.0`
+- `goal_zone_coverage=1.0`
+- `collection_min_goal_distance=11.698582123429976`
+- `unique_region_cells=8`
+- `collision_count=0`
+
+The same collection trained both `tiny_learned` and `mlp_dynamics`. Strict
+direct route-free still failed near the start, but `mlp_dynamics` with
+model-owned support subgoals reached the goal without using task route waypoints:
+
+- Model:
+  `outputs/region_world_model_compare/johnson_valley_strict_collect_tiny_vs_mlp_1200_20260704/mlp_dynamics/training/model`
+- Summary:
+  `outputs/region_world_model_eval/p2_mlp_support_subgoals_strict_1200_20260704/region_world_model_evaluation_summary.json`
+- `goal_success=true`
+- `final_goal_distance=11.897536452288634`
+- `min_goal_distance=11.897536452288634`
+- `goal_radius=12.0`
+- `route_waypoint_count=0`
+- `collision_count=0`
+- `distance_traveled=193.88469705904217`
+- `stuck_recovery_count=0`
+- `reverse_count=0`
+- Route-guided comparison also succeeded with
+  `final_goal_distance=11.599028573749857`.
+
+The desktop default demo config now points at this validated MLP support-route
+configuration so the first GUI demo exercises route-free model control rather
+than the older LE-WM route-guided path.
+
 ## Interpretation
 
 This is not a pure "only start, goal, and polygon" strict-direct success.
@@ -136,6 +173,6 @@ traversability, latent map, or policy models.
 - The support route is now segmented per rollout and bridged with distance and
   goal-progress constraints, but it still represents a model-owned navigation
   aid rather than a fully learned route-free policy.
-- Stability needs repeated multi-seed BeamNG validation before promoting this as
-  the default demo.
+- The MLP support-route result is now the default demo entry, but stability still
+  needs repeated multi-seed BeamNG validation.
 - Generalization to a new Johnson Valley start/goal is not yet proven.
