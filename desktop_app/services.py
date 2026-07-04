@@ -281,6 +281,41 @@ class RegionWorldModelEvaluationRequest:
 
 
 @dataclass(slots=True)
+class RegionWorldModelComparisonRequest:
+    collection_manifest_path: str
+    world_model_types: list[str] = field(default_factory=lambda: ["tiny_learned", "mlp_dynamics"])
+    task_path: str = ""
+    vehicle: str = "configs/vehicles/ugv_medium.yaml"
+    output_dir: str = ""
+    eval_steps: int = 1000
+    seed: int = 7
+    planner: str = "navigation_mpc"
+    planner_horizon: int = 6
+    planner_samples: int = 32
+    planner_iterations: int = 3
+    planner_goal_weight: float | None = None
+    planner_progress_weight: float | None = None
+    planner_risk_weight: float | None = None
+    planner_heading_weight: float | None = None
+    evaluation_agent: str = "world_model_direct"
+    evaluation_allow_reverse_recovery: bool = False
+    evaluation_reverse_recovery_after_steps: int = 96
+    evaluation_local_subgoal_distance_m: float = 12.0
+    evaluation_use_model_support_subgoals: bool = False
+    evaluation_use_model_support_field_subgoals: bool = False
+    use_experience_corridor: bool = False
+    experience_route_min_spacing_m: float = 4.0
+    experience_route_max_points: int = 120
+    include_route_guided_baseline: bool = True
+    write_trajectory_plot: bool = True
+    beamng_gfx: str = "vk"
+    close_beamng: bool = True
+    step_delay_sec: float = 0.0
+    pre_run_hold_sec: float = 0.0
+    post_run_hold_sec: float = 0.0
+
+
+@dataclass(slots=True)
 class DemoAcceptanceRequest:
     demo_config_id: str = DEFAULT_DEMO_CONFIG_ID
     runs: int = 1
@@ -3402,6 +3437,163 @@ def run_region_world_model_evaluation(request: RegionWorldModelEvaluationRequest
     summary_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
     payload["summary_path"] = str(summary_path.resolve())
     return payload
+
+
+def compare_region_world_models_from_collection(request: RegionWorldModelComparisonRequest) -> dict[str, Any]:
+    manifest_path = Path(request.collection_manifest_path)
+    if not manifest_path.exists():
+        raise FileNotFoundError(f"Collection manifest not found: {manifest_path}")
+    collection = _read_json(manifest_path)
+    if not isinstance(collection, dict) or str(collection.get("status") or "") != "completed":
+        raise ValueError("Collection manifest must be a completed BeamNG region collection.")
+    task = _navigation_task_from_collection_manifest(collection, manifest_path)
+    task_path = str(request.task_path or collection.get("task_path") or "").strip()
+    if not task_path:
+        raise ValueError("Region world model comparison requires task_path in the request or collection manifest.")
+
+    world_model_types: list[str] = []
+    for raw_name in request.world_model_types:
+        normalized = _normalize_lightweight_region_world_model_type(raw_name)
+        if normalized not in world_model_types:
+            world_model_types.append(normalized)
+    if not world_model_types:
+        raise ValueError("At least one world model type is required for comparison.")
+
+    stamp = time.strftime("%Y%m%dT%H%M%S")
+    output_dir = Path(request.output_dir or ROOT / "outputs" / "region_world_model_compare" / _safe_name(task.task_id) / stamp)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    model_rows: list[dict[str, Any]] = []
+    for model_type in world_model_types:
+        model_output_dir = output_dir / model_type
+        training = train_region_world_model_from_collection(
+            RegionWorldModelTrainingRequest(
+                collection_manifest_path=str(manifest_path.resolve()),
+                world_model_type=model_type,
+                output_dir=str(model_output_dir / "training"),
+                register_world_model_config=False,
+            )
+        )
+        evaluation = run_region_world_model_evaluation(
+            RegionWorldModelEvaluationRequest(
+                task_path=task_path,
+                world_model_type=model_type,
+                world_model_path=str(training["model_dir"]),
+                vehicle=request.vehicle,
+                output_dir=str(model_output_dir / "evaluation"),
+                eval_steps=request.eval_steps,
+                seed=request.seed,
+                planner=request.planner,
+                planner_horizon=request.planner_horizon,
+                planner_samples=request.planner_samples,
+                planner_iterations=request.planner_iterations,
+                planner_goal_weight=request.planner_goal_weight,
+                planner_progress_weight=request.planner_progress_weight,
+                planner_risk_weight=request.planner_risk_weight,
+                planner_heading_weight=request.planner_heading_weight,
+                evaluation_agent=request.evaluation_agent,
+                evaluation_allow_reverse_recovery=request.evaluation_allow_reverse_recovery,
+                evaluation_reverse_recovery_after_steps=request.evaluation_reverse_recovery_after_steps,
+                evaluation_local_subgoal_distance_m=request.evaluation_local_subgoal_distance_m,
+                evaluation_use_model_support_subgoals=request.evaluation_use_model_support_subgoals,
+                evaluation_use_model_support_field_subgoals=request.evaluation_use_model_support_field_subgoals,
+                use_experience_corridor=request.use_experience_corridor,
+                experience_route_min_spacing_m=request.experience_route_min_spacing_m,
+                experience_route_max_points=request.experience_route_max_points,
+                include_route_guided_baseline=request.include_route_guided_baseline,
+                write_trajectory_plot=request.write_trajectory_plot,
+                beamng_gfx=request.beamng_gfx,
+                close_beamng=request.close_beamng,
+                step_delay_sec=request.step_delay_sec,
+                pre_run_hold_sec=request.pre_run_hold_sec,
+                post_run_hold_sec=request.post_run_hold_sec,
+            )
+        )
+        model_rows.append(
+            {
+                "world_model_type": model_type,
+                "model_dir": training["model_dir"],
+                "training": training,
+                "evaluation": evaluation,
+                "comparison": dict(evaluation.get("comparison") if isinstance(evaluation.get("comparison"), dict) else {}),
+                "training_run_path": training.get("training_run_path", ""),
+                "evaluation_training_run_path": evaluation.get("training_run_path", ""),
+                "summary_path": evaluation.get("summary_path", ""),
+            }
+        )
+
+    best = min(model_rows, key=lambda row: _finite_or_inf(row.get("comparison", {}).get("route_free_min_goal_distance")))
+    summary_path = output_dir / "region_world_model_comparison_summary.json"
+    metrics = _region_world_model_comparison_metrics(model_rows, best)
+    training_run = write_training_run_record(
+        output_dir,
+        preset_id="region_world_model_comparison",
+        status="completed",
+        dataset_root=str(manifest_path.resolve()),
+        adapter="beamng_episode_collection",
+        sequence_id=task.task_id,
+        artifact_path=str(summary_path.resolve()),
+        artifact_type="world_model_comparison",
+        metrics=metrics,
+        history={key: [value] for key, value in _numeric_metric_items(metrics)},
+        parameters={
+            "collection_manifest_path": str(manifest_path.resolve()),
+            "world_model_types": world_model_types,
+            "task_path": str(Path(task_path).resolve()),
+            "planner": request.planner,
+            "planner_horizon": request.planner_horizon,
+            "planner_samples": request.planner_samples,
+            "planner_iterations": request.planner_iterations,
+            "include_route_guided_baseline": bool(request.include_route_guided_baseline),
+            "evaluation_agent": request.evaluation_agent,
+            "evaluation_allow_reverse_recovery": bool(request.evaluation_allow_reverse_recovery),
+        },
+        summary={
+            "task_path": str(Path(task_path).resolve()),
+            "collection_manifest_path": str(manifest_path.resolve()),
+            "best_world_model_type": best["world_model_type"],
+            "best_comparison": best["comparison"],
+            "model_summaries": [
+                {
+                    "world_model_type": row["world_model_type"],
+                    "model_dir": row["model_dir"],
+                    "comparison": row["comparison"],
+                    "summary_path": row["summary_path"],
+                }
+                for row in model_rows
+            ],
+        },
+    )
+    payload: dict[str, Any] = {
+        "status": "completed",
+        "task": task.to_dict(),
+        "task_path": str(Path(task_path).resolve()),
+        "collection_manifest_path": str(manifest_path.resolve()),
+        "output_dir": str(output_dir.resolve()),
+        "models": model_rows,
+        "best": best,
+        "metrics": metrics,
+        "training_run_path": training_run["path"],
+    }
+    summary_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    payload["summary_path"] = str(summary_path.resolve())
+    return payload
+
+
+def _region_world_model_comparison_metrics(model_rows: list[dict[str, Any]], best: dict[str, Any]) -> dict[str, Any]:
+    best_comparison = best.get("comparison", {}) if isinstance(best.get("comparison"), dict) else {}
+    metrics: dict[str, Any] = {
+        "model_count": len(model_rows),
+        "best_route_free_min_goal_distance": best_comparison.get("route_free_min_goal_distance"),
+        "best_route_free_final_goal_distance": best_comparison.get("route_free_final_goal_distance"),
+        "best_route_free_goal_success": bool(best_comparison.get("route_free_goal_success")),
+        "best_route_guided_goal_success": bool(best_comparison.get("route_guided_goal_success")),
+    }
+    for row in model_rows:
+        model_type = _safe_name(str(row.get("world_model_type") or "model")).lower()
+        comparison = row.get("comparison") if isinstance(row.get("comparison"), dict) else {}
+        for key, value in comparison.items():
+            metrics[f"{model_type}_{key}"] = value
+    return metrics
 
 
 def _region_evaluation_planner_overrides(request: Any) -> dict[str, float]:

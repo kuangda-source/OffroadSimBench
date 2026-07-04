@@ -570,6 +570,78 @@ def test_region_world_model_training_refuses_insufficient_collection_manifest(tm
         )
 
 
+def test_region_world_model_comparison_trains_and_evaluates_multiple_models(tmp_path: Path) -> None:
+    task_path = tmp_path / "task.yaml"
+    _write_task(task_path)
+    collection_episode = _save_episode(
+        tmp_path / "collection",
+        [(2.0, 2.0, 0.0, 0.5), (10.0, 12.0, 0.2, 1.0), (25.0, 25.0, 0.45, 1.3)],
+    )
+    collection_payload = {
+        "status": "completed",
+        "task": services.load_navigation_region_task(str(task_path)).to_dict(),
+        "task_path": str(task_path),
+        "output_dir": str(tmp_path / "collection_run"),
+        "episode_paths": [str(collection_episode.resolve())],
+        "collection_acceptances": [{"min_goal_distance": 14.0, "final_goal_distance": 14.0, "collision_count": 0}],
+        "metrics": {"collection_rollout_count": 1, "collection_distance_traveled": 25.0},
+    }
+    manifest_path = tmp_path / "collection_run" / "region_training_collection.json"
+    manifest_path.parent.mkdir(parents=True)
+    manifest_path.write_text(json.dumps(collection_payload, indent=2), encoding="utf-8")
+    tiny_route_free = _save_episode(tmp_path / "tiny_route_free", [(2.0, 2.0, 0.0, 0.5), (10.0, 5.0, 0.1, 0.7)])
+    tiny_route_guided = _save_episode(tmp_path / "tiny_route_guided", [(2.0, 2.0, 0.0, 0.5), (35.0, 35.0, 0.5, 1.0)])
+    mlp_route_free = _save_episode(tmp_path / "mlp_route_free", [(2.0, 2.0, 0.0, 0.5), (28.0, 30.0, 0.4, 1.0)])
+    mlp_route_guided = _save_episode(tmp_path / "mlp_route_guided", [(2.0, 2.0, 0.0, 0.5), (35.0, 35.0, 0.5, 1.0)])
+    episodes = [tiny_route_free, tiny_route_guided, mlp_route_free, mlp_route_guided]
+    seen_world_models: list[str] = []
+
+    def fake_run_episode(**kwargs):
+        index = len(seen_world_models)
+        agent_options = kwargs.get("agent_options") if isinstance(kwargs.get("agent_options"), dict) else {}
+        seen_world_models.append(str(agent_options.get("world_model_name") or ""))
+
+        class Result:
+            def to_dict(self):
+                return {
+                    "episode_id": f"eval_{index}",
+                    "episode_path": str(episodes[index]),
+                    "metrics": {
+                        "horizontal_distance_traveled": 20.0 + index,
+                        "collision_count": 0,
+                        "drive_mode": "manual",
+                        "route_waypoint_count": 0 if index in {0, 2} else 3,
+                    },
+                }
+
+        return Result()
+
+    with patch("desktop_app.services.run_episode", side_effect=fake_run_episode):
+        payload = services.compare_region_world_models_from_collection(
+            services.RegionWorldModelComparisonRequest(
+                collection_manifest_path=str(manifest_path),
+                world_model_types=["tiny_learned", "mlp_dynamics"],
+                output_dir=str(tmp_path / "comparison"),
+                eval_steps=20,
+                include_route_guided_baseline=True,
+                close_beamng=True,
+            )
+        )
+
+    assert seen_world_models == ["tiny_learned", "tiny_learned", "mlp_dynamics", "mlp_dynamics"]
+    assert payload["status"] == "completed"
+    assert [row["world_model_type"] for row in payload["models"]] == ["tiny_learned", "mlp_dynamics"]
+    assert payload["best"]["world_model_type"] == "mlp_dynamics"
+    assert payload["models"][1]["comparison"]["route_free_min_goal_distance"] < payload["models"][0]["comparison"]["route_free_min_goal_distance"]
+    assert Path(payload["summary_path"]).exists()
+    training_record = json.loads(Path(payload["training_run_path"]).read_text(encoding="utf-8"))
+    assert training_record["preset_id"] == "region_world_model_comparison"
+    assert training_record["artifact_type"] == "world_model_comparison"
+    assert training_record["metrics"]["model_count"] == 2
+    assert training_record["metrics"]["best_route_free_min_goal_distance"] == payload["best"]["comparison"]["route_free_min_goal_distance"]
+    assert training_record["summary"]["best_world_model_type"] == "mlp_dynamics"
+
+
 def test_region_self_supervised_world_model_records_navigation_diagnostics_when_eval_misses_goal(tmp_path: Path) -> None:
     task_path = tmp_path / "task.yaml"
     _write_task(task_path)
