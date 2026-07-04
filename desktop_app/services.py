@@ -3338,6 +3338,45 @@ def run_region_world_model_evaluation(request: RegionWorldModelEvaluationRequest
         if route_guided_evaluation is not None:
             traces["route_guided"] = load_episode_trace(route_guided_evaluation.get("episode_path", ""))
         _write_region_trajectory_svg(task, Path(trajectory_plot_path), traces=traces)
+    summary_path = output_dir / "region_world_model_evaluation_summary.json"
+    training_run = write_training_run_record(
+        output_dir,
+        preset_id="region_world_model_evaluation",
+        status="completed",
+        dataset_root=str(Path(request.task_path).resolve()),
+        adapter="beamng_region_task",
+        sequence_id=task.task_id,
+        artifact_path=str(summary_path.resolve()),
+        artifact_type="world_model_evaluation",
+        metrics=comparison,
+        history={key: [value] for key, value in _numeric_metric_items(comparison)},
+        parameters={
+            "world_model_type": request.world_model_type,
+            "world_model_path": str(Path(request.world_model_path).resolve()),
+            "planner": request.planner,
+            "planner_horizon": request.planner_horizon,
+            "planner_samples": request.planner_samples,
+            "planner_iterations": request.planner_iterations,
+            "evaluation_agent": request.evaluation_agent,
+            "evaluation_route_mode": "route_free",
+            "include_route_guided_baseline": bool(request.include_route_guided_baseline),
+            "use_experience_corridor": bool(request.use_experience_corridor),
+            "evaluation_allow_reverse_recovery": bool(request.evaluation_allow_reverse_recovery),
+            "evaluation_reverse_recovery_after_steps": max(18, int(request.evaluation_reverse_recovery_after_steps)),
+            "evaluation_local_subgoal_distance_m": max(1.0, float(request.evaluation_local_subgoal_distance_m)),
+            "evaluation_use_model_support_subgoals": bool(request.evaluation_use_model_support_subgoals),
+            "evaluation_use_model_support_field_subgoals": bool(request.evaluation_use_model_support_field_subgoals),
+        },
+        summary={
+            "task_path": str(Path(request.task_path).resolve()),
+            "world_model_path": str(Path(request.world_model_path).resolve()),
+            "summary_path": str(summary_path.resolve()),
+            "trajectory_plot_path": trajectory_plot_path,
+            "route_free_episode_path": str(evaluation.get("episode_path") or ""),
+            "route_guided_episode_path": str(route_guided_evaluation.get("episode_path") or "") if route_guided_evaluation else "",
+            "comparison": comparison,
+        },
+    )
     payload: dict[str, Any] = {
         "status": "completed",
         "task": task.to_dict(),
@@ -3358,8 +3397,8 @@ def run_region_world_model_evaluation(request: RegionWorldModelEvaluationRequest
             "experience_route_point_count": experience_route_point_count,
         },
         "experience_route": experience_route,
+        "training_run_path": training_run["path"],
     }
-    summary_path = output_dir / "region_world_model_evaluation_summary.json"
     summary_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
     payload["summary_path"] = str(summary_path.resolve())
     return payload

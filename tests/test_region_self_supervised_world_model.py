@@ -944,6 +944,15 @@ def test_region_world_model_evaluation_compares_route_free_and_route_guided_base
     assert Path(payload["trajectory_plot_path"]).exists()
     assert "route_free" in Path(payload["trajectory_plot_path"]).read_text(encoding="utf-8")
     assert json.loads(Path(payload["summary_path"]).read_text(encoding="utf-8"))["comparison"] == payload["comparison"]
+    training_record = json.loads(Path(payload["training_run_path"]).read_text(encoding="utf-8"))
+    assert training_record["preset_id"] == "region_world_model_evaluation"
+    assert training_record["artifact_type"] == "world_model_evaluation"
+    assert training_record["artifact_path"] == str(Path(payload["summary_path"]).resolve())
+    assert training_record["metrics"]["route_free_min_goal_distance"] == payload["comparison"]["route_free_min_goal_distance"]
+    assert training_record["metrics"]["route_guided_goal_success"] is True
+    assert training_record["metrics"]["route_free_reverse_count"] == 1
+    assert training_record["history"]["route_free_min_goal_distance"] == [payload["comparison"]["route_free_min_goal_distance"]]
+    assert training_record["summary"]["trajectory_plot_path"] == payload["trajectory_plot_path"]
 
 
 def test_region_training_data_collection_can_use_route_aware_curriculum(tmp_path: Path) -> None:
