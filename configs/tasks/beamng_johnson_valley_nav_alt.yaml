@@ -1,0 +1,65 @@
+task_id: beamng_johnson_valley_nav_alt
+task_type: navigation_region_v1
+map_id: johnson_valley_manual
+backend_targets:
+- beamng
+level: johnson_valley
+region:
+  polygon:
+  - - 1173.822
+    - -138.863
+  - - 1217.423
+    - -222.645
+  - - 1376.998
+    - -124.37
+  - - 1311.841
+    - -37.816
+start_pose:
+  pos:
+  - 1281.0656738281
+  - -110.71189117432
+  - 115.508
+  yaw: -2.855
+goal:
+  pos:
+  - 1233.2299804688
+  - -165.27005004883
+  radius: 12.0
+expert_route:
+- - 1281.0656738281
+  - -110.71189117432
+- - 1264.6890869141
+  - -115.5481262207
+- - 1246.1564941406
+  - -111.78608703613
+- - 1232.9798583984
+  - -121.45986938477
+- - 1226.9887695313
+  - -133.03266906738
+- - 1227.4246826172
+  - -150.98196411133
+- - 1233.2299804688
+  - -165.27005004883
+constraints:
+  max_steps: 900
+  max_collision_count: 0
+cost:
+  out_of_region_weight: 250.0
+  boundary_weight: 8.0
+  boundary_margin_m: 3.0
+beamng:
+  vehicle_model: pickup
+  camera_mode: follow
+  camera_distance_m: 14.0
+  camera_height_m: 13.0
+  camera_lookahead_m: 2.0
+  camera_pitch_deg: 35.0
+  draw_route: true
+  drive_mode: ai_line
+  collection_drive_mode: ai_line
+  evaluation_drive_mode: manual
+  evaluation_route_mode: expert
+  manual_control_is_adas: false
+  ai_line_speed: 7.0
+  steps_per_action: 6
+  weather: sunny

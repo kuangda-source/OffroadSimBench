@@ -47,3 +47,20 @@ def test_johnson_valley_demo_uses_stable_manual_control_timing() -> None:
     assert task.beamng["evaluation_route_mode"] == "expert"
     assert int(task.beamng["steps_per_action"]) == 18
     assert float(task.beamng["ai_line_speed"]) <= 10.0
+
+
+def test_johnson_valley_alt_route_free_task_loads_for_generalization() -> None:
+    original = load_navigation_region_task(ROOT / "configs" / "tasks" / "beamng_johnson_valley_nav_test.yaml")
+    task = load_navigation_region_task(ROOT / "configs" / "tasks" / "beamng_johnson_valley_nav_alt.yaml")
+
+    assert task.task_id == "beamng_johnson_valley_nav_alt"
+    assert task.level == original.level == "johnson_valley"
+    assert task.region_polygon == original.region_polygon
+    assert task.start_pos[:2] != original.start_pos[:2]
+    assert task.goal_pos != original.goal_pos
+    assert len(task.expert_route) >= 6
+    assert task.expert_route[0] == task.start_pos[:2]
+    assert task.expert_route[-1] == task.goal_pos
+    assert task.beamng["evaluation_drive_mode"] == "manual"
+    assert task.beamng["evaluation_route_mode"] == "expert"
+    assert int(task.beamng["steps_per_action"]) == 6

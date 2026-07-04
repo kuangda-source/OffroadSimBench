@@ -239,6 +239,7 @@ OffroadSimBench is a local off-road autonomous-driving simulation, dataset repla
 - stable-worldmodel HDF5 export, LE-WM-compatible cost checkpoint training, and `AutoCostModel + CEMSolver` planning.
 - Region self-supervised BeamNG collection and training scaffold: `region_explorer`, `world_model_direct`, terminal goal braking, acceptance metrics, and `scripts\run_region_self_supervised_world_model.py`.
 - The default GUI demo now uses the Johnson Valley `mlp_dynamics + world_model_direct` route-free support-route configuration validated on `configs\tasks\beamng_johnson_valley_nav_test.yaml`: route-free goal success, 11.898 m final goal distance within the 12 m radius, 0 collisions, 0 stuck recoveries, and 0 reverse steps. The older LE-WM checkpoint remains available as a selectable saved world-model config.
+- Same-map generalization has an initial validated alternate Johnson Valley task at `configs\tasks\beamng_johnson_valley_nav_alt.yaml`: the existing route-aware collection, MLP dynamics training, route-free support-subgoal evaluation, and route-guided comparison run without Python code changes; route-free reached 11.945 m final distance with 0 collisions, 0 stuck recoveries, and 0 reverse steps.
 - PySide6 desktop GUI with a guided demo overview, Dataset and Training workbench, BeamNG Simulation workbench, generic dataset frame preview, HDF5 export, external trainer manifests, LE-WM cost-model training, visible BeamNG autodrive, local terrain draft export, episode trajectory preview, and logs.
 
 ### Dataset And Training Workbench
