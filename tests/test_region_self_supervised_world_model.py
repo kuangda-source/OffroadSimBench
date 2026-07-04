@@ -1175,6 +1175,81 @@ def test_region_training_data_collection_marks_insufficient_quality_gate(tmp_pat
     assert training_record["status"] == "collection_insufficient"
 
 
+def test_region_training_data_collection_can_require_goal_distance_quality(tmp_path: Path) -> None:
+    task_path = tmp_path / "task.yaml"
+    _write_task(task_path)
+    collection_episode = _save_episode(
+        tmp_path / "collection",
+        [(2.0, 2.0, 0.0, 0.5), (8.0, 3.0, 0.0, 0.5), (10.0, 4.0, 0.0, 0.5)],
+    )
+
+    def fake_run_episode(**kwargs):
+        class Result:
+            def to_dict(self):
+                return {
+                    "episode_id": "collection",
+                    "episode_path": str(collection_episode),
+                    "metrics": {"horizontal_distance_traveled": 9.0, "collision_count": 0, "drive_mode": "manual"},
+                }
+
+        return Result()
+
+    with patch("desktop_app.services.run_episode", side_effect=fake_run_episode):
+        payload = services.collect_region_training_data(
+            services.RegionTrainingDataCollectionRequest(
+                task_path=str(task_path),
+                output_dir=str(tmp_path / "collection_run"),
+                collect_steps=20,
+                collect_rollouts=1,
+                max_collection_min_goal_distance_m=20.0,
+                close_beamng=True,
+            )
+        )
+
+    assert payload["status"] == "collection_insufficient"
+    assert payload["quality_gate"]["reason"] == "collection_min_goal_distance_above_threshold"
+    assert payload["quality_gate"]["required_collection_min_goal_distance_m"] == 20.0
+    assert payload["metrics"]["collection_min_goal_distance"] > 20.0
+
+
+def test_region_training_data_collection_can_require_unique_region_cells(tmp_path: Path) -> None:
+    task_path = tmp_path / "task.yaml"
+    _write_task(task_path)
+    collection_episode = _save_episode(
+        tmp_path / "collection",
+        [(2.0, 2.0, 0.0, 0.5), (3.0, 2.0, 0.0, 0.5), (4.0, 2.0, 0.0, 0.5)],
+    )
+
+    def fake_run_episode(**kwargs):
+        class Result:
+            def to_dict(self):
+                return {
+                    "episode_id": "collection",
+                    "episode_path": str(collection_episode),
+                    "metrics": {"horizontal_distance_traveled": 2.0, "collision_count": 0, "drive_mode": "manual"},
+                }
+
+        return Result()
+
+    with patch("desktop_app.services.run_episode", side_effect=fake_run_episode):
+        payload = services.collect_region_training_data(
+            services.RegionTrainingDataCollectionRequest(
+                task_path=str(task_path),
+                output_dir=str(tmp_path / "collection_run"),
+                collect_steps=20,
+                collect_rollouts=1,
+                collection_coverage_grid_size=4,
+                min_unique_region_cells=3,
+                close_beamng=True,
+            )
+        )
+
+    assert payload["status"] == "collection_insufficient"
+    assert payload["quality_gate"]["reason"] == "collection_unique_region_cells_below_threshold"
+    assert payload["quality_gate"]["required_unique_region_cells"] == 3
+    assert payload["metrics"]["unique_region_cells"] < 3
+
+
 def test_region_self_supervised_script_exposes_gui_training_options(monkeypatch, tmp_path: Path, capsys) -> None:
     task_path = tmp_path / "task.yaml"
     _write_task(task_path)
@@ -1220,6 +1295,10 @@ def test_region_self_supervised_script_exposes_gui_training_options(monkeypatch,
             "0.55",
             "--min-goal-zone-coverage",
             "0.25",
+            "--max-collection-min-goal-distance-m",
+            "70.0",
+            "--min-unique-region-cells",
+            "4",
             "--register-world-model-config",
             "--world-model-config-path",
             str(tmp_path / "world_model_configs.json"),
@@ -1244,6 +1323,8 @@ def test_region_self_supervised_script_exposes_gui_training_options(monkeypatch,
     assert request.collection_multi_start_lateral_m == 1.25
     assert request.min_route_coverage_ratio == 0.55
     assert request.min_goal_zone_coverage == 0.25
+    assert request.max_collection_min_goal_distance_m == 70.0
+    assert request.min_unique_region_cells == 4
     assert request.register_world_model_config is True
     assert request.world_model_config_path == str(tmp_path / "world_model_configs.json")
     assert json.loads(capsys.readouterr().out)["status"] == "ok"

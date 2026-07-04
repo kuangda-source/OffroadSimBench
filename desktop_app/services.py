@@ -178,6 +178,8 @@ class RegionSelfSupervisedWorldModelRequest:
     collection_multi_start_lateral_m: float = 0.0
     min_route_coverage_ratio: float = 0.0
     min_goal_zone_coverage: float = 0.0
+    max_collection_min_goal_distance_m: float = 0.0
+    min_unique_region_cells: int = 0
     eval_steps: int = 1200
     seed: int = 7
     planner: str = "navigation_mpc"
@@ -229,6 +231,8 @@ class RegionTrainingDataCollectionRequest:
     collection_multi_start_lateral_m: float = 0.0
     min_route_coverage_ratio: float = 0.0
     min_goal_zone_coverage: float = 0.0
+    max_collection_min_goal_distance_m: float = 0.0
+    min_unique_region_cells: int = 0
     beamng_gfx: str = "vk"
     close_beamng: bool = True
     step_delay_sec: float = 0.0
@@ -2603,6 +2607,9 @@ def collect_region_training_data(request: RegionTrainingDataCollectionRequest) -
         min_route_coverage_ratio=request.min_route_coverage_ratio,
         goal_zone_coverage=route_metrics["goal_zone_coverage"],
         min_goal_zone_coverage=request.min_goal_zone_coverage,
+        max_collection_min_goal_distance_m=request.max_collection_min_goal_distance_m,
+        unique_region_cells=coverage["cell_count"],
+        min_unique_region_cells=request.min_unique_region_cells,
     )
     metrics = {
         "collection_rollout_count": rollout_count,
@@ -2651,6 +2658,8 @@ def collect_region_training_data(request: RegionTrainingDataCollectionRequest) -
             "collection_multi_start_lateral_m": max(0.0, float(request.collection_multi_start_lateral_m)),
             "min_route_coverage_ratio": max(0.0, float(request.min_route_coverage_ratio)),
             "min_goal_zone_coverage": max(0.0, float(request.min_goal_zone_coverage)),
+            "max_collection_min_goal_distance_m": max(0.0, float(request.max_collection_min_goal_distance_m)),
+            "min_unique_region_cells": max(0, int(request.min_unique_region_cells)),
         },
     }
     manifest_path = output_dir / REGION_TRAINING_COLLECTION_FILENAME
@@ -2911,6 +2920,9 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
         min_route_coverage_ratio=request.min_route_coverage_ratio,
         goal_zone_coverage=route_metrics["goal_zone_coverage"],
         min_goal_zone_coverage=request.min_goal_zone_coverage,
+        max_collection_min_goal_distance_m=request.max_collection_min_goal_distance_m,
+        unique_region_cells=coverage["cell_count"],
+        min_unique_region_cells=request.min_unique_region_cells,
     )
     if short_episode_paths:
         quality_gate = {
@@ -2991,6 +3003,8 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
                 "collection_multi_start_lateral_m": max(0.0, float(request.collection_multi_start_lateral_m)),
                 "min_route_coverage_ratio": max(0.0, float(request.min_route_coverage_ratio)),
                 "min_goal_zone_coverage": max(0.0, float(request.min_goal_zone_coverage)),
+                "max_collection_min_goal_distance_m": max(0.0, float(request.max_collection_min_goal_distance_m)),
+                "min_unique_region_cells": max(0, int(request.min_unique_region_cells)),
                 "use_experience_corridor": bool(use_experience_corridor),
                 "experience_route_min_spacing_m": max(0.25, float(request.experience_route_min_spacing_m)),
                 "experience_route_max_points": max(2, int(request.experience_route_max_points)),
@@ -3195,6 +3209,8 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
             "collection_multi_start_lateral_m": max(0.0, float(request.collection_multi_start_lateral_m)),
             "min_route_coverage_ratio": max(0.0, float(request.min_route_coverage_ratio)),
             "min_goal_zone_coverage": max(0.0, float(request.min_goal_zone_coverage)),
+            "max_collection_min_goal_distance_m": max(0.0, float(request.max_collection_min_goal_distance_m)),
+            "min_unique_region_cells": max(0, int(request.min_unique_region_cells)),
             "use_experience_corridor": bool(use_experience_corridor),
             "experience_route_min_spacing_m": max(0.25, float(request.experience_route_min_spacing_m)),
             "experience_route_max_points": max(2, int(request.experience_route_max_points)),
@@ -4743,10 +4759,15 @@ def _collection_quality_gate(
     min_route_coverage_ratio: float = 0.0,
     goal_zone_coverage: float | None = None,
     min_goal_zone_coverage: float = 0.0,
+    max_collection_min_goal_distance_m: float = 0.0,
+    unique_region_cells: int | None = None,
+    min_unique_region_cells: int = 0,
 ) -> dict[str, Any]:
     required = max(0.0, float(min_progress_ratio))
     required_route = max(0.0, float(min_route_coverage_ratio))
     required_goal_zone = max(0.0, float(min_goal_zone_coverage))
+    required_goal_distance = max(0.0, float(max_collection_min_goal_distance_m))
+    required_unique_cells = max(0, int(min_unique_region_cells))
     start_distance = math.hypot(task.start_pos[0] - task.goal_pos[0], task.start_pos[1] - task.goal_pos[1])
     min_distance = _float_or_nan(collection_acceptance.get("min_goal_distance"))
     if not math.isfinite(min_distance) or start_distance <= 1e-9:
@@ -4763,15 +4784,22 @@ def _collection_quality_gate(
     progress_passed = required <= 0.0 or goal_reached or progress_ratio >= required
     route_passed = required_route <= 0.0 or route_ratio >= required_route
     goal_zone_passed = required_goal_zone <= 0.0 or goal_zone_ratio >= required_goal_zone
-    passed = bool(progress_passed and route_passed and goal_zone_passed)
+    goal_distance_passed = required_goal_distance <= 0.0 or goal_reached or (math.isfinite(min_distance) and min_distance <= required_goal_distance)
+    unique_cells = max(0, int(unique_region_cells or 0))
+    unique_cells_passed = required_unique_cells <= 0 or unique_cells >= required_unique_cells
+    passed = bool(progress_passed and route_passed and goal_zone_passed and goal_distance_passed and unique_cells_passed)
     if passed:
         reason = "passed"
     elif not progress_passed:
         reason = "collection_goal_progress_below_threshold"
     elif not route_passed:
         reason = "collection_route_coverage_below_threshold"
-    else:
+    elif not goal_zone_passed:
         reason = "collection_goal_zone_coverage_below_threshold"
+    elif not goal_distance_passed:
+        reason = "collection_min_goal_distance_above_threshold"
+    else:
+        reason = "collection_unique_region_cells_below_threshold"
     return {
         "passed": bool(passed),
         "reason": reason,
@@ -4781,6 +4809,9 @@ def _collection_quality_gate(
         "required_route_coverage_ratio": float(required_route),
         "goal_zone_coverage": float(goal_zone_ratio),
         "required_goal_zone_coverage": float(required_goal_zone),
+        "required_collection_min_goal_distance_m": float(required_goal_distance),
+        "unique_region_cells": int(unique_cells),
+        "required_unique_region_cells": int(required_unique_cells),
         "start_goal_distance": float(start_distance),
         "collection_min_goal_distance": min_distance,
         "collection_goal_reached": goal_reached,

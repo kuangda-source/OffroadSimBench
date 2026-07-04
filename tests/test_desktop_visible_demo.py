@@ -1285,6 +1285,9 @@ def test_gui_exposes_region_self_supervised_training(monkeypatch) -> None:
     assert captured["request"].collection_route_lateral_m > 0.0
     assert captured["request"].collection_multi_start is True
     assert captured["request"].min_route_coverage_ratio >= 0.5
+    assert captured["request"].max_collection_min_goal_distance_m <= 70.0
+    assert captured["request"].max_collection_min_goal_distance_m > 0.0
+    assert captured["request"].min_unique_region_cells >= 3
     assert captured["request"].collection_coverage_grid_size >= 6
     assert captured["request"].collection_coverage_target_interval == 1
     assert captured["request"].collection_max_target_steps <= 30
@@ -1339,6 +1342,9 @@ def test_gui_collects_region_training_data_from_selected_task(monkeypatch) -> No
     assert captured["request"].collection_route_lateral_m > 0.0
     assert captured["request"].collection_multi_start is True
     assert captured["request"].min_route_coverage_ratio >= 0.5
+    assert captured["request"].max_collection_min_goal_distance_m <= 70.0
+    assert captured["request"].max_collection_min_goal_distance_m > 0.0
+    assert captured["request"].min_unique_region_cells >= 3
     assert captured["request"].collection_coverage_grid_size >= 6
     assert captured["request"].collection_max_target_steps <= 30
     assert captured["request"].close_beamng is False

@@ -28,6 +28,8 @@ def main() -> None:
     parser.add_argument("--collection-multi-start-lateral-m", type=float, default=0.0)
     parser.add_argument("--min-route-coverage-ratio", type=float, default=0.0)
     parser.add_argument("--min-goal-zone-coverage", type=float, default=0.0)
+    parser.add_argument("--max-collection-min-goal-distance-m", type=float, default=0.0)
+    parser.add_argument("--min-unique-region-cells", type=int, default=0)
     parser.add_argument("--eval-steps", type=int, default=1000)
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--planner", default="navigation_mpc")
@@ -64,6 +66,8 @@ def main() -> None:
             collection_multi_start_lateral_m=args.collection_multi_start_lateral_m,
             min_route_coverage_ratio=args.min_route_coverage_ratio,
             min_goal_zone_coverage=args.min_goal_zone_coverage,
+            max_collection_min_goal_distance_m=args.max_collection_min_goal_distance_m,
+            min_unique_region_cells=args.min_unique_region_cells,
             eval_steps=args.eval_steps,
             seed=args.seed,
             planner=args.planner,
