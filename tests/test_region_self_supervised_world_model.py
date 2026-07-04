@@ -500,6 +500,51 @@ def test_region_world_model_training_from_collection_registers_model_config(tmp_
     assert saved_config["validation"]["segment_rmse"] == payload["training"]["metrics"]["segment_rmse"]
 
 
+def test_region_world_model_training_from_collection_supports_mlp_dynamics(tmp_path: Path) -> None:
+    task_path = tmp_path / "task.yaml"
+    _write_task(task_path)
+    collection_episode = _save_episode(
+        tmp_path / "collection",
+        [
+            (2.0, 2.0, 0.0, 0.5),
+            (10.0, 8.0, 0.15, 1.0),
+            (18.0, 16.0, 0.3, 1.2),
+            (25.0, 25.0, 0.45, 1.3),
+        ],
+    )
+    collection_payload = {
+        "status": "completed",
+        "task": services.load_navigation_region_task(str(task_path)).to_dict(),
+        "task_path": str(task_path),
+        "output_dir": str(tmp_path / "collection_run"),
+        "episode_paths": [str(collection_episode.resolve())],
+        "collection_acceptances": [{"min_goal_distance": 14.0, "final_goal_distance": 14.0, "collision_count": 0}],
+        "metrics": {"collection_rollout_count": 1, "collection_distance_traveled": 25.0},
+    }
+    manifest_path = tmp_path / "collection_run" / "region_training_collection.json"
+    manifest_path.parent.mkdir(parents=True)
+    manifest_path.write_text(json.dumps(collection_payload, indent=2), encoding="utf-8")
+
+    payload = services.train_region_world_model_from_collection(
+        services.RegionWorldModelTrainingRequest(
+            collection_manifest_path=str(manifest_path),
+            world_model_type="mlp_dynamics",
+            output_dir=str(tmp_path / "trained_model"),
+            register_world_model_config=True,
+            world_model_config_path=str(tmp_path / "world_model_configs.json"),
+        )
+    )
+    saved_config = next(
+        row for row in services.world_model_config_entries(tmp_path / "world_model_configs.json") if row["id"] == payload["world_model_config"]["id"]
+    )
+
+    assert payload["status"] == "completed"
+    assert payload["training"]["model_type"] == "mlp_dynamics"
+    assert payload["training"]["metrics"]["model_family"] == "random_feature_mlp"
+    assert saved_config["world_model"] == "mlp_dynamics"
+    assert Path(payload["model_dir"], "model.json").exists()
+
+
 def test_region_world_model_training_refuses_insufficient_collection_manifest(tmp_path: Path) -> None:
     task_path = tmp_path / "task.yaml"
     _write_task(task_path)

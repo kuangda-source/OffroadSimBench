@@ -14,10 +14,11 @@ smoke path.
 
 - Added `AgentRegistry` so driving algorithms can be selected without
   application-level hard-coding.
-- Added `WorldModelRegistry` with `simple_kinematic`, `tiny_learned`, and
-  optional `le_wm` entries.
-- Added `TinyLearnedWorldModel`, a NumPy linear dynamics model that trains from
-  registered dataset sequences and saves/loads from disk.
+- Added `WorldModelRegistry` with `simple_kinematic`, `tiny_learned`,
+  `mlp_dynamics`, and optional `le_wm` entries.
+- Added `TinyLearnedWorldModel`, a NumPy linear dynamics model, and
+  `MLPDynamicsWorldModel`, a lightweight random-feature MLP dynamics model,
+  that train from registered dataset sequences and save/load from disk.
 - Added `LeWMWorldModel` and `le_wm_cem` as the stable-worldmodel
   checkpoint/runtime wrapper for `https://github.com/lucas-maes/le-wm`.
 - Added `ORFDAdapter` for ORFD-style `training|validation|testing/<sequence>`

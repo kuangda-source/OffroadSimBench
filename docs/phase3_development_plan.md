@@ -18,10 +18,10 @@ Phase 3 targets a real-data and real-simulator loop:
   `dense_depth`, `sparse_depth`, `lidar_data`, `gt_image`, and `calib` layouts.
 - `AgentRegistry` makes driving algorithms switchable without hard-coded
   application branches.
-- `WorldModelRegistry` exposes `simple_kinematic`, `tiny_learned`, and optional
-  `le_wm` model entries.
-- `TinyLearnedWorldModel` provides a small NumPy dynamics model for real-data
-  smoke tests and reproducible acceptance.
+- `WorldModelRegistry` exposes `simple_kinematic`, `tiny_learned`,
+  `mlp_dynamics`, and optional `le_wm` model entries.
+- `TinyLearnedWorldModel` and `MLPDynamicsWorldModel` provide small NumPy
+  dynamics models for real-data smoke tests and reproducible acceptance.
 - `LeWMWorldModel` and `le_wm_cem` expose stable-worldmodel checkpoint loading
   through `AutoCostModel + CEMSolver`.
 - `run_episode()` accepts registered backends beyond `gym_heightmap`.

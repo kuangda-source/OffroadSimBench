@@ -3,6 +3,7 @@
 from offroad_sim.world_models.base import BaseWorldModel, WorldModelPrediction
 from offroad_sim.world_models.kinematic import SimpleKinematicWorldModel
 from offroad_sim.world_models.le_wm import LeWMUnavailableError, LeWMWorldModel
+from offroad_sim.world_models.mlp_dynamics import MLPDynamicsWorldModel
 from offroad_sim.world_models.registry import (
     WorldModelRegistry,
     WorldModelSpec,
@@ -16,6 +17,7 @@ __all__ = [
     "BaseWorldModel",
     "LeWMUnavailableError",
     "LeWMWorldModel",
+    "MLPDynamicsWorldModel",
     "SimpleKinematicWorldModel",
     "TinyLearnedWorldModel",
     "WorldModelPrediction",

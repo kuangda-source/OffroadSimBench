@@ -6,7 +6,7 @@ import pytest
 from offroad_sim.agents import WorldModelAgent, make_agent
 from offroad_sim.core import Action, Observation, VehicleState
 from offroad_sim.datasets import DatasetFrame, DatasetSequence, create_mock_orfd_dataset, default_dataset_registry
-from offroad_sim.world_models import SimpleKinematicWorldModel, TinyLearnedWorldModel, default_world_model_registry, make_world_model
+from offroad_sim.world_models import MLPDynamicsWorldModel, SimpleKinematicWorldModel, TinyLearnedWorldModel, default_world_model_registry, make_world_model
 from offroad_sim.world_models.tiny_learned import FEATURE_NAMES, OUTPUT_NAMES
 
 
@@ -56,8 +56,9 @@ def test_make_agent_supports_world_model() -> None:
 def test_world_model_registry_exposes_switchable_models() -> None:
     registry = default_world_model_registry()
 
-    assert {"simple_kinematic", "tiny_learned", "le_wm"}.issubset(set(registry.names()))
+    assert {"simple_kinematic", "tiny_learned", "mlp_dynamics", "le_wm"}.issubset(set(registry.names()))
     assert registry.status("tiny_learned").available is True
+    assert registry.status("mlp_dynamics").available is True
 
 
 def test_tiny_learned_world_model_trains_and_loads(tmp_path) -> None:
@@ -73,6 +74,42 @@ def test_tiny_learned_world_model_trains_and_loads(tmp_path) -> None:
     assert prediction.final_state is not None
     assert prediction.metadata["model_type"] == "tiny_learned"
     assert model.metadata["sample_count"] == 4
+
+
+def test_mlp_dynamics_world_model_trains_and_loads(tmp_path) -> None:
+    frames = [
+        DatasetFrame(
+            f"{index:06d}",
+            float(index),
+            VehicleState(x=float(index), y=float(index * index) * 0.05, yaw=0.04 * index, speed=1.0 + 0.1 * index),
+            action=Action(steer=0.1 * ((index % 3) - 1), throttle=0.35 + 0.03 * index),
+        )
+        for index in range(9)
+    ]
+    sequence = DatasetSequence(
+        dataset_id="beamng_episode",
+        dataset_type="beamng_episode",
+        sequence_id="mlp_train",
+        root=".",
+        frames=frames,
+        goal=(8.0, 3.2),
+    )
+
+    model = MLPDynamicsWorldModel.fit([sequence], hidden_size=12, seed=5, ridge=1e-4, validation_fraction=0.25)
+    model_path = model.save(tmp_path / "mlp_model")
+    loaded = make_world_model("mlp_dynamics", path=model_path.parent)
+    prediction = loaded.predict(
+        Observation(timestamp=0.0, vehicle_state=VehicleState(x=2.0, y=0.2, yaw=0.08, speed=1.2), goal=(8.0, 3.2)),
+        Action(steer=0.1, throttle=0.5),
+        horizon=3,
+    )
+
+    assert prediction.final_state is not None
+    assert prediction.metadata["model_type"] == "mlp_dynamics"
+    assert model.metadata["model_family"] == "random_feature_mlp"
+    assert model.metadata["hidden_size"] == 12
+    assert model.metadata["validation_sample_count"] >= 1
+    assert model.metadata["validation_rmse"] >= 0.0
 
 
 def test_tiny_learned_world_model_uses_recorded_transition_actions() -> None:

@@ -27,7 +27,7 @@ from offroad_sim.planning import default_planner_registry
 from offroad_sim.tasks import NavigationRegionTask, load_navigation_region_task
 from offroad_sim.utils.yaml_io import load_yaml_file
 from offroad_sim.vehicles import load_vehicle_config
-from offroad_sim.world_models import TinyLearnedWorldModel, default_world_model_registry
+from offroad_sim.world_models import MLPDynamicsWorldModel, TinyLearnedWorldModel, default_world_model_registry
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -55,6 +55,7 @@ TRAINER_MANIFEST_FILENAMES = ("trainer.yaml", "trainer.yml")
 TRAINER_MANIFEST_DIRS = (CONFIG_ROOT / "trainers", ROOT / "trainers")
 NAN_TEXT = "NaN"
 REGION_TRAINING_COLLECTION_FILENAME = "region_training_collection.json"
+LIGHTWEIGHT_REGION_WORLD_MODELS = ("tiny_learned", "mlp_dynamics")
 UNFINISHED_TEXT = "未完成"
 
 
@@ -1982,6 +1983,26 @@ def train_tiny_world_model(
     }
 
 
+def _normalize_lightweight_region_world_model_type(world_model_type: str) -> str:
+    normalized = str(world_model_type or "").strip().lower().replace("-", "_")
+    aliases = {"tiny": "tiny_learned", "mlp": "mlp_dynamics"}
+    normalized = aliases.get(normalized, normalized)
+    if normalized not in LIGHTWEIGHT_REGION_WORLD_MODELS:
+        supported = ", ".join(LIGHTWEIGHT_REGION_WORLD_MODELS)
+        raise ValueError(f"BeamNG region training supports world_model_type in: {supported}.")
+    return normalized
+
+
+def _fit_lightweight_region_world_model(
+    world_model_type: str,
+    sequences: list[DatasetSequence],
+) -> TinyLearnedWorldModel | MLPDynamicsWorldModel:
+    normalized = _normalize_lightweight_region_world_model_type(world_model_type)
+    if normalized == "tiny_learned":
+        return TinyLearnedWorldModel.fit(sequences)
+    return MLPDynamicsWorldModel.fit(sequences)
+
+
 def export_lewm_hdf5(
     dataset_root: str,
     output_hdf5: str,
@@ -2633,8 +2654,7 @@ def collect_region_training_data(request: RegionTrainingDataCollectionRequest) -
 
 
 def train_region_world_model_from_collection(request: RegionWorldModelTrainingRequest) -> dict[str, Any]:
-    if request.world_model_type != "tiny_learned":
-        raise ValueError("BeamNG region training currently supports world_model_type='tiny_learned'.")
+    world_model_type = _normalize_lightweight_region_world_model_type(request.world_model_type)
     manifest_path = Path(request.collection_manifest_path)
     if not manifest_path.exists():
         raise FileNotFoundError(f"Collection manifest not found: {manifest_path}")
@@ -2654,7 +2674,7 @@ def train_region_world_model_from_collection(request: RegionWorldModelTrainingRe
     stamp = time.strftime("%Y%m%dT%H%M%S")
     output_dir = Path(request.output_dir or ROOT / "outputs" / "beamng_region_world_models" / _safe_name(task.task_id) / stamp)
     output_dir.mkdir(parents=True, exist_ok=True)
-    model = TinyLearnedWorldModel.fit(sequences)
+    model = _fit_lightweight_region_world_model(world_model_type, sequences)
     model.metadata.update(
         {
             "training_source": "beamng_region_collection",
@@ -2700,7 +2720,7 @@ def train_region_world_model_from_collection(request: RegionWorldModelTrainingRe
             "collection_min_goal_distance": [collection_metrics.get("collection_min_goal_distance")],
         },
         parameters={
-            "world_model_type": request.world_model_type,
+            "world_model_type": world_model_type,
             "collection_manifest_path": str(manifest_path.resolve()),
         },
         summary={
@@ -2747,8 +2767,7 @@ def train_region_world_model_from_collection(request: RegionWorldModelTrainingRe
 
 def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldModelRequest) -> dict[str, Any]:
     task = load_navigation_region_task(request.task_path)
-    if request.world_model_type != "tiny_learned":
-        raise ValueError("Region self-supervised training currently supports world_model_type='tiny_learned'.")
+    world_model_type = _normalize_lightweight_region_world_model_type(request.world_model_type)
     stamp = time.strftime("%Y%m%dT%H%M%S")
     output_dir = Path(request.output_dir or ROOT / "outputs" / "region_self_supervised" / _safe_name(task.task_id) / stamp)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -2915,7 +2934,7 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
                 "goal_zone_coverage": [route_metrics["goal_zone_coverage"]],
             },
             parameters={
-                "world_model_type": request.world_model_type,
+                "world_model_type": world_model_type,
                 "planner": request.planner,
                 "planner_horizon": request.planner_horizon,
                 "planner_samples": request.planner_samples,
@@ -2989,7 +3008,7 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
         payload["summary_path"] = str(summary_path.resolve())
         return payload
 
-    model = TinyLearnedWorldModel.fit(sequences)
+    model = _fit_lightweight_region_world_model(world_model_type, sequences)
     model.metadata.update(
         {
             "training_source": "beamng_region_self_supervised",
@@ -3119,7 +3138,7 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
             "evaluation_min_goal_distance": [acceptance.get("min_goal_distance")],
         },
         parameters={
-            "world_model_type": request.world_model_type,
+            "world_model_type": world_model_type,
             "planner": request.planner,
             "planner_horizon": request.planner_horizon,
             "planner_samples": request.planner_samples,
@@ -4916,7 +4935,7 @@ def _infer_world_model_type(path: Path) -> str:
         except (OSError, json.JSONDecodeError):
             payload = {}
         model_type = str(payload.get("model_type") or "")
-        if model_type in {"tiny_learned", "le_wm", "simple_kinematic"}:
+        if model_type in {"tiny_learned", "mlp_dynamics", "le_wm", "simple_kinematic"}:
             return model_type
     if path.suffix.lower() == ".ckpt":
         return "le_wm"

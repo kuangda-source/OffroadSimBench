@@ -45,7 +45,13 @@ class WorldModelRegistry:
 
     def get(self, name: str) -> WorldModelSpec:
         normalized = name.strip().lower().replace("-", "_")
-        aliases = {"wm": "tiny_learned", "tiny": "tiny_learned", "kinematic": "simple_kinematic", "le_wm": "le_wm"}
+        aliases = {
+            "wm": "tiny_learned",
+            "tiny": "tiny_learned",
+            "mlp": "mlp_dynamics",
+            "kinematic": "simple_kinematic",
+            "le_wm": "le_wm",
+        }
         normalized = aliases.get(normalized, normalized)
         try:
             return self._specs[normalized]
@@ -70,6 +76,7 @@ class WorldModelRegistry:
 def default_world_model_registry() -> WorldModelRegistry:
     from offroad_sim.world_models.kinematic import SimpleKinematicWorldModel
     from offroad_sim.world_models.le_wm import LeWMWorldModel
+    from offroad_sim.world_models.mlp_dynamics import MLPDynamicsWorldModel
     from offroad_sim.world_models.tiny_learned import TinyLearnedWorldModel
 
     registry = WorldModelRegistry()
@@ -87,6 +94,14 @@ def default_world_model_registry() -> WorldModelRegistry:
             factory=TinyLearnedWorldModel,
             load_fn=TinyLearnedWorldModel.load,
             description="Small NumPy learned dynamics model trained from dataset sequences.",
+        )
+    )
+    registry.register(
+        WorldModelSpec(
+            name="mlp_dynamics",
+            factory=MLPDynamicsWorldModel,
+            load_fn=MLPDynamicsWorldModel.load,
+            description="Lightweight NumPy random-feature MLP dynamics model with validation metrics.",
         )
     )
     registry.register(
