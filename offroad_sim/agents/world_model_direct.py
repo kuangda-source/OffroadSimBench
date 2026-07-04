@@ -17,6 +17,9 @@ from offroad_sim.world_models import make_world_model
 
 SUPPORT_ROUTE_BRIDGE_MAX_M = 32.0
 SUPPORT_ROUTE_MIN_GOAL_PROGRESS_M = 1.0
+SUPPORT_FIELD_NEAR_GAIN = 2.5
+SUPPORT_FIELD_MIN_STEP_FRACTION = 0.33
+SUPPORT_FIELD_USE_MARGIN_M = 0.5
 STALL_MOVEMENT_EPS_M = 0.12
 
 
@@ -33,6 +36,7 @@ class WorldModelDirectAgent(OffroadAgent):
         reverse_recovery_after_steps: int = 96,
         local_subgoal_distance_m: float = 22.0,
         use_model_support_subgoals: bool = False,
+        use_model_support_field_subgoals: bool = False,
         **_: Any,
     ) -> None:
         self.world_model_name = str(world_model_name or "simple_kinematic")
@@ -48,6 +52,7 @@ class WorldModelDirectAgent(OffroadAgent):
         self.reverse_recovery_after_steps = max(18, int(reverse_recovery_after_steps))
         self.local_subgoal_distance_m = max(1.0, float(local_subgoal_distance_m))
         self.use_model_support_subgoals = bool(use_model_support_subgoals)
+        self.use_model_support_field_subgoals = bool(use_model_support_field_subgoals)
         self._last_diagnostics: dict[str, Any] = {}
         self._stuck_steps = 0
         self._last_goal_distance: float | None = None
@@ -56,6 +61,7 @@ class WorldModelDirectAgent(OffroadAgent):
         self._goal_hold_latched = False
         self._experience_corridor_used = False
         self._model_support_subgoal_used = False
+        self._model_support_field_subgoal_used = False
 
     def reset(self, scenario_info: Any) -> None:
         self.world_model.reset(scenario_info if isinstance(scenario_info, dict) else {"scenario": scenario_info})
@@ -68,6 +74,7 @@ class WorldModelDirectAgent(OffroadAgent):
         self._goal_hold_latched = False
         self._experience_corridor_used = False
         self._model_support_subgoal_used = False
+        self._model_support_field_subgoal_used = False
 
     def act(self, obs: Observation) -> Action:
         terminal_stop = self._terminal_stop_action(obs)
@@ -83,6 +90,7 @@ class WorldModelDirectAgent(OffroadAgent):
                 "route_used": False,
                 "experience_corridor_used": False,
                 "model_support_subgoal_used": False,
+                "model_support_field_subgoal_used": False,
                 "goal_stop": True,
                 "goal_hold_latched": self._goal_hold_latched,
                 "executed_action": _action_dict(terminal_stop),
@@ -107,6 +115,7 @@ class WorldModelDirectAgent(OffroadAgent):
             "route_used": False,
             "experience_corridor_used": self._experience_corridor_used,
             "model_support_subgoal_used": self._model_support_subgoal_used,
+            "model_support_field_subgoal_used": self._model_support_field_subgoal_used,
             "reference_action": _action_dict(reference_action),
             "executed_action": _action_dict(action),
             "stuck_recovery": stuck_recovery,
@@ -244,6 +253,7 @@ class WorldModelDirectAgent(OffroadAgent):
     def _local_subgoal(self, obs: Observation) -> tuple[float, float]:
         self._experience_corridor_used = False
         self._model_support_subgoal_used = False
+        self._model_support_field_subgoal_used = False
         state = obs.vehicle_state
         start = (float(state.x), float(state.y))
         goal = (float(obs.goal[0]), float(obs.goal[1]))
@@ -267,6 +277,18 @@ class WorldModelDirectAgent(OffroadAgent):
             if support_subgoal is not None:
                 self._model_support_subgoal_used = True
                 return support_subgoal
+        if self.use_model_support_field_subgoals:
+            support_field_subgoal = _support_field_subgoal(
+                _model_support_points(self.world_model),
+                info=obs.info,
+                start=start,
+                lookahead_m=self.local_subgoal_distance_m,
+                goal=goal,
+                stuck_steps=self._stuck_steps,
+            )
+            if support_field_subgoal is not None:
+                self._model_support_field_subgoal_used = True
+                return support_field_subgoal
         dx = goal[0] - start[0]
         dy = goal[1] - start[1]
         distance = math.hypot(dx, dy)
@@ -456,6 +478,81 @@ def _support_routes_subgoal(
     return None
 
 
+def _support_field_subgoal(
+    points: list[tuple[float, float]],
+    *,
+    info: dict[str, Any],
+    start: tuple[float, float],
+    lookahead_m: float,
+    goal: tuple[float, float],
+    stuck_steps: int,
+) -> tuple[float, float] | None:
+    if len(points) < 2:
+        return None
+    polygon = _navigation_polygon(info)
+    goal_dx = goal[0] - start[0]
+    goal_dy = goal[1] - start[1]
+    goal_distance = math.hypot(goal_dx, goal_dy)
+    if goal_distance <= max(1e-6, float(lookahead_m) * 0.5):
+        return None
+
+    direct_candidate = _candidate_toward(start, goal, min(float(lookahead_m), goal_distance))
+    direct_support_distance = _nearest_point_distance(direct_candidate, points)
+    min_candidate_distance = max(2.0, float(lookahead_m) * SUPPORT_FIELD_MIN_STEP_FRACTION)
+    min_goal_progress = max(0.5, float(lookahead_m) * 0.05)
+    candidates: list[tuple[float, float]] = []
+    for point in points:
+        point_distance = math.hypot(point[0] - start[0], point[1] - start[1])
+        if point_distance < min_candidate_distance:
+            continue
+        if point_distance <= float(lookahead_m) * 1.15:
+            candidate = point
+        else:
+            candidate = _candidate_toward(start, point, float(lookahead_m))
+        if polygon and not _point_in_polygon(candidate, polygon):
+            continue
+        candidate_distance = math.hypot(candidate[0] - start[0], candidate[1] - start[1])
+        if candidate_distance < min_candidate_distance:
+            continue
+        alignment = ((candidate[0] - start[0]) * goal_dx + (candidate[1] - start[1]) * goal_dy) / (candidate_distance * goal_distance)
+        if alignment < -0.15:
+            continue
+        if math.hypot(candidate[0] - goal[0], candidate[1] - goal[1]) > goal_distance - min_goal_progress:
+            continue
+        candidates.append(candidate)
+    if not candidates:
+        return None
+
+    def score(candidate: tuple[float, float]) -> tuple[float, float, float]:
+        support_distance = _nearest_point_distance(candidate, points)
+        goal_after_candidate = math.hypot(candidate[0] - goal[0], candidate[1] - goal[1])
+        short_step_penalty = max(0.0, float(lookahead_m) * 0.35 - math.hypot(candidate[0] - start[0], candidate[1] - start[1]))
+        stuck_bias = 0.6 if int(stuck_steps) >= 18 else 1.0
+        total = goal_after_candidate + SUPPORT_FIELD_NEAR_GAIN * stuck_bias * support_distance + 0.35 * short_step_penalty
+        return (total, support_distance, goal_after_candidate)
+
+    best = min(candidates, key=score)
+    if _nearest_point_distance(best, points) + SUPPORT_FIELD_USE_MARGIN_M < direct_support_distance or int(stuck_steps) >= 18:
+        return best
+    return None
+
+
+def _candidate_toward(start: tuple[float, float], target: tuple[float, float], distance_m: float) -> tuple[float, float]:
+    dx = target[0] - start[0]
+    dy = target[1] - start[1]
+    distance = math.hypot(dx, dy)
+    if distance <= 1e-9:
+        return start
+    step = min(float(distance_m), distance)
+    return (start[0] + dx / distance * step, start[1] + dy / distance * step)
+
+
+def _nearest_point_distance(point: tuple[float, float], points: list[tuple[float, float]]) -> float:
+    if not points:
+        return float("inf")
+    return min(math.hypot(point[0] - support[0], point[1] - support[1]) for support in points)
+
+
 def _stitched_support_route(
     routes: list[list[tuple[float, float]]],
     *,
@@ -502,6 +599,21 @@ def _stitched_support_route(
     return stitched if len(stitched) >= 2 else []
 
 
+def _model_support_points(world_model: Any) -> list[tuple[float, float]]:
+    metadata = getattr(world_model, "metadata", {})
+    if not isinstance(metadata, dict):
+        return []
+    route = _coerce_route(metadata.get("support_points", []))
+    if route:
+        return _deduplicate_points(route)
+    points: list[tuple[float, float]] = []
+    raw_routes = metadata.get("support_routes")
+    if isinstance(raw_routes, list):
+        for raw_route in raw_routes:
+            points.extend(_coerce_route(raw_route))
+    return _deduplicate_points(points)
+
+
 def _model_support_routes(world_model: Any) -> list[list[tuple[float, float]]]:
     metadata = getattr(world_model, "metadata", {})
     if not isinstance(metadata, dict):
@@ -517,6 +629,18 @@ def _model_support_routes(world_model: Any) -> list[list[tuple[float, float]]]:
         return routes
     route = _coerce_route(metadata.get("support_points", []))
     return [route] if len(route) >= 2 else []
+
+
+def _deduplicate_points(points: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    deduplicated: list[tuple[float, float]] = []
+    seen: set[tuple[float, float]] = set()
+    for x, y in points:
+        key = (round(float(x), 3), round(float(y), 3))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduplicated.append((float(x), float(y)))
+    return deduplicated
 
 
 def _coerce_route(raw: Any) -> list[tuple[float, float]]:

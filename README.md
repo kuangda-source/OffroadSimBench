@@ -538,6 +538,16 @@ support route-free demo config:
 `johnson_valley_tiny_model_support_20260704`. Detailed notes are in
 [`docs/reports/route_free_johnson_valley_model_support_probe_2026-07-04.md`](docs/reports/route_free_johnson_valley_model_support_probe_2026-07-04.md).
 
+A separate `model_support_field_subgoals` option is available for stricter
+route-free experiments. It flattens model support points into an unordered
+traversability field, filters out nearby past points, and only selects local
+subgoals that still reduce distance to the final goal. The 2026-07-04 BeamNG
+probe showed that this unordered field is not yet enough for the Johnson Valley
+strict-direct target: the best 420-step support-field run reached
+`min_goal_distance=112.495 m` with zero collisions, which is worse than the
+current strict-direct best (`98.138 m`). Treat it as an experimental control
+feature, not as a demo-ready validation flag.
+
 Saved tasks default to `evaluation_drive_mode: manual`, which means
 the `OffroadAgent`/planner commands control the vehicle during evaluation.
 `evaluation_drive_mode: ai_line` remains available only for BeamNG-native

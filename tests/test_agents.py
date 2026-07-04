@@ -555,6 +555,132 @@ def test_world_model_direct_agent_bridges_connected_model_support_routes() -> No
     assert agent._model_support_subgoal_used is True
 
 
+def test_world_model_direct_agent_can_use_unordered_support_field_for_local_subgoal() -> None:
+    agent = make_agent(
+        "world_model_direct",
+        planner_config={"horizon": 4, "num_samples": 16, "seed": 4},
+        local_subgoal_distance_m=12.0,
+        use_model_support_field_subgoals=True,
+    )
+    agent.world_model.metadata = {
+        "support_points": [[35.0, 2.0], [20.0, 14.0], [12.0, 8.0], [2.0, 2.0]],
+    }
+    observation = Observation(
+        timestamp=0.0,
+        vehicle_state=VehicleState(x=2.0, y=2.0, yaw=0.0, speed=1.0),
+        goal=(35.0, 2.0),
+        info={
+            "navigation_region": {
+                "region": {"polygon": [[0.0, 0.0], [40.0, 0.0], [40.0, 25.0], [0.0, 25.0]]},
+                "goal": {"pos": [35.0, 2.0], "radius": 4.0},
+            }
+        },
+    )
+
+    action = agent.act(observation)
+    diagnostics = agent.diagnostics()
+
+    assert action.throttle >= 0.0
+    assert diagnostics["target_goal"] == [35.0, 2.0]
+    assert diagnostics["local_subgoal"] == [12.0, 8.0]
+    assert diagnostics["planner_goal"] == [12.0, 8.0]
+    assert diagnostics["route_used"] is False
+    assert diagnostics["experience_corridor_used"] is False
+    assert diagnostics["model_support_subgoal_used"] is False
+    assert diagnostics["model_support_field_subgoal_used"] is True
+
+
+def test_world_model_direct_agent_support_field_does_not_bridge_far_segments() -> None:
+    agent = make_agent(
+        "world_model_direct",
+        planner_config={"horizon": 4, "num_samples": 16, "seed": 4},
+        local_subgoal_distance_m=12.0,
+        use_model_support_field_subgoals=True,
+    )
+    agent.world_model.metadata = {
+        "support_routes": [
+            [[0.0, 0.0], [5.0, 10.0]],
+            [[100.0, 0.0], [100.0, 10.0]],
+        ],
+    }
+    observation = Observation(
+        timestamp=0.0,
+        vehicle_state=VehicleState(x=0.0, y=0.0, yaw=0.0, speed=1.0),
+        goal=(100.0, 0.0),
+        info={
+            "navigation_region": {
+                "region": {"polygon": [[-5.0, -5.0], [105.0, -5.0], [105.0, 15.0], [-5.0, 15.0]]},
+                "goal": {"pos": [100.0, 0.0], "radius": 4.0},
+            }
+        },
+    )
+
+    subgoal = agent._local_subgoal(observation)
+
+    assert subgoal[0] < 20.0
+    assert subgoal[1] > 4.0
+    assert agent._model_support_subgoal_used is False
+    assert agent._model_support_field_subgoal_used is True
+
+
+def test_world_model_direct_agent_support_field_ignores_nearby_past_points() -> None:
+    agent = make_agent(
+        "world_model_direct",
+        planner_config={"horizon": 4, "num_samples": 16, "seed": 4},
+        local_subgoal_distance_m=12.0,
+        use_model_support_field_subgoals=True,
+    )
+    agent.world_model.metadata = {
+        "support_points": [[0.0, 0.0], [0.8, 0.0], [1.4, 0.1], [8.0, 10.0], [20.0, 10.0], [35.0, 0.0]],
+    }
+    observation = Observation(
+        timestamp=0.0,
+        vehicle_state=VehicleState(x=1.0, y=0.0, yaw=0.0, speed=1.0),
+        goal=(35.0, 0.0),
+        info={
+            "navigation_region": {
+                "region": {"polygon": [[-5.0, -5.0], [40.0, -5.0], [40.0, 20.0], [-5.0, 20.0]]},
+                "goal": {"pos": [35.0, 0.0], "radius": 4.0},
+            }
+        },
+    )
+
+    subgoal = agent._local_subgoal(observation)
+
+    assert math.hypot(subgoal[0] - observation.vehicle_state.x, subgoal[1] - observation.vehicle_state.y) >= 4.0
+    assert subgoal[1] > 4.0
+    assert agent._model_support_field_subgoal_used is True
+
+
+def test_world_model_direct_agent_support_field_requires_goal_progress() -> None:
+    agent = make_agent(
+        "world_model_direct",
+        planner_config={"horizon": 4, "num_samples": 16, "seed": 4},
+        local_subgoal_distance_m=12.0,
+        use_model_support_field_subgoals=True,
+    )
+    agent.world_model.metadata = {
+        "support_points": [[0.0, 10.0], [20.0, 10.0]],
+    }
+    observation = Observation(
+        timestamp=0.0,
+        vehicle_state=VehicleState(x=0.0, y=0.0, yaw=0.0, speed=1.0),
+        goal=(35.0, 0.0),
+        info={
+            "navigation_region": {
+                "region": {"polygon": [[-5.0, -5.0], [40.0, -5.0], [40.0, 20.0], [-5.0, 20.0]]},
+                "goal": {"pos": [35.0, 0.0], "radius": 4.0},
+            }
+        },
+    )
+
+    subgoal = agent._local_subgoal(observation)
+
+    assert subgoal[0] > 5.0
+    assert math.hypot(subgoal[0] - 35.0, subgoal[1]) < 35.0
+    assert agent._model_support_field_subgoal_used is True
+
+
 def test_world_model_direct_agent_uses_local_subgoal_progress_for_stuck_detection() -> None:
     agent = make_agent(
         "world_model_direct",

@@ -139,6 +139,36 @@ The same mean-risk change preserves the model-owned support-route demo:
 - Stuck recovery count: `0`.
 - Reverse count: `0`.
 
+## Unordered Support-Field Probe
+
+To move closer to strict route-free control, `world_model_direct` now has an
+optional `use_model_support_field_subgoals` mode. Unlike
+`use_model_support_subgoals`, it does not read support-route order or bridge
+segments. It flattens support points into an unordered traversability field,
+ignores nearby past points, and only accepts field candidates that make progress
+toward the final goal.
+
+This is intentionally weaker than the validated support-route baseline, but the
+first BeamNG probes were negative:
+
+- Initial unordered support-field output:
+  `outputs/region_world_model_eval/p2_support_field_direct_420_20260704/region_world_model_evaluation_summary.json`.
+- Initial minimum/final goal distance: `114.637 m` / `123.324 m`.
+- Root cause: the field selected recently visited support points near the
+  current vehicle pose, which pulled the vehicle back into a local loop.
+- After filtering nearby past points:
+  `outputs/region_world_model_eval/p2_support_field_minstep_direct_420_20260704/region_world_model_evaluation_summary.json`.
+- Minimum/final goal distance: `109.971 m` / `109.987 m`.
+- After additionally requiring final-goal progress:
+  `outputs/region_world_model_eval/p2_support_field_progress_direct_420_20260704/region_world_model_evaluation_summary.json`.
+- Minimum/final goal distance: `112.495 m` / `112.510 m`.
+- Collision count: `0`.
+
+Conclusion: unordered support-field subgoals are useful as a configurable
+experimental prior and a diagnostic contrast, but they do not yet beat the
+strict direct baseline (`98.138 m` minimum distance) and must not be marked
+demo-ready.
+
 ## Experience-Corridor Evaluation
 
 Standalone model evaluation can now explicitly rebuild an experience corridor from the model training episode metadata. This corridor comes from collected BeamNG episode traces, not from the expert route injected into the evaluation scenario.

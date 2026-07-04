@@ -196,6 +196,7 @@ class RegionSelfSupervisedWorldModelRequest:
     evaluation_reverse_recovery_after_steps: int = 96
     evaluation_local_subgoal_distance_m: float = 12.0
     evaluation_use_model_support_subgoals: bool = False
+    evaluation_use_model_support_field_subgoals: bool = False
     beamng_gfx: str = "vk"
     close_beamng: bool = True
     step_delay_sec: float = 0.0
@@ -265,6 +266,7 @@ class RegionWorldModelEvaluationRequest:
     evaluation_reverse_recovery_after_steps: int = 96
     evaluation_local_subgoal_distance_m: float = 12.0
     evaluation_use_model_support_subgoals: bool = False
+    evaluation_use_model_support_field_subgoals: bool = False
     use_experience_corridor: bool = False
     experience_route_min_spacing_m: float = 4.0
     experience_route_max_points: int = 120
@@ -2413,6 +2415,7 @@ def run_demo_acceptance(request: DemoAcceptanceRequest) -> dict[str, Any]:
                     ),
                     use_experience_corridor=bool(validation.get("experience_corridor")),
                     evaluation_use_model_support_subgoals=bool(validation.get("model_support_subgoals")),
+                    evaluation_use_model_support_field_subgoals=bool(validation.get("model_support_field_subgoals")),
                     beamng_gfx=request.beamng_gfx or str(demo.get("beamng_gfx") or "vk"),
                     close_beamng=request.close_beamng,
                     step_delay_sec=request.step_delay_sec,
@@ -2941,6 +2944,7 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
                 "evaluation_reverse_recovery_after_steps": max(18, int(request.evaluation_reverse_recovery_after_steps)),
                 "evaluation_local_subgoal_distance_m": max(1.0, float(request.evaluation_local_subgoal_distance_m)),
                 "evaluation_use_model_support_subgoals": bool(request.evaluation_use_model_support_subgoals),
+                "evaluation_use_model_support_field_subgoals": bool(request.evaluation_use_model_support_field_subgoals),
             },
             summary={
                 "task_path": str(Path(request.task_path).resolve()),
@@ -3039,6 +3043,7 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
             "reverse_recovery_after_steps": max(18, int(request.evaluation_reverse_recovery_after_steps)),
             "local_subgoal_distance_m": max(1.0, float(request.evaluation_local_subgoal_distance_m)),
             "use_model_support_subgoals": bool(request.evaluation_use_model_support_subgoals),
+            "use_model_support_field_subgoals": bool(request.evaluation_use_model_support_field_subgoals),
         }
         if request.evaluation_agent == "world_model_direct"
         else {},
@@ -3143,6 +3148,7 @@ def run_region_self_supervised_world_model(request: RegionSelfSupervisedWorldMod
             "evaluation_reverse_recovery_after_steps": max(18, int(request.evaluation_reverse_recovery_after_steps)),
             "evaluation_local_subgoal_distance_m": max(1.0, float(request.evaluation_local_subgoal_distance_m)),
             "evaluation_use_model_support_subgoals": bool(request.evaluation_use_model_support_subgoals),
+            "evaluation_use_model_support_field_subgoals": bool(request.evaluation_use_model_support_field_subgoals),
         },
         summary={
             "task_path": str(Path(request.task_path).resolve()),
@@ -3223,6 +3229,7 @@ def run_region_world_model_evaluation(request: RegionWorldModelEvaluationRequest
         "reverse_recovery_after_steps": max(18, int(request.evaluation_reverse_recovery_after_steps)),
         "local_subgoal_distance_m": max(1.0, float(request.evaluation_local_subgoal_distance_m)),
         "use_model_support_subgoals": bool(request.evaluation_use_model_support_subgoals),
+        "use_model_support_field_subgoals": bool(request.evaluation_use_model_support_field_subgoals),
     } if request.evaluation_agent == "world_model_direct" else {}
     evaluation = _run_region_beamng_episode_with_reconnect_retry(
         scenario=scenario,
@@ -4866,7 +4873,7 @@ def _world_model_config_demo_ready(row: dict[str, Any]) -> bool:
         route_waypoint_count = _coerce_int(validation.get("route_waypoint_count"), default=-1)
         if not route_free and route_waypoint_count != 0:
             return False
-        if bool(validation.get("experience_corridor")) or bool(validation.get("model_support_subgoals")):
+        if bool(validation.get("experience_corridor")) or bool(validation.get("model_support_subgoals")) or bool(validation.get("model_support_field_subgoals")):
             return route_free and route_waypoint_count == 0
         if not route_free_direct:
             return False

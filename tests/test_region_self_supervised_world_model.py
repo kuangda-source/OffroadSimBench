@@ -97,6 +97,7 @@ def test_region_self_supervised_world_model_defaults_match_route_free_demo_probe
     assert request.evaluation_local_subgoal_distance_m == 12.0
     assert request.evaluation_allow_reverse_recovery is False
     assert request.evaluation_reverse_recovery_after_steps == 96
+    assert request.evaluation_use_model_support_field_subgoals is False
     assert request.use_experience_corridor is True
 
 
@@ -150,6 +151,7 @@ def test_region_self_supervised_world_model_trains_and_evaluates_without_route(t
                 planner_progress_weight=1.4,
                 planner_risk_weight=5.0,
                 planner_heading_weight=0.3,
+                evaluation_use_model_support_field_subgoals=True,
             )
         )
 
@@ -174,6 +176,7 @@ def test_region_self_supervised_world_model_trains_and_evaluates_without_route(t
     assert seen_agent_options[1]["allow_reverse_recovery"] is False
     assert seen_agent_options[1]["reverse_recovery_after_steps"] == 96
     assert seen_agent_options[1]["local_subgoal_distance_m"] == 12.0
+    assert seen_agent_options[1]["use_model_support_field_subgoals"] is True
     assert Path(payload["training"]["model_path"]).exists()
     assert payload["training"]["model_type"] == "tiny_learned"
     assert payload["region_navigation"]["evaluation_agent"] == "world_model_direct"
@@ -866,6 +869,7 @@ def test_region_world_model_evaluation_compares_route_free_and_route_guided_base
                 evaluation_reverse_recovery_after_steps=144,
                 evaluation_local_subgoal_distance_m=16.0,
                 evaluation_use_model_support_subgoals=True,
+                evaluation_use_model_support_field_subgoals=True,
                 planner_goal_weight=0.8,
                 planner_progress_weight=1.2,
                 planner_risk_weight=8.0,
@@ -880,6 +884,7 @@ def test_region_world_model_evaluation_compares_route_free_and_route_guided_base
     assert seen_agent_options[0]["reverse_recovery_after_steps"] == 144
     assert seen_agent_options[0]["local_subgoal_distance_m"] == 16.0
     assert seen_agent_options[0]["use_model_support_subgoals"] is True
+    assert seen_agent_options[0]["use_model_support_field_subgoals"] is True
     assert seen_agent_options[0]["planner_config"]["goal_weight"] == 0.8
     assert seen_agent_options[0]["planner_config"]["progress_weight"] == 1.2
     assert seen_agent_options[0]["planner_config"]["risk_weight"] == 8.0

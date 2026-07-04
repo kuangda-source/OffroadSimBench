@@ -1034,6 +1034,7 @@ def test_gui_home_world_model_config_combo_only_shows_demo_ready_configs(tmp_pat
             "route_free": True,
             "route_free_direct": True,
             "model_support_subgoals": True,
+            "model_support_field_subgoals": True,
             "planner_goal_weight": 0.25,
             "planner_progress_weight": 0.4,
             "planner_risk_weight": 12.0,
@@ -1440,6 +1441,7 @@ def test_gui_home_start_uses_direct_world_model_evaluation_for_tiny_model(tmp_pa
             "route_free": True,
             "route_free_direct": True,
             "model_support_subgoals": True,
+            "model_support_field_subgoals": True,
             "planner_goal_weight": 0.25,
             "planner_progress_weight": 0.4,
             "planner_risk_weight": 12.0,
@@ -1475,6 +1477,7 @@ def test_gui_home_start_uses_direct_world_model_evaluation_for_tiny_model(tmp_pa
     assert captured["request"].include_route_guided_baseline is True
     assert captured["request"].use_experience_corridor is False
     assert captured["request"].evaluation_use_model_support_subgoals is True
+    assert captured["request"].evaluation_use_model_support_field_subgoals is True
     assert captured["request"].planner_goal_weight == 0.25
     assert captured["request"].planner_progress_weight == 0.4
     assert captured["request"].planner_risk_weight == 12.0
@@ -1501,6 +1504,7 @@ def test_gui_beamng_start_uses_direct_world_model_evaluation_for_tiny_model(tmp_
             "route_free_direct": False,
             "experience_corridor": True,
             "model_support_subgoals": True,
+            "model_support_field_subgoals": True,
             "planner_goal_weight": 0.25,
             "planner_progress_weight": 0.4,
             "planner_risk_weight": 12.0,
@@ -1539,6 +1543,7 @@ def test_gui_beamng_start_uses_direct_world_model_evaluation_for_tiny_model(tmp_
     assert captured["request"].include_route_guided_baseline is True
     assert captured["request"].use_experience_corridor is True
     assert captured["request"].evaluation_use_model_support_subgoals is True
+    assert captured["request"].evaluation_use_model_support_field_subgoals is True
     assert captured["request"].planner_goal_weight == 0.25
     assert captured["request"].planner_progress_weight == 0.4
     assert captured["request"].planner_risk_weight == 12.0
