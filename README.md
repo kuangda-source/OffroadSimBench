@@ -554,12 +554,16 @@ support route-free demo config:
 A separate `model_support_field_subgoals` option is available for stricter
 route-free experiments. It flattens model support points into an unordered
 traversability field, filters out nearby past points, and only selects local
-subgoals that still reduce distance to the final goal. The 2026-07-04 BeamNG
-probe showed that this unordered field is not yet enough for the Johnson Valley
-strict-direct target: the best 420-step support-field run reached
-`min_goal_distance=112.495 m` with zero collisions, which is worse than the
-current strict-direct best (`98.138 m`). Treat it as an experimental control
-feature, not as a demo-ready validation flag.
+subgoals that still reduce distance to the final goal. The 2026-07-07 BeamNG
+strict-direct probe showed that simple local geometry and unordered support
+fields are still not enough for the Johnson Valley direct target: strict direct
+stalled near the start at `min_goal_distance=112.740 m`, reverse-last-resort
+recovery still stalled at `113.172 m` with 264 reverse steps, and unordered
+support field regressed to `115.320 m`. The ordered model-support route remains
+the current demo-ready route-free configuration, while the next research target
+is a sparse traversability/topology memory that is richer than unordered points
+but does not inject the expert route at evaluation time. Fresh notes are in
+[`docs/reports/route_free_johnson_valley_strict_direct_probe_2026-07-07.md`](docs/reports/route_free_johnson_valley_strict_direct_probe_2026-07-07.md).
 
 Saved tasks default to `evaluation_drive_mode: manual`, which means
 the `OffroadAgent`/planner commands control the vehicle during evaluation.

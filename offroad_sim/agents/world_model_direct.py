@@ -297,9 +297,6 @@ class WorldModelDirectAgent(OffroadAgent):
         ux = dx / distance
         uy = dy / distance
         polygon = _navigation_polygon(obs.info)
-        turn_arc_subgoal = self._turn_arc_subgoal(obs, start, goal, polygon)
-        if turn_arc_subgoal is not None:
-            return turn_arc_subgoal
         recovery_subgoal = self._recovery_subgoal(start, goal, polygon)
         if recovery_subgoal is not None:
             return recovery_subgoal
@@ -308,6 +305,9 @@ class WorldModelDirectAgent(OffroadAgent):
             candidate = (start[0] + ux * step, start[1] + uy * step)
             if not polygon or _point_in_polygon(candidate, polygon):
                 return candidate
+        turn_arc_subgoal = self._turn_arc_subgoal(obs, start, goal, polygon)
+        if turn_arc_subgoal is not None:
+            return turn_arc_subgoal
         return start
 
     def _turn_arc_subgoal(

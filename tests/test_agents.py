@@ -404,7 +404,7 @@ def test_world_model_direct_agent_keeps_stall_memory_through_low_speed_jitter() 
     assert -223.0 <= local_subgoal[1] <= -37.0
 
 
-def test_world_model_direct_agent_uses_turn_arc_subgoal_for_large_heading_error() -> None:
+def test_world_model_direct_agent_prefers_direct_subgoal_when_it_stays_inside_region() -> None:
     agent = make_agent("world_model_direct", planner_config={"horizon": 1, "num_samples": 4, "seed": 4}, local_subgoal_distance_m=12.0)
     observation = Observation(
         timestamp=0.0,
@@ -421,9 +421,17 @@ def test_world_model_direct_agent_uses_turn_arc_subgoal_for_large_heading_error(
     )
 
     subgoal = agent._local_subgoal(observation)
+    dx = observation.goal[0] - observation.vehicle_state.x
+    dy = observation.goal[1] - observation.vehicle_state.y
+    distance = math.hypot(dx, dy)
+    direct_subgoal = (
+        observation.vehicle_state.x + dx / distance * agent.local_subgoal_distance_m,
+        observation.vehicle_state.y + dy / distance * agent.local_subgoal_distance_m,
+    )
 
+    assert subgoal == pytest.approx(direct_subgoal)
     assert subgoal[0] < observation.vehicle_state.x
-    assert subgoal[1] > observation.vehicle_state.y
+    assert subgoal[1] < observation.vehicle_state.y
 
 
 def test_world_model_direct_agent_can_use_experience_corridor_for_local_subgoal() -> None:
