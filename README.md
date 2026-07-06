@@ -181,6 +181,12 @@ route-free 评估阶段会移除 `metadata.beamng.route` 和 task `expert_route`
 Johnson Valley 当前任务上完成一次 route-free 模型控车演示，但仍应继续做不同起终点、
 不同随机种子和更强模型的泛化验收。
 
+同地图换起终点的 fresh 验收也已通过：`configs\tasks\beamng_johnson_valley_nav_alt.yaml`
+在不改 Python 代码的情况下完成 route-aware 采集、`mlp_dynamics` 训练、route-free
+support-subgoal 评估和 route-guided 对比；2026-07-07 独立对比中 route-free 最终距离
+11.867 m，碰撞 0，stuck recovery 0，倒车 0。详见
+`docs/reports/route_free_johnson_valley_alt_generalization_2026-07-07.md`。
+
 ### 数据集与训练工作台
 
 桌面 GUI 的 `数据集与训练` 页面现在作为独立训练可视化平台使用：可以检查和预览 ORFD 等数据集，选择训练/导出预设，查看当前训练配置摘要和最近指标曲线，运行 StableWM HDF5 导出、LE-WM-compatible cost model 训练或 tiny world model 训练。每次成功的训练或导出都会在产物目录旁写入 `training_run.json`，GUI 的 `Training results` 页会自动索引这些记录并展示产物路径、参数和指标。`LE-WM full self-supervised`、`TD-MPC2` 和 `DreamerV3` 目前作为未完成的可插拔预设保留，不会伪造训练结果。
@@ -239,7 +245,7 @@ OffroadSimBench is a local off-road autonomous-driving simulation, dataset repla
 - stable-worldmodel HDF5 export, LE-WM-compatible cost checkpoint training, and `AutoCostModel + CEMSolver` planning.
 - Region self-supervised BeamNG collection and training scaffold: `region_explorer`, `world_model_direct`, terminal goal braking, acceptance metrics, and `scripts\run_region_self_supervised_world_model.py`.
 - The default GUI demo now uses the Johnson Valley `mlp_dynamics + world_model_direct` route-free support-route configuration validated on `configs\tasks\beamng_johnson_valley_nav_test.yaml`: route-free goal success, 11.939 m final goal distance within the 12 m radius, 0 collisions, 0 stuck recoveries, and 0 reverse steps. The older LE-WM checkpoint remains available as a selectable saved world-model config.
-- Same-map generalization has an initial validated alternate Johnson Valley task at `configs\tasks\beamng_johnson_valley_nav_alt.yaml`: the existing route-aware collection, MLP dynamics training, route-free support-subgoal evaluation, and route-guided comparison run without Python code changes; route-free reached 11.945 m final distance with 0 collisions, 0 stuck recoveries, and 0 reverse steps.
+- Same-map generalization has a fresh validated alternate Johnson Valley task at `configs\tasks\beamng_johnson_valley_nav_alt.yaml`: the existing route-aware collection, MLP dynamics training, route-free support-subgoal evaluation, and route-guided comparison run without Python code changes; route-free reached 11.867 m final distance with 0 collisions, 0 stuck recoveries, and 0 reverse steps. See `docs/reports/route_free_johnson_valley_alt_generalization_2026-07-07.md`.
 - PySide6 desktop GUI with a guided demo overview, Dataset and Training workbench, BeamNG Simulation workbench, generic dataset frame preview, HDF5 export, external trainer manifests, LE-WM cost-model training, visible BeamNG autodrive, local terrain draft export, episode trajectory preview, and logs.
 
 ### Dataset And Training Workbench
