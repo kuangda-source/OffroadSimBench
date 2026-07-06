@@ -563,11 +563,17 @@ strict-direct probe showed that simple local geometry and unordered support
 fields are still not enough for the Johnson Valley direct target: strict direct
 stalled near the start at `min_goal_distance=112.740 m`, reverse-last-resort
 recovery still stalled at `113.172 m` with 264 reverse steps, and unordered
-support field regressed to `115.320 m`. The ordered model-support route remains
-the current demo-ready route-free configuration, while the next research target
-is a sparse traversability/topology memory that is richer than unordered points
-but does not inject the expert route at evaluation time. Fresh notes are in
-[`docs/reports/route_free_johnson_valley_strict_direct_probe_2026-07-07.md`](docs/reports/route_free_johnson_valley_strict_direct_probe_2026-07-07.md).
+support field regressed to `115.320 m`. The follow-up support-graph validation
+now provides the stronger demo-ready route-free configuration: it uses model-owned
+topology from the checkpoint, keeps route waypoints at zero during evaluation,
+and passed both the original Johnson Valley task and the alternate same-map
+start/goal. Strict direct control without learned topology remains the harder
+research target. Fresh notes are in
+[`docs/reports/route_free_johnson_valley_strict_direct_probe_2026-07-07.md`](docs/reports/route_free_johnson_valley_strict_direct_probe_2026-07-07.md),
+[`docs/reports/route_free_johnson_valley_support_graph_2026-07-07.md`](docs/reports/route_free_johnson_valley_support_graph_2026-07-07.md),
+[`docs/reports/route_free_johnson_valley_alt_support_graph_2026-07-07.md`](docs/reports/route_free_johnson_valley_alt_support_graph_2026-07-07.md),
+and the total audit
+[`docs/reports/route_free_model_control_acceptance_audit_2026-07-07.md`](docs/reports/route_free_model_control_acceptance_audit_2026-07-07.md).
 
 Saved tasks default to `evaluation_drive_mode: manual`, which means
 the `OffroadAgent`/planner commands control the vehicle during evaluation.

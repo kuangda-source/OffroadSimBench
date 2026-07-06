@@ -187,6 +187,8 @@ def test_region_self_supervised_world_model_trains_and_evaluates_without_route(t
     trajectory_svg = Path(payload["trajectory_plot_path"]).read_text(encoding="utf-8")
     assert "collection" in trajectory_svg
     assert "route_free" in trajectory_svg
+    assert "start" in trajectory_svg
+    assert "goal" in trajectory_svg
     training_record = json.loads(Path(payload["training_run_path"]).read_text(encoding="utf-8"))
     assert training_record["preset_id"] == "region_self_supervised_world_model"
     assert training_record["artifact_path"] == payload["model_dir"]
@@ -1022,7 +1024,12 @@ def test_region_world_model_evaluation_compares_route_free_and_route_guided_base
     assert payload["comparison"]["route_free_stuck_recovery_count"] == 1
     assert payload["comparison"]["route_guided_final_goal_distance"] <= 5.0
     assert Path(payload["trajectory_plot_path"]).exists()
-    assert "route_free" in Path(payload["trajectory_plot_path"]).read_text(encoding="utf-8")
+    trajectory_svg = Path(payload["trajectory_plot_path"]).read_text(encoding="utf-8")
+    assert "route_free" in trajectory_svg
+    assert "route_guided" in trajectory_svg
+    assert "expert_route" in trajectory_svg
+    assert "start" in trajectory_svg
+    assert "goal" in trajectory_svg
     assert json.loads(Path(payload["summary_path"]).read_text(encoding="utf-8"))["comparison"] == payload["comparison"]
     training_record = json.loads(Path(payload["training_run_path"]).read_text(encoding="utf-8"))
     assert training_record["preset_id"] == "region_world_model_evaluation"

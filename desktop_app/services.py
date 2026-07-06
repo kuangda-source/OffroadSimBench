@@ -4638,6 +4638,8 @@ def _write_region_trajectory_svg(task: NavigationRegionTask, output_path: Path, 
             f'<circle cx="{start_x:.1f}" cy="{start_y:.1f}" r="7" fill="#22c55e"/>',
             f'<circle cx="{goal_x:.1f}" cy="{goal_y:.1f}" r="9" fill="#ef4444"/>',
             f'<circle cx="{goal_x:.1f}" cy="{goal_y:.1f}" r="{max(3.0, task.goal_radius * scale):.1f}" fill="none" stroke="#ef4444" stroke-width="2" stroke-opacity="0.5"/>',
+            f'<text x="{start_x + 10.0:.1f}" y="{start_y - 8.0:.1f}" fill="#bbf7d0" font-family="Arial" font-size="12">start</text>',
+            f'<text x="{goal_x + 12.0:.1f}" y="{goal_y - 10.0:.1f}" fill="#fecaca" font-family="Arial" font-size="12">goal</text>',
         ]
     )
     legend_y = 58
