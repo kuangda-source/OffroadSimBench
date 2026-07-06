@@ -1288,9 +1288,12 @@ def test_gui_exposes_region_self_supervised_training(monkeypatch) -> None:
     assert "采集训练数据" in button_texts
     assert "训练模型" in button_texts
     assert captured["request"].task_path == "configs/tasks/beamng_johnson_valley_nav_001.yaml"
-    assert captured["request"].world_model_type == "tiny_learned"
+    assert captured["request"].world_model_type == "mlp_dynamics"
     assert captured["request"].evaluation_agent == "world_model_direct"
     assert captured["request"].evaluation_route_mode == "route_free"
+    assert captured["request"].use_experience_corridor is False
+    assert captured["request"].evaluation_use_model_support_subgoals is True
+    assert captured["request"].evaluation_use_model_support_field_subgoals is False
     assert captured["request"].collect_steps >= 1000
     assert captured["request"].collect_rollouts >= 6
     assert captured["request"].min_collection_goal_progress_ratio >= 0.35
@@ -1320,6 +1323,20 @@ def test_beamng_training_workflow_buttons_are_visible() -> None:
     assert "训练模型" in button_texts
     assert "开始评估" in button_texts
     assert "训练 world model" not in button_texts
+    window.close()
+
+
+def test_beamng_training_workflow_exposes_lightweight_model_selector() -> None:
+    _ensure_app()
+    window = MainWindow()
+
+    values = [
+        window.beamng_training_model_type_combo.itemData(index)
+        for index in range(window.beamng_training_model_type_combo.count())
+    ]
+
+    assert values == ["mlp_dynamics", "tiny_learned"]
+    assert window.beamng_training_model_type_combo.currentData() == "mlp_dynamics"
     window.close()
 
 
@@ -1372,6 +1389,7 @@ def test_gui_trains_region_world_model_from_latest_collection(monkeypatch) -> No
     _ensure_app()
     window = MainWindow()
     window.region_collection_manifest_edit.setText("outputs/beamng_region_training_data/run/region_training_collection.json")
+    window.beamng_training_model_type_combo.setCurrentIndex(0)
     captured: dict[str, services.RegionWorldModelTrainingRequest] = {}
     selected: dict[str, str] = {}
 
@@ -1383,14 +1401,14 @@ def test_gui_trains_region_world_model_from_latest_collection(monkeypatch) -> No
             "training_run_path": "outputs/beamng_region_world_models/run/training_run.json",
             "training": {
                 "status": "completed",
-                "model_type": "tiny_learned",
+                "model_type": "mlp_dynamics",
                 "metrics": {"train_rmse": 0.12, "train_mse": 0.014},
             },
             "world_model_config": {
                 "id": "self_supervised_region_test_beamng_trained_world_model",
                 "label": "self_supervised_region_test BeamNG trained world model",
                 "algorithm": "world_model_direct",
-                "world_model": "tiny_learned",
+                "world_model": "mlp_dynamics",
                 "model_path": "outputs/beamng_region_world_models/run/model",
             },
         }
@@ -1406,7 +1424,7 @@ def test_gui_trains_region_world_model_from_latest_collection(monkeypatch) -> No
     window.train_region_world_model_from_collection()
 
     assert captured["request"].collection_manifest_path == "outputs/beamng_region_training_data/run/region_training_collection.json"
-    assert captured["request"].world_model_type == "tiny_learned"
+    assert captured["request"].world_model_type == "mlp_dynamics"
     assert captured["request"].register_world_model_config is True
     assert window.model_path_edit.text() == "outputs/beamng_region_world_models/run/model"
     assert selected["id"] == "self_supervised_region_test_beamng_trained_world_model"

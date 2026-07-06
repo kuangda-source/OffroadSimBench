@@ -2846,6 +2846,13 @@ def train_region_world_model_from_collection(request: RegionWorldModelTrainingRe
             "collection_rollout_count": len(episode_paths),
             "collection_min_goal_distance": collection_metrics.get("collection_min_goal_distance"),
             "collection_collision_count": collection_metrics.get("collection_collision_count"),
+            "route_free": True,
+            "evaluation_route_mode": "route_free",
+            "route_waypoint_count": 0,
+            "model_support_subgoals": True,
+            "model_support_field_subgoals": False,
+            "evaluation_local_subgoal_distance_m": 12.0,
+            "evaluation_allow_reverse_recovery": False,
         }
         config = save_world_model_config(
             config_id=f"{task.task_id}_beamng_trained_world_model",

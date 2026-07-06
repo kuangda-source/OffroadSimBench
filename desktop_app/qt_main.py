@@ -1057,6 +1057,9 @@ class MainWindow(QMainWindow):
         self.world_model_config_combo = self._combo()
         self.world_model_config_edit_combo = self._combo()
         self.beamng_model_config_combo = self._combo()
+        self.beamng_training_model_type_combo = self._combo()
+        self.beamng_training_model_type_combo.addItem("MLP dynamics", "mlp_dynamics")
+        self.beamng_training_model_type_combo.addItem("Tiny learned", "tiny_learned")
         self.trainer_params_edit = QTextEdit()
         self.trainer_params_edit.setPlaceholderText('{"epochs": 10, "batch_size": 16}')
         self.trainer_params_edit.setFixedHeight(96)
@@ -1515,6 +1518,7 @@ class MainWindow(QMainWindow):
         train_hint.setObjectName("mutedText")
         train_hint.setWordWrap(True)
         train_layout.addWidget(train_hint)
+        train_layout.addWidget(self._compact_field("Training model", self.beamng_training_model_type_combo))
         train_layout.addWidget(self._compact_field("Collection manifest", self.region_collection_manifest_edit))
         train_layout.addWidget(
             self._action_toolbar(
@@ -2602,10 +2606,12 @@ class MainWindow(QMainWindow):
             return
         request = services.RegionWorldModelTrainingRequest(
             collection_manifest_path=manifest_path,
-            world_model_type="tiny_learned",
+            world_model_type=self.beamng_training_model_type_combo.currentData()
+            or self.beamng_training_model_type_combo.currentText()
+            or "mlp_dynamics",
             register_world_model_config=True,
         )
-        self.log("开始从 BeamNG collection manifest 训练 tiny world model")
+        self.log("开始从 BeamNG collection manifest 训练 region world model")
         self._run_task(
             lambda: services.train_region_world_model_from_collection(request),
             self._region_world_model_training_finished,
@@ -2620,7 +2626,9 @@ class MainWindow(QMainWindow):
             return
         request = services.RegionSelfSupervisedWorldModelRequest(
             task_path=task_path,
-            world_model_type="tiny_learned",
+            world_model_type=self.beamng_training_model_type_combo.currentData()
+            or self.beamng_training_model_type_combo.currentText()
+            or "mlp_dynamics",
             collect_steps=max(int(self.settings.max_steps), 1500),
             collect_rollouts=6,
             min_collection_goal_progress_ratio=0.35,
@@ -2644,6 +2652,9 @@ class MainWindow(QMainWindow):
             planner_iterations=self.settings.planner_iterations,
             evaluation_agent="world_model_direct",
             evaluation_route_mode="route_free",
+            use_experience_corridor=False,
+            evaluation_use_model_support_subgoals=True,
+            evaluation_use_model_support_field_subgoals=False,
             close_beamng=False,
             step_delay_sec=0.02,
             post_run_hold_sec=20.0,

@@ -12,6 +12,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("task_path", help="navigation_region_v1 task YAML.")
     parser.add_argument("--output-dir", default="", help="Output directory for model and summary.")
+    parser.add_argument("--world-model-type", default="tiny_learned", choices=["tiny_learned", "mlp_dynamics"])
     parser.add_argument("--collect-steps", type=int, default=1000)
     parser.add_argument("--collect-rollouts", type=int, default=1)
     parser.add_argument("--min-collection-goal-progress-ratio", type=float, default=0.0)
@@ -38,6 +39,10 @@ def main() -> None:
     parser.add_argument("--planner-iterations", type=int, default=3)
     parser.add_argument("--evaluation-agent", default="world_model_direct")
     parser.add_argument("--evaluation-route-mode", default="route_free", choices=["route_free", "task_route"])
+    parser.add_argument("--no-experience-corridor", action="store_true")
+    parser.add_argument("--evaluation-local-subgoal-distance-m", type=float, default=12.0)
+    parser.add_argument("--evaluation-use-model-support-subgoals", action="store_true")
+    parser.add_argument("--evaluation-use-model-support-field-subgoals", action="store_true")
     parser.add_argument("--beamng-gfx", default="vk")
     parser.add_argument("--close-beamng", action="store_true")
     parser.add_argument("--step-delay-sec", type=float, default=0.02)
@@ -49,6 +54,7 @@ def main() -> None:
     payload = run_region_self_supervised_world_model(
         RegionSelfSupervisedWorldModelRequest(
             task_path=args.task_path,
+            world_model_type=args.world_model_type,
             output_dir=args.output_dir,
             collect_steps=args.collect_steps,
             collect_rollouts=args.collect_rollouts,
@@ -76,6 +82,10 @@ def main() -> None:
             planner_iterations=args.planner_iterations,
             evaluation_agent=args.evaluation_agent,
             evaluation_route_mode=args.evaluation_route_mode,
+            use_experience_corridor=not args.no_experience_corridor,
+            evaluation_local_subgoal_distance_m=args.evaluation_local_subgoal_distance_m,
+            evaluation_use_model_support_subgoals=args.evaluation_use_model_support_subgoals,
+            evaluation_use_model_support_field_subgoals=args.evaluation_use_model_support_field_subgoals,
             beamng_gfx=args.beamng_gfx,
             close_beamng=args.close_beamng,
             step_delay_sec=args.step_delay_sec,

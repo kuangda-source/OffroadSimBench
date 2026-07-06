@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
+import scripts.run_region_world_model_evaluation as region_world_model_eval_script
 import scripts.run_region_self_supervised_world_model as region_self_supervised_script
 from desktop_app import services
 from offroad_sim.core import Action, Observation, VehicleState
@@ -542,6 +543,11 @@ def test_region_world_model_training_from_collection_supports_mlp_dynamics(tmp_p
     assert payload["training"]["model_type"] == "mlp_dynamics"
     assert payload["training"]["metrics"]["model_family"] == "random_feature_mlp"
     assert saved_config["world_model"] == "mlp_dynamics"
+    assert saved_config["validation"]["model_support_subgoals"] is True
+    assert saved_config["validation"]["model_support_field_subgoals"] is False
+    assert saved_config["validation"]["evaluation_local_subgoal_distance_m"] == 12.0
+    assert saved_config["validation"]["evaluation_allow_reverse_recovery"] is False
+    assert saved_config["demo_ready"] is False
     assert Path(payload["model_dir"], "model.json").exists()
 
 
@@ -1266,6 +1272,8 @@ def test_region_self_supervised_script_exposes_gui_training_options(monkeypatch,
         [
             "run_region_self_supervised_world_model.py",
             str(task_path),
+            "--world-model-type",
+            "mlp_dynamics",
             "--collect-rollouts",
             "3",
             "--min-collection-goal-progress-ratio",
@@ -1299,6 +1307,10 @@ def test_region_self_supervised_script_exposes_gui_training_options(monkeypatch,
             "70.0",
             "--min-unique-region-cells",
             "4",
+            "--no-experience-corridor",
+            "--evaluation-use-model-support-subgoals",
+            "--evaluation-local-subgoal-distance-m",
+            "12.0",
             "--register-world-model-config",
             "--world-model-config-path",
             str(tmp_path / "world_model_configs.json"),
@@ -1308,6 +1320,7 @@ def test_region_self_supervised_script_exposes_gui_training_options(monkeypatch,
     region_self_supervised_script.main()
 
     request = captured["request"]
+    assert request.world_model_type == "mlp_dynamics"
     assert request.collect_rollouts == 3
     assert request.min_collection_goal_progress_ratio == 0.35
     assert request.collection_goal_bias_interval == 2
@@ -1325,6 +1338,72 @@ def test_region_self_supervised_script_exposes_gui_training_options(monkeypatch,
     assert request.min_goal_zone_coverage == 0.25
     assert request.max_collection_min_goal_distance_m == 70.0
     assert request.min_unique_region_cells == 4
+    assert request.use_experience_corridor is False
+    assert request.evaluation_use_model_support_subgoals is True
+    assert request.evaluation_local_subgoal_distance_m == 12.0
     assert request.register_world_model_config is True
     assert request.world_model_config_path == str(tmp_path / "world_model_configs.json")
+    assert json.loads(capsys.readouterr().out)["status"] == "ok"
+
+
+def test_region_world_model_evaluation_script_exposes_baseline_options(monkeypatch, tmp_path: Path, capsys) -> None:
+    task_path = tmp_path / "task.yaml"
+    _write_task(task_path)
+    captured: dict[str, services.RegionWorldModelEvaluationRequest] = {}
+
+    def fake_run(request: services.RegionWorldModelEvaluationRequest) -> dict[str, object]:
+        captured["request"] = request
+        return {"status": "ok", "comparison": {"route_free_goal_success": True}}
+
+    monkeypatch.setattr(region_world_model_eval_script, "run_region_world_model_evaluation", fake_run)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_region_world_model_evaluation.py",
+            str(task_path),
+            "--world-model-type",
+            "mlp_dynamics",
+            "--world-model",
+            "outputs/model",
+            "--output-dir",
+            str(tmp_path / "eval"),
+            "--eval-steps",
+            "1200",
+            "--planner",
+            "navigation_mpc",
+            "--planner-horizon",
+            "6",
+            "--planner-samples",
+            "32",
+            "--planner-iterations",
+            "3",
+            "--evaluation-agent",
+            "world_model_direct",
+            "--evaluation-use-model-support-subgoals",
+            "--evaluation-local-subgoal-distance-m",
+            "12.0",
+            "--include-route-guided-baseline",
+            "--beamng-gfx",
+            "vk",
+        ],
+    )
+
+    region_world_model_eval_script.main()
+
+    request = captured["request"]
+    assert request.task_path == str(task_path)
+    assert request.world_model_type == "mlp_dynamics"
+    assert request.world_model_path == "outputs/model"
+    assert request.output_dir == str(tmp_path / "eval")
+    assert request.eval_steps == 1200
+    assert request.planner == "navigation_mpc"
+    assert request.planner_horizon == 6
+    assert request.planner_samples == 32
+    assert request.planner_iterations == 3
+    assert request.evaluation_agent == "world_model_direct"
+    assert request.evaluation_use_model_support_subgoals is True
+    assert request.evaluation_local_subgoal_distance_m == 12.0
+    assert request.include_route_guided_baseline is True
+    assert request.beamng_gfx == "vk"
     assert json.loads(capsys.readouterr().out)["status"] == "ok"

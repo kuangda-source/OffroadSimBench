@@ -172,12 +172,12 @@ LE-WM-compatible cost adapter 或世界模型预测为候选动作评分，再�
 最终距离 11.217 m，碰撞数为 0，评估阶段保持在区域内。运行时相机默认使用车辆后上方
 约 45 度的 `follow` 视角，避免只看到车后尘土。
 
-2026-07-03 的 Johnson Valley route-free 自监督探针已经打通一条更接近目标闭环的
-`tiny_learned + world_model_direct` 路径：route-aware 多起点采集会沿专家路线分段采样，
+2026-07-06 的 Johnson Valley route-free 自监督探针已经打通一条更接近目标闭环的
+`mlp_dynamics + world_model_direct` 路径：route-aware 多起点采集会沿专家路线分段采样，
 route-free 评估阶段会移除 `metadata.beamng.route` 和 task `expert_route`，只注入由采集轨迹
-抽稀得到的 `experience_route`。当前本地探针使用 4 个采集 rollout、160 步采集、
-1200 步 route-free 评估、`local_subgoal_distance_m=12`，最终距离 11.860 m，
-进入 12 m 目标半径，碰撞数 0，倒车次数 0。该结果证明当前 tiny 模型闭环可以在
+抽稀得到的模型支持子目标。当前本地探针使用 6 个采集 rollout、1500 步采集、
+1200 步 route-free 评估、`local_subgoal_distance_m=12`，最终距离 11.939 m，
+进入 12 m 目标半径，碰撞数 0，倒车次数 0。该结果证明当前 MLP 模型闭环可以在
 Johnson Valley 当前任务上完成一次 route-free 模型控车演示，但仍应继续做不同起终点、
 不同随机种子和更强模型的泛化验收。
 
@@ -238,7 +238,7 @@ OffroadSimBench is a local off-road autonomous-driving simulation, dataset repla
 - BeamNG runtime detection, connection smoke tests, scenario reset/step, visible autonomous-driving demo, and episode recording.
 - stable-worldmodel HDF5 export, LE-WM-compatible cost checkpoint training, and `AutoCostModel + CEMSolver` planning.
 - Region self-supervised BeamNG collection and training scaffold: `region_explorer`, `world_model_direct`, terminal goal braking, acceptance metrics, and `scripts\run_region_self_supervised_world_model.py`.
-- The default GUI demo now uses the Johnson Valley `mlp_dynamics + world_model_direct` route-free support-route configuration validated on `configs\tasks\beamng_johnson_valley_nav_test.yaml`: route-free goal success, 11.898 m final goal distance within the 12 m radius, 0 collisions, 0 stuck recoveries, and 0 reverse steps. The older LE-WM checkpoint remains available as a selectable saved world-model config.
+- The default GUI demo now uses the Johnson Valley `mlp_dynamics + world_model_direct` route-free support-route configuration validated on `configs\tasks\beamng_johnson_valley_nav_test.yaml`: route-free goal success, 11.939 m final goal distance within the 12 m radius, 0 collisions, 0 stuck recoveries, and 0 reverse steps. The older LE-WM checkpoint remains available as a selectable saved world-model config.
 - Same-map generalization has an initial validated alternate Johnson Valley task at `configs\tasks\beamng_johnson_valley_nav_alt.yaml`: the existing route-aware collection, MLP dynamics training, route-free support-subgoal evaluation, and route-guided comparison run without Python code changes; route-free reached 11.945 m final distance with 0 collisions, 0 stuck recoveries, and 0 reverse steps.
 - PySide6 desktop GUI with a guided demo overview, Dataset and Training workbench, BeamNG Simulation workbench, generic dataset frame preview, HDF5 export, external trainer manifests, LE-WM cost-model training, visible BeamNG autodrive, local terrain draft export, episode trajectory preview, and logs.
 
@@ -252,11 +252,11 @@ Training records support a `history` field for loss, RMSE, frame count, or other
 
 External trainers can report metrics through a JSON object on stdout or through sidecar files in the selected output directory. Supported sidecars are `metrics.json` for final scalar metrics, `history.json` for metric arrays, and `events.jsonl` for per-step JSON events such as `{"step": 1, "loss": 0.9}`.
 
-BeamNG region self-supervised runs also write a `training_run.json` with the trained model path plus acceptance metrics such as `goal_success`, `min_goal_distance`, `final_goal_distance`, and `collision_count`, so the Training Results tab can index the simulator-trained model instead of leaving it as an opaque folder. These records now include a `trajectory_plot_path` SVG containing collection and route-free evaluation traces. When the GUI self-supervised workflow reaches a validated `world_model_direct + tiny_learned` goal success, it saves the source `training_run.json`, validation metrics, and whether the run used strict direct control or an experience corridor. Strict direct success remains the stronger gate; experience-corridor success is allowed as an explicitly labeled intermediate demo config when it is route-free, model-controlled, collision-free, and uses zero route waypoints.
+BeamNG region self-supervised runs also write a `training_run.json` with the trained model path plus acceptance metrics such as `goal_success`, `min_goal_distance`, `final_goal_distance`, and `collision_count`, so the Training Results tab can index the simulator-trained model instead of leaving it as an opaque folder. These records now include a `trajectory_plot_path` SVG containing collection and route-free evaluation traces. The GUI BeamNG training workflow defaults to `mlp_dynamics` and can still switch to `tiny_learned`; when a self-supervised workflow reaches a validated `world_model_direct` goal success, it saves the source `training_run.json`, validation metrics, and whether the run used strict direct control, model support subgoals, or an experience corridor. Strict direct success remains the stronger gate; support-subgoal or experience-corridor success is allowed as an explicitly labeled intermediate demo config when it is route-free, model-controlled, collision-free, and uses zero route waypoints.
 
 BeamNG region training now uses a wider GUI collection default for quality runs: 6 rollouts, at least 1500 requested collection steps, a 6x6 coverage curriculum, route-aware waypoint targets with lateral perturbations, stricter collection-progress/route-coverage/goal-zone gates, an explicit `max_collection_min_goal_distance_m` gate, a `min_unique_region_cells` gate, and at least 1200 requested evaluation steps. Collection and self-supervised training records include `collection_coverage_cell_count`, `collection_coverage_total_cells`, `collection_coverage_ratio`, `route_coverage_ratio`, `goal_zone_coverage`, `unique_region_cells`, and collection minimum goal distance; collection manifests that fail the quality gate are refused by the separated training step instead of silently training a weak model.
 
-Direct region world-model evaluation can now run two fixed baselines in one request: `route_free`, which receives only the start/goal/region, and `route_guided`, which receives the expert route to prove that the map, vehicle, and task route are drivable. The resulting summary includes `comparison` metrics for goal distance, success, collisions, distance traveled, stuck recovery count, reverse count, plus an SVG trajectory plot containing the region, start, goal, expert route, and evaluated trajectories. The GUI enables this comparison automatically for tiny/direct world-model runs.
+Direct region world-model evaluation can now run two fixed baselines in one request: `route_free`, which receives only the start/goal/region, and `route_guided`, which receives the expert route to prove that the map, vehicle, and task route are drivable. The resulting summary includes `comparison` metrics for goal distance, success, collisions, distance traveled, stuck recovery count, reverse count, plus an SVG trajectory plot containing the region, start, goal, expert route, and evaluated trajectories. The GUI enables this comparison automatically for lightweight direct world-model runs, and `scripts\run_region_world_model_evaluation.py` exposes the same comparison from the command line.
 
 Region collection manifests can also drive a same-data model comparison workflow: train multiple lightweight world models such as `tiny_learned` and `mlp_dynamics` from one BeamNG collection, evaluate each with the same route-free/route-guided baseline request, and write a `region_world_model_comparison` training-run record that ranks models by route-free minimum goal distance.
 
@@ -399,12 +399,12 @@ python scripts\run_beamng_lewm_closed_loop.py --collect-steps 160 --eval-steps 1
 Run the region self-supervised world-model scaffold:
 
 ```powershell
-python scripts\run_region_self_supervised_world_model.py configs\tasks\beamng_johnson_valley_nav_001.yaml --evaluation-agent world_model_direct --evaluation-route-mode route_free --collect-steps 1000 --eval-steps 1200
+python scripts\run_region_self_supervised_world_model.py configs\tasks\beamng_johnson_valley_nav_test.yaml --world-model-type mlp_dynamics --collect-steps 1500 --collect-rollouts 6 --collection-strategy route_aware --collection-multi-start --eval-steps 1200 --evaluation-agent world_model_direct --evaluation-route-mode route_free --no-experience-corridor --evaluation-use-model-support-subgoals --evaluation-local-subgoal-distance-m 12 --register-world-model-config
 ```
 
 The GUI uses this route-free mode for its region self-supervised action: it
-collects exploration data, trains `tiny_learned`, then evaluates direct
-start-to-goal control without injecting the task route. The current Johnson
+collects route-aware exploration data, trains `mlp_dynamics` by default, then
+evaluates route-free model control without injecting the task route. The current Johnson
 Valley task can still need better exploration coverage and planning priors to
 reach difficult goals reliably; see
 `docs\reports\2026-05-29_region_self_supervised_blocker.md`.
