@@ -43,6 +43,7 @@ def main() -> None:
     parser.add_argument("--evaluation-local-subgoal-distance-m", type=float, default=12.0)
     parser.add_argument("--evaluation-use-model-support-subgoals", action="store_true")
     parser.add_argument("--evaluation-use-model-support-field-subgoals", action="store_true")
+    parser.add_argument("--evaluation-use-model-support-graph-subgoals", action="store_true")
     parser.add_argument("--beamng-gfx", default="vk")
     parser.add_argument("--close-beamng", action="store_true")
     parser.add_argument("--step-delay-sec", type=float, default=0.02)
@@ -86,6 +87,7 @@ def main() -> None:
             evaluation_local_subgoal_distance_m=args.evaluation_local_subgoal_distance_m,
             evaluation_use_model_support_subgoals=args.evaluation_use_model_support_subgoals,
             evaluation_use_model_support_field_subgoals=args.evaluation_use_model_support_field_subgoals,
+            evaluation_use_model_support_graph_subgoals=args.evaluation_use_model_support_graph_subgoals,
             beamng_gfx=args.beamng_gfx,
             close_beamng=args.close_beamng,
             step_delay_sec=args.step_delay_sec,

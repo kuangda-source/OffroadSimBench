@@ -1849,6 +1849,7 @@ class MainWindow(QMainWindow):
         use_experience_corridor = bool(validation.get("experience_corridor"))
         use_model_support_subgoals = bool(validation.get("model_support_subgoals"))
         use_model_support_field_subgoals = bool(validation.get("model_support_field_subgoals"))
+        use_model_support_graph_subgoals = bool(validation.get("model_support_graph_subgoals"))
         if not task_path:
             self.log("开始测试需要先选择 BeamNG region task。")
             return
@@ -1882,6 +1883,7 @@ class MainWindow(QMainWindow):
                 use_experience_corridor=use_experience_corridor,
                 evaluation_use_model_support_subgoals=use_model_support_subgoals,
                 evaluation_use_model_support_field_subgoals=use_model_support_field_subgoals,
+                evaluation_use_model_support_graph_subgoals=use_model_support_graph_subgoals,
                 close_beamng=False,
                 step_delay_sec=0.02,
                 post_run_hold_sec=20.0,
@@ -2498,6 +2500,7 @@ class MainWindow(QMainWindow):
         use_experience_corridor = bool(validation.get("experience_corridor"))
         use_model_support_subgoals = bool(validation.get("model_support_subgoals"))
         use_model_support_field_subgoals = bool(validation.get("model_support_field_subgoals"))
+        use_model_support_graph_subgoals = bool(validation.get("model_support_graph_subgoals"))
         if algorithm == "world_model_direct" or world_model == "tiny_learned":
             if not model_path:
                 self.log("direct world-model evaluation requires a model path.")
@@ -2528,6 +2531,7 @@ class MainWindow(QMainWindow):
                 use_experience_corridor=use_experience_corridor,
                 evaluation_use_model_support_subgoals=use_model_support_subgoals,
                 evaluation_use_model_support_field_subgoals=use_model_support_field_subgoals,
+                evaluation_use_model_support_graph_subgoals=use_model_support_graph_subgoals,
                 close_beamng=False,
                 step_delay_sec=0.02,
                 post_run_hold_sec=20.0,
@@ -2655,6 +2659,7 @@ class MainWindow(QMainWindow):
             use_experience_corridor=False,
             evaluation_use_model_support_subgoals=True,
             evaluation_use_model_support_field_subgoals=False,
+            evaluation_use_model_support_graph_subgoals=True,
             close_beamng=False,
             step_delay_sec=0.02,
             post_run_hold_sec=20.0,

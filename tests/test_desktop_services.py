@@ -861,6 +861,7 @@ def test_demo_acceptance_passes_direct_world_model_validation_options(tmp_path, 
             "route_free_direct": False,
             "model_support_subgoals": True,
             "model_support_field_subgoals": True,
+            "model_support_graph_subgoals": True,
             "route_waypoint_count": 0,
             "planner_goal_weight": 0.25,
             "planner_progress_weight": 0.4,
@@ -909,6 +910,7 @@ def test_demo_acceptance_passes_direct_world_model_validation_options(tmp_path, 
     assert report["status"] == "accepted"
     assert captured[0].evaluation_use_model_support_subgoals is True
     assert captured[0].evaluation_use_model_support_field_subgoals is True
+    assert captured[0].evaluation_use_model_support_graph_subgoals is True
     assert captured[0].planner_goal_weight == 0.25
     assert captured[0].planner_progress_weight == 0.4
     assert captured[0].planner_risk_weight == 12.0

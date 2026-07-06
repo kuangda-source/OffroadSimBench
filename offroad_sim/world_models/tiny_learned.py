@@ -17,6 +17,7 @@ from offroad_sim.world_models.base import BaseWorldModel, WorldModelPrediction
 FEATURE_NAMES = ("bias", "speed", "yaw_sin", "yaw_cos", "steer", "throttle", "brake", "gear")
 OUTPUT_NAMES = ("dx", "dy", "dyaw", "dspeed")
 MAX_SUPPORT_POINTS = 512
+MAX_SUPPORT_GRAPH_NODES = 1024
 DEFAULT_SUPPORT_RADIUS_M = 8.0
 
 
@@ -129,6 +130,7 @@ class TinyLearnedWorldModel(BaseWorldModel):
             "output_names": list(OUTPUT_NAMES),
             "support_points": _downsample_support_points(support_points, max_points=MAX_SUPPORT_POINTS),
             "support_routes": support_routes,
+            "support_graph": _build_support_graph(support_routes),
             "support_route_count": len(support_routes),
             "support_point_count": len(support_points),
             "support_radius_m": DEFAULT_SUPPORT_RADIUS_M,
@@ -274,6 +276,70 @@ def _downsample_support_points(points: list[tuple[float, float]], *, max_points:
         seen.add(key)
         deduped.append([float(x), float(y)])
     return deduped
+
+
+def _build_support_graph(
+    routes: list[list[list[float]]],
+    *,
+    max_nodes: int = MAX_SUPPORT_GRAPH_NODES,
+) -> dict[str, Any]:
+    nodes: list[list[float]] = []
+    node_index: dict[tuple[float, float], int] = {}
+    edges: list[dict[str, Any]] = []
+    if not routes or int(max_nodes) < 2:
+        return {"nodes": [], "edges": [], "node_count": 0, "edge_count": 0}
+    points_per_route = max(2, int(max_nodes) // max(1, len(routes)))
+
+    def index_for(raw_point: list[float]) -> int | None:
+        try:
+            x = float(raw_point[0])
+            y = float(raw_point[1])
+        except (TypeError, ValueError, IndexError):
+            return None
+        if not math.isfinite(x) or not math.isfinite(y):
+            return None
+        key = (round(x, 3), round(y, 3))
+        existing = node_index.get(key)
+        if existing is not None:
+            return existing
+        if len(nodes) >= int(max_nodes):
+            return None
+        node_index[key] = len(nodes)
+        nodes.append([x, y])
+        return node_index[key]
+
+    for route_index, route in enumerate(routes):
+        route_points: list[tuple[float, float]] = []
+        for raw_point in route:
+            try:
+                x = float(raw_point[0])
+                y = float(raw_point[1])
+            except (TypeError, ValueError, IndexError):
+                continue
+            if math.isfinite(x) and math.isfinite(y):
+                route_points.append((x, y))
+        sampled_route = _downsample_support_points(route_points, max_points=points_per_route)
+        previous_index: int | None = None
+        for point in sampled_route:
+            current_index = index_for(point)
+            if current_index is None:
+                continue
+            if previous_index is not None and previous_index != current_index:
+                source = nodes[previous_index]
+                target = nodes[current_index]
+                distance = math.hypot(float(target[0]) - float(source[0]), float(target[1]) - float(source[1]))
+                if distance > 1e-6:
+                    edges.append(
+                        {
+                            "source": int(previous_index),
+                            "target": int(current_index),
+                            "distance_m": float(distance),
+                            "route_index": int(route_index),
+                        }
+                    )
+            previous_index = current_index
+
+    return {"nodes": nodes, "edges": edges, "node_count": len(nodes), "edge_count": len(edges)}
 
 
 def _support_points_array(raw: Any) -> np.ndarray:

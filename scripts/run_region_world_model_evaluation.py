@@ -30,6 +30,7 @@ def main() -> None:
     parser.add_argument("--evaluation-local-subgoal-distance-m", type=float, default=12.0)
     parser.add_argument("--evaluation-use-model-support-subgoals", action="store_true")
     parser.add_argument("--evaluation-use-model-support-field-subgoals", action="store_true")
+    parser.add_argument("--evaluation-use-model-support-graph-subgoals", action="store_true")
     parser.add_argument("--use-experience-corridor", action="store_true")
     parser.add_argument("--experience-route-min-spacing-m", type=float, default=4.0)
     parser.add_argument("--experience-route-max-points", type=int, default=120)
@@ -62,6 +63,7 @@ def main() -> None:
             evaluation_local_subgoal_distance_m=args.evaluation_local_subgoal_distance_m,
             evaluation_use_model_support_subgoals=args.evaluation_use_model_support_subgoals,
             evaluation_use_model_support_field_subgoals=args.evaluation_use_model_support_field_subgoals,
+            evaluation_use_model_support_graph_subgoals=args.evaluation_use_model_support_graph_subgoals,
             use_experience_corridor=args.use_experience_corridor,
             experience_route_min_spacing_m=args.experience_route_min_spacing_m,
             experience_route_max_points=args.experience_route_max_points,

@@ -993,6 +993,7 @@ def test_region_world_model_evaluation_compares_route_free_and_route_guided_base
                 evaluation_local_subgoal_distance_m=16.0,
                 evaluation_use_model_support_subgoals=True,
                 evaluation_use_model_support_field_subgoals=True,
+                evaluation_use_model_support_graph_subgoals=True,
                 planner_goal_weight=0.8,
                 planner_progress_weight=1.2,
                 planner_risk_weight=8.0,
@@ -1008,6 +1009,7 @@ def test_region_world_model_evaluation_compares_route_free_and_route_guided_base
     assert seen_agent_options[0]["local_subgoal_distance_m"] == 16.0
     assert seen_agent_options[0]["use_model_support_subgoals"] is True
     assert seen_agent_options[0]["use_model_support_field_subgoals"] is True
+    assert seen_agent_options[0]["use_model_support_graph_subgoals"] is True
     assert seen_agent_options[0]["planner_config"]["goal_weight"] == 0.8
     assert seen_agent_options[0]["planner_config"]["progress_weight"] == 1.2
     assert seen_agent_options[0]["planner_config"]["risk_weight"] == 8.0

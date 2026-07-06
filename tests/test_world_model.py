@@ -110,6 +110,11 @@ def test_mlp_dynamics_world_model_trains_and_loads(tmp_path) -> None:
     assert model.metadata["hidden_size"] == 12
     assert model.metadata["validation_sample_count"] >= 1
     assert model.metadata["validation_rmse"] >= 0.0
+    assert model.metadata["support_graph"]["node_count"] >= 2
+    assert model.metadata["support_graph"]["edge_count"] >= 1
+    assert model.metadata["support_graph"]["nodes"][0] == [0.0, 0.0]
+    assert model.metadata["support_graph"]["edges"][0]["source"] == 0
+    assert model.metadata["support_graph"]["edges"][0]["target"] == 1
 
 
 def test_tiny_learned_world_model_uses_recorded_transition_actions() -> None:

@@ -598,6 +598,48 @@ def test_world_model_direct_agent_can_use_unordered_support_field_for_local_subg
     assert diagnostics["model_support_field_subgoal_used"] is True
 
 
+def test_world_model_direct_agent_can_use_model_support_graph_for_local_subgoal() -> None:
+    agent = make_agent(
+        "world_model_direct",
+        planner_config={"horizon": 4, "num_samples": 16, "seed": 4},
+        local_subgoal_distance_m=12.0,
+        use_model_support_graph_subgoals=True,
+    )
+    agent.world_model.metadata = {
+        "support_graph": {
+            "nodes": [[0.0, 0.0], [0.0, 12.0], [18.0, 12.0], [35.0, 2.0]],
+            "edges": [
+                {"source": 0, "target": 1, "distance_m": 12.0},
+                {"source": 1, "target": 2, "distance_m": 18.0},
+                {"source": 2, "target": 3, "distance_m": 19.72},
+            ],
+        }
+    }
+    observation = Observation(
+        timestamp=0.0,
+        vehicle_state=VehicleState(x=0.0, y=0.0, yaw=0.0, speed=1.0),
+        goal=(35.0, 2.0),
+        info={
+            "navigation_region": {
+                "region": {"polygon": [[-5.0, -5.0], [40.0, -5.0], [40.0, 20.0], [-5.0, 20.0]]},
+                "goal": {"pos": [35.0, 2.0], "radius": 4.0},
+            }
+        },
+    )
+
+    action = agent.act(observation)
+    diagnostics = agent.diagnostics()
+
+    assert action.throttle >= 0.0
+    assert diagnostics["target_goal"] == [35.0, 2.0]
+    assert diagnostics["local_subgoal"] == [0.0, 12.0]
+    assert diagnostics["planner_goal"] == [0.0, 12.0]
+    assert diagnostics["route_used"] is False
+    assert diagnostics["model_support_subgoal_used"] is False
+    assert diagnostics["model_support_field_subgoal_used"] is False
+    assert diagnostics["model_support_graph_subgoal_used"] is True
+
+
 def test_world_model_direct_agent_support_field_does_not_bridge_far_segments() -> None:
     agent = make_agent(
         "world_model_direct",
