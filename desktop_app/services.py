@@ -643,6 +643,69 @@ def suggest_dataset_manifest_sequences(dataset_root: str | Path) -> list[dict[st
     return rows
 
 
+def detect_dataset_sequences(dataset_root: str | Path, adapter: str = "") -> dict[str, Any]:
+    """Detect a dataset adapter and enumerate its sequences.
+
+    Registered adapters are authoritative. The generic manifest layout scanner
+    is only used when no adapter can load the selected directory.
+    """
+
+    root = Path(dataset_root).resolve()
+    if not root.exists():
+        raise FileNotFoundError(f"Dataset root not found: {root}")
+
+    registry = default_dataset_registry()
+    preferred = adapter.strip()
+    resolved_adapter = None
+    if preferred:
+        try:
+            candidate = registry.get(preferred)
+        except KeyError:
+            candidate = None
+        if candidate is not None and candidate.can_load(root):
+            resolved_adapter = candidate
+    if resolved_adapter is None:
+        try:
+            resolved_adapter = registry.resolve(root)
+        except ValueError:
+            resolved_adapter = None
+
+    if resolved_adapter is not None:
+        sequence_ids = resolved_adapter.list_sequences(root)
+        if not sequence_ids:
+            raise ValueError("No dataset sequences found.")
+        definitions = _manifest_sequence_definitions(root) if resolved_adapter.name == "manifest_dataset" else []
+        return {
+            "status": "detected",
+            "dataset_root": str(root),
+            "adapter": resolved_adapter.name,
+            "source_mode": "registered_adapter",
+            "sequences": sequence_ids,
+            "sequence_definitions": definitions,
+        }
+
+    definitions = suggest_dataset_manifest_sequences(root)
+    return {
+        "status": "detected",
+        "dataset_root": str(root),
+        "adapter": "manifest_dataset",
+        "source_mode": "generic_manifest",
+        "sequences": [str(row["id"]) for row in definitions],
+        "sequence_definitions": definitions,
+    }
+
+
+def _manifest_sequence_definitions(dataset_root: Path) -> list[dict[str, Any]]:
+    for name in ("dataset_manifest.yaml", "dataset_manifest.yml"):
+        path = dataset_root / name
+        if not path.is_file():
+            continue
+        data = load_yaml_file(path)
+        sequences = data.get("sequences") if isinstance(data.get("sequences"), list) else []
+        return [dict(row) for row in sequences if isinstance(row, dict)]
+    return []
+
+
 def _sequence_pose_csv(sequence_root: Path) -> Path | None:
     return _first_existing_file(
         sequence_root,
@@ -3659,7 +3722,7 @@ def inspect_dataset(dataset_root: str, adapter: str = "", sequence_id: str = "")
     sequences = resolved_adapter.list_sequences(dataset_root)
     if not sequences:
         raise ValueError("No dataset sequences found.")
-    selected = sequence_id or sequences[0]
+    selected = sequence_id if sequence_id in sequences else sequences[0]
     sequence = resolved_adapter.load_sequence(dataset_root, selected)
     analysis = analyze_dataset_sequences(
         [sequence],
@@ -3779,6 +3842,149 @@ def create_dataset_split_definition(
     return payload
 
 
+class DatasetPreviewSession:
+    """Reuse a loaded sequence and a bounded set of rendered frame previews."""
+
+    def __init__(self, *, max_cached_frames: int = 24) -> None:
+        self.max_cached_frames = max(1, int(max_cached_frames))
+        self._lock = threading.RLock()
+        self._dataset_root = ""
+        self._adapter_name = ""
+        self._sequence_id = ""
+        self._sequence_ids: list[str] = []
+        self._sequence: DatasetSequence | None = None
+        self._frame_cache: dict[tuple[int, str], dict[str, Any]] = {}
+
+    def invalidate(self) -> None:
+        with self._lock:
+            self._dataset_root = ""
+            self._adapter_name = ""
+            self._sequence_id = ""
+            self._sequence_ids = []
+            self._sequence = None
+            self._frame_cache.clear()
+
+    def preview(
+        self,
+        dataset_root: str,
+        adapter: str = "",
+        sequence_id: str = "",
+        *,
+        frame_index: int = 0,
+        output_dir: str | Path | None = None,
+    ) -> dict[str, Any]:
+        if not dataset_root:
+            raise ValueError("Dataset root is required.")
+        root = str(Path(dataset_root).resolve())
+        requested_adapter = adapter.strip()
+        with self._lock:
+            sequence_cache_hit = self._can_reuse_sequence(root, requested_adapter, sequence_id)
+            if sequence_cache_hit:
+                selected = sequence_id if sequence_id in self._sequence_ids else self._sequence_id
+            else:
+                registry = default_dataset_registry()
+                resolved_adapter = registry.resolve(root, requested_adapter or None)
+                sequence_ids = resolved_adapter.list_sequences(root)
+                if not sequence_ids:
+                    raise ValueError("No dataset sequences found.")
+                selected = sequence_id if sequence_id in sequence_ids else sequence_ids[0]
+                sequence = resolved_adapter.load_sequence(root, selected)
+                if not sequence.frames:
+                    raise ValueError("Selected sequence has no frames.")
+                self._dataset_root = root
+                self._adapter_name = resolved_adapter.name
+                self._sequence_id = selected
+                self._sequence_ids = list(sequence_ids)
+                self._sequence = sequence
+                self._frame_cache.clear()
+
+            sequence = self._sequence
+            if sequence is None:
+                raise RuntimeError("Dataset preview sequence was not initialized.")
+            index = min(max(0, int(frame_index)), len(sequence.frames) - 1)
+            out = self._preview_output_dir(root, selected, output_dir)
+            cache_key = (index, str(out))
+            cached = self._frame_cache.get(cache_key)
+            if cached is not None:
+                self._frame_cache.pop(cache_key)
+                self._frame_cache[cache_key] = cached
+                return _copy_preview_payload(cached, preview_cache_hit=True, sequence_cache_hit=True)
+
+            payload = self._render_frame(sequence, index, out)
+            payload["adapter"] = self._adapter_name
+            payload["dataset_root"] = root
+            self._frame_cache[cache_key] = payload
+            while len(self._frame_cache) > self.max_cached_frames:
+                oldest = next(iter(self._frame_cache))
+                self._frame_cache.pop(oldest)
+            return _copy_preview_payload(
+                payload,
+                preview_cache_hit=False,
+                sequence_cache_hit=sequence_cache_hit,
+            )
+
+    def _can_reuse_sequence(self, root: str, requested_adapter: str, sequence_id: str) -> bool:
+        if self._sequence is None or self._dataset_root != root:
+            return False
+        if requested_adapter and requested_adapter != self._adapter_name:
+            return False
+        selected = sequence_id if sequence_id in self._sequence_ids else self._sequence_id
+        return selected == self._sequence_id
+
+    def _preview_output_dir(
+        self,
+        dataset_root: str,
+        sequence_id: str,
+        output_dir: str | Path | None,
+    ) -> Path:
+        if output_dir is not None:
+            out = Path(output_dir)
+        else:
+            source_key = hashlib.sha1(
+                f"{dataset_root}|{self._adapter_name}|{sequence_id}".encode("utf-8")
+            ).hexdigest()[:10]
+            out = ROOT / "outputs" / "gui_previews" / f"{_safe_name(sequence_id)}_{source_key}"
+        out.mkdir(parents=True, exist_ok=True)
+        return out
+
+    def _render_frame(self, sequence: DatasetSequence, index: int, out: Path) -> dict[str, Any]:
+        frame = sequence.frames[index]
+        assets = frame.available_assets()
+        previews: dict[str, str] = {}
+        for name, asset_path in assets.items():
+            if name not in {"front_rgb", "depth", "label", "lidar_points", "local_bev", "terrain_map"}:
+                continue
+            target = out / f"{index:06d}_{name}.png"
+            preview_path = target if target.is_file() else _write_preview_image(asset_path, target, modality=name)
+            if preview_path is not None:
+                previews[name] = str(preview_path.resolve())
+        return {
+            "sequence_id": sequence.sequence_id,
+            "frame_index": index,
+            "frame_count": len(sequence.frames),
+            "frame_id": frame.frame_id,
+            "assets": assets,
+            "previews": previews,
+            "metadata": frame.metadata,
+        }
+
+
+def _copy_preview_payload(
+    payload: dict[str, Any],
+    *,
+    preview_cache_hit: bool,
+    sequence_cache_hit: bool,
+) -> dict[str, Any]:
+    return {
+        **payload,
+        "assets": dict(payload.get("assets") or {}),
+        "previews": dict(payload.get("previews") or {}),
+        "metadata": dict(payload.get("metadata") or {}),
+        "preview_cache_hit": preview_cache_hit,
+        "sequence_cache_hit": sequence_cache_hit,
+    }
+
+
 def preview_dataset_frame(
     dataset_root: str,
     adapter: str = "",
@@ -3787,41 +3993,13 @@ def preview_dataset_frame(
     frame_index: int = 0,
     output_dir: str | Path | None = None,
 ) -> dict[str, Any]:
-    if not dataset_root:
-        raise ValueError("Dataset root is required.")
-    registry = default_dataset_registry()
-    resolved_adapter = registry.resolve(dataset_root, adapter or None)
-    sequences = resolved_adapter.list_sequences(dataset_root)
-    if not sequences:
-        raise ValueError("No dataset sequences found.")
-    selected = sequence_id or sequences[0]
-    sequence = resolved_adapter.load_sequence(dataset_root, selected)
-    if not sequence.frames:
-        raise ValueError("Selected sequence has no frames.")
-    index = min(max(0, int(frame_index)), len(sequence.frames) - 1)
-    frame = sequence.frames[index]
-    out = Path(output_dir or ROOT / "outputs" / "gui_previews" / _safe_name(selected))
-    out.mkdir(parents=True, exist_ok=True)
-
-    previews: dict[str, str] = {}
-    for name, asset_path in frame.available_assets().items():
-        if name not in {"front_rgb", "depth", "label", "lidar_points", "local_bev", "terrain_map"}:
-            continue
-        preview_path = _write_preview_image(asset_path, out / f"{index:06d}_{name}.png", modality=name)
-        if preview_path is not None:
-            previews[name] = str(preview_path.resolve())
-
-    return {
-        "dataset_root": str(Path(dataset_root).resolve()),
-        "adapter": resolved_adapter.name,
-        "sequence_id": selected,
-        "frame_index": index,
-        "frame_count": len(sequence.frames),
-        "frame_id": frame.frame_id,
-        "assets": frame.available_assets(),
-        "previews": previews,
-        "metadata": frame.metadata,
-    }
+    return DatasetPreviewSession(max_cached_frames=1).preview(
+        dataset_root,
+        adapter,
+        sequence_id,
+        frame_index=frame_index,
+        output_dir=output_dir,
+    )
 
 
 def _dataset_quality_markdown(analysis: dict[str, Any]) -> str:

@@ -121,8 +121,12 @@ def test_import_dataset_manifest_rewrites_relative_roots_and_registers_dataset(t
     entries = services.dataset_manifest_entries(destination_root)
     assert entries[0]["id"] == "custom_drive"
     inspected = services.inspect_dataset(row["dataset_root"], adapter=row["adapter"], sequence_id="clip_001")
+    detected = services.detect_dataset_sequences(row["dataset_root"])
     assert inspected["dataset_id"] == "custom_drive"
     assert inspected["frame_count"] == 2
+    assert detected["sequences"] == inspected["sequences"]
+    assert detected["sequence_definitions"][0]["pose_csv"] == "poses.csv"
+    assert detected["sequence_definitions"][0]["assets"]["front_rgb"] == "rgb_{frame_id}.png"
 
 
 def test_save_dataset_manifest_from_directory_registers_generic_dataset(tmp_path) -> None:
@@ -200,6 +204,35 @@ def test_suggest_dataset_manifest_sequences_handles_single_root_sequence(tmp_pat
     assert sequences[0]["root"] == "."
     assert sequences[0]["pose_csv"] == "poses.csv"
     assert sequences[0]["assets"] == {"front_rgb": "rgb/*.jpg"}
+
+
+def test_detect_dataset_sequences_matches_orfd_inspection(tmp_path) -> None:
+    dataset_root = create_mock_orfd_dataset(tmp_path / "orfd", frame_count=3)
+
+    detected = services.detect_dataset_sequences(dataset_root)
+    inspected = services.inspect_dataset(str(dataset_root), adapter="orfd")
+
+    assert detected["adapter"] == "orfd"
+    assert detected["source_mode"] == "registered_adapter"
+    assert detected["sequences"] == inspected["sequences"]
+    assert detected["sequence_definitions"] == []
+
+
+def test_dataset_preview_session_reuses_sequence_and_rendered_frames(tmp_path) -> None:
+    dataset_root = create_mock_orfd_dataset(tmp_path / "orfd", frame_count=3)
+    session = services.DatasetPreviewSession(max_cached_frames=2)
+    output_dir = tmp_path / "previews"
+
+    first = session.preview(str(dataset_root), "orfd", "training/seq_0001", frame_index=0, output_dir=output_dir)
+    second = session.preview(str(dataset_root), "orfd", "training/seq_0001", frame_index=1, output_dir=output_dir)
+    repeated = session.preview(str(dataset_root), "orfd", "training/seq_0001", frame_index=1, output_dir=output_dir)
+
+    assert first["sequence_cache_hit"] is False
+    assert second["sequence_cache_hit"] is True
+    assert second["preview_cache_hit"] is False
+    assert repeated["sequence_cache_hit"] is True
+    assert repeated["preview_cache_hit"] is True
+    assert repeated["previews"] == second["previews"]
 
 
 def test_training_preset_entries_include_available_and_future_models() -> None:

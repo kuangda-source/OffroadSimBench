@@ -10,6 +10,7 @@ from unittest.mock import patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QPointF, Qt
+from PySide6.QtGui import QColor, QPixmap
 from PySide6.QtWidgets import QApplication, QDialog, QLabel, QPushButton
 
 from desktop_app import services
@@ -265,10 +266,11 @@ def test_gui_dataset_training_page_exposes_training_studio_controls() -> None:
     assert "输出目录" in labels
     assert "配置摘要" in labels
     assert "最近指标曲线" in labels
-    assert "数据集名称" in labels
-    assert "序列定义" in labels
-    assert "自动检测序列" in buttons
-    assert "保存数据集清单" in buttons
+    assert "保存名称（自定义数据源）" in labels
+    assert "已保存的数据源" in labels
+    assert "自定义序列映射" in labels
+    assert "识别格式与序列" in buttons
+    assert "保存为通用数据源" in buttons
     assert "预览数据帧" in buttons
     assert "预览 ORFD 图像" not in buttons
     assert "保存训练配置" in buttons
@@ -456,7 +458,63 @@ def test_gui_auto_detects_dataset_sequences(monkeypatch, tmp_path) -> None:
     assert '"front_rgb"' in window.dataset_sequence_table.item(0, 4).text()
     assert window.dataset_manifest_name_edit.text() == "drive_dataset"
     assert window.adapter_edit.text() == "manifest_dataset"
-    assert "suggested_sequences" in window.dataset_summary.toPlainText()
+    assert '"status": "detected"' in window.dataset_summary.toPlainText()
+    window.close()
+
+
+def test_gui_dataset_source_actions_explain_catalog_and_manifest_roles() -> None:
+    _ensure_app()
+    window = MainWindow()
+
+    assert window.dataset_catalog_combo.itemText(0) == "临时数据集（直接选择文件夹）"
+    assert "dataset_manifest.yaml" in window.dataset_import_button.toolTip()
+    assert "适配器" in window.dataset_detect_button.toolTip()
+    assert "没有内置适配器" in window.dataset_sequence_table.toolTip()
+    window.close()
+
+
+def test_gui_orfd_detection_uses_same_adapter_sequences_as_inspection(tmp_path) -> None:
+    _ensure_app()
+    window = MainWindow()
+    dataset_root = services.create_mock_orfd_dataset(tmp_path / "orfd", frame_count=2)
+    inspected = services.inspect_dataset(str(dataset_root), adapter="orfd")
+    window.dataset_root_edit.setText(str(dataset_root))
+
+    window.suggest_dataset_manifest_sequences_from_gui()
+
+    detected_sequences = [window.sequence_combo.itemText(index) for index in range(window.sequence_combo.count())]
+    assert window.adapter_edit.text() == "orfd"
+    assert detected_sequences == inspected["sequences"]
+    assert window.dataset_sequence_table.rowCount() == 0
+    assert window.dataset_sequence_table.isEnabled() is False
+    window.close()
+
+
+def test_gui_preview_surface_keeps_stable_geometry_for_different_image_sizes(tmp_path) -> None:
+    app = _ensure_app()
+    window = MainWindow()
+    window.resize(1200, 800)
+    window.select_page(1)
+    window.show()
+    app.processEvents()
+    small_path = tmp_path / "small.png"
+    large_path = tmp_path / "large.png"
+    small = QPixmap(80, 40)
+    small.fill(QColor("red"))
+    large = QPixmap(1600, 1200)
+    large.fill(QColor("blue"))
+    assert small.save(str(small_path))
+    assert large.save(str(large_path))
+
+    window._set_preview(window.rgb_preview, small_path, "RGB: NaN")
+    app.processEvents()
+    size_after_small = window.rgb_preview.size()
+    hint_after_small = window.rgb_preview.sizeHint()
+    window._set_preview(window.rgb_preview, large_path, "RGB: NaN")
+    app.processEvents()
+
+    assert window.rgb_preview.size() == size_after_small
+    assert window.rgb_preview.sizeHint() == hint_after_small
     window.close()
 
 

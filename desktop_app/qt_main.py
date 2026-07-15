@@ -12,7 +12,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QPointF, QObject, QRectF, QTimer, Qt, Signal, Slot
+from PySide6.QtCore import QPointF, QObject, QRectF, QSize, QTimer, Qt, Signal, Slot
 from PySide6.QtGui import QColor, QFont, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -126,6 +126,54 @@ class TaskWorker(QObject):
                 self.failed.emit(str(exc))
         finally:
             self.settled.emit()
+
+
+class StablePreviewLabel(QLabel):
+    """A preview surface whose source image never changes layout geometry."""
+
+    def __init__(self, placeholder: str) -> None:
+        super().__init__(placeholder)
+        self._placeholder = placeholder
+        self._source_pixmap = QPixmap()
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setMinimumHeight(PREVIEW_MIN_HEIGHT)
+        self.setObjectName("previewPane")
+        self.setScaledContents(False)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)
+
+    def sizeHint(self) -> QSize:
+        return QSize(360, PREVIEW_MIN_HEIGHT)
+
+    def minimumSizeHint(self) -> QSize:
+        return QSize(160, PREVIEW_MIN_HEIGHT)
+
+    def set_preview_pixmap(self, pixmap: QPixmap) -> None:
+        self._source_pixmap = QPixmap(pixmap)
+        self.setText("")
+        self._render_source()
+
+    def clear_preview(self, placeholder: str | None = None) -> None:
+        self._source_pixmap = QPixmap()
+        super().setPixmap(QPixmap())
+        self.setText(placeholder or self._placeholder)
+
+    def resizeEvent(self, event: Any) -> None:
+        super().resizeEvent(event)
+        self._render_source()
+
+    def _render_source(self) -> None:
+        if self._source_pixmap.isNull():
+            return
+        target = self.contentsRect().size()
+        if target.width() <= 0 or target.height() <= 0:
+            return
+        super().setPixmap(
+            self._source_pixmap.scaled(
+                target,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+        )
 
 
 class AdvancedSettingsDialog(QDialog):
@@ -1243,6 +1291,7 @@ class MainWindow(QMainWindow):
         self._navigation_preview_busy = False
         self._navigation_preview_pending: tuple[str, str, float] | None = None
         self._dataset_preview_busy = False
+        self.dataset_preview_session = services.DatasetPreviewSession(max_cached_frames=24)
         self._busy_depth = 0
         self.training_job_queue = services.TrainingJobQueue(max_parallel=1)
         self._current_training_job_id = ""
@@ -1361,6 +1410,7 @@ class MainWindow(QMainWindow):
         self.training_config_combo.currentIndexChanged.connect(lambda _: self._sync_training_config_selection())
         self.training_preset_combo.currentIndexChanged.connect(lambda _: self._sync_training_preset_selection(force=True))
         self.dataset_catalog_combo.currentIndexChanged.connect(lambda _: self._sync_dataset_manifest_selection())
+        self.dataset_root_edit.textChanged.connect(self._dataset_root_changed)
         for edit in (
             self.dataset_root_edit,
             self.adapter_edit,
@@ -1526,39 +1576,54 @@ class MainWindow(QMainWindow):
         data_root.setSpacing(CARD_SPACING)
         data_root.addWidget(self._tab_header("数据集", "导入数据源，检查序列和数据质量，并同步预览不同模态。"))
         data_layout = self._row_layout()
-        dataset_browse = QPushButton("选择")
+        dataset_browse = QPushButton("选择文件夹")
         self._configure_button(dataset_browse)
         dataset_browse.clicked.connect(lambda: self._browse_dir(self.dataset_root_edit))
-        dataset_import = QPushButton("导入数据集清单")
-        self._configure_button(dataset_import)
-        dataset_import.clicked.connect(self.import_dataset_manifest)
-        dataset_save = QPushButton("保存数据集清单")
-        self._configure_button(dataset_save)
-        dataset_save.clicked.connect(self.save_dataset_manifest_from_gui)
-        dataset_suggest = QPushButton("自动检测序列")
-        self._configure_button(dataset_suggest)
-        dataset_suggest.clicked.connect(self.suggest_dataset_manifest_sequences_from_gui)
-        dataset_sequence_add = QPushButton("添加序列")
-        self._configure_button(dataset_sequence_add)
-        dataset_sequence_add.clicked.connect(self._add_dataset_sequence_row)
-        dataset_sequence_remove = QPushButton("删除所选序列")
-        self._configure_button(dataset_sequence_remove)
-        dataset_sequence_remove.clicked.connect(self._remove_dataset_sequence_rows)
+        self.dataset_import_button = QPushButton("导入数据源配置")
+        self.dataset_import_button.setToolTip("导入已有的 dataset_manifest.yaml；直接选择普通数据集文件夹时无需使用。")
+        self._configure_button(self.dataset_import_button)
+        self.dataset_import_button.clicked.connect(self.import_dataset_manifest)
+        self.dataset_save_button = QPushButton("保存为通用数据源")
+        self.dataset_save_button.setToolTip("保存当前序列映射，供未内置适配器的数据集重复使用。")
+        self._configure_button(self.dataset_save_button)
+        self.dataset_save_button.clicked.connect(self.save_dataset_manifest_from_gui)
+        self.dataset_detect_button = QPushButton("识别格式与序列")
+        self.dataset_detect_button.setToolTip("自动选择已注册的数据集适配器，并读取该适配器发现的全部序列。")
+        self._configure_button(self.dataset_detect_button)
+        self.dataset_detect_button.clicked.connect(self.suggest_dataset_manifest_sequences_from_gui)
+        self.dataset_sequence_add_button = QPushButton("添加序列")
+        self.dataset_sequence_add_button.setToolTip("为没有内置适配器的数据集添加一条自定义序列映射。")
+        self._configure_button(self.dataset_sequence_add_button)
+        self.dataset_sequence_add_button.clicked.connect(self._add_dataset_sequence_row)
+        self.dataset_sequence_remove_button = QPushButton("删除所选序列")
+        self._configure_button(self.dataset_sequence_remove_button)
+        self.dataset_sequence_remove_button.clicked.connect(self._remove_dataset_sequence_rows)
+        source_toolbar = self._action_toolbar(
+            [self.dataset_detect_button, self.dataset_import_button],
+            object_name="datasetSourceToolbar",
+        )
         manifest_toolbar = self._action_toolbar(
-            [dataset_suggest, dataset_sequence_add, dataset_sequence_remove, dataset_save],
+            [
+                self.dataset_sequence_add_button,
+                self.dataset_sequence_remove_button,
+                self.dataset_save_button,
+            ],
             object_name="datasetManifestToolbar",
         )
+        self.dataset_catalog_combo.setToolTip("选择之前保存或导入的数据源配置；临时浏览文件夹可保持“临时数据集”。")
+        self.dataset_sequence_table.setToolTip("仅在自定义数据集没有内置适配器时编辑序列目录和资产映射。")
+        self.adapter_edit.setToolTip("识别后自动填写；也可手动指定已注册的适配器名称。")
         controls = self._group(
             "数据源",
             [
-                self._field("数据集目录", self.dataset_catalog_combo),
-                dataset_import,
+                self._field("已保存的数据源", self.dataset_catalog_combo),
                 self._field("数据集根目录", self._with_button(self.dataset_root_edit, dataset_browse)),
-                self._field("数据集名称", self.dataset_manifest_name_edit),
-                self._field("序列定义", self.dataset_sequence_table),
+                source_toolbar,
+                self._field("保存名称（自定义数据源）", self.dataset_manifest_name_edit),
+                self._field("自定义序列映射", self.dataset_sequence_table),
                 manifest_toolbar,
-                self._field("序列", self.sequence_combo),
-                self._field("适配器", self.adapter_edit),
+                self._field("当前序列", self.sequence_combo),
+                self._field("识别到的适配器", self.adapter_edit),
                 self._action_button("检查数据集", self.inspect_dataset),
                 self._action_button("预览数据帧", self.preview_dataset, primary=True),
             ],
@@ -1595,7 +1660,7 @@ class MainWindow(QMainWindow):
         preview_controls_layout.addWidget(self.dataset_frame_slider, 1)
         preview_controls_layout.addWidget(self.dataset_frame_label)
         self.dataset_preview_timer = QTimer(self)
-        self.dataset_preview_timer.setInterval(500)
+        self.dataset_preview_timer.setInterval(250)
         self.dataset_preview_timer.timeout.connect(self._advance_dataset_preview)
         preview_layout.addWidget(preview_controls)
         image_grid = QGridLayout()
@@ -2586,6 +2651,17 @@ class MainWindow(QMainWindow):
             task_label="检查数据集",
         )
 
+    def _dataset_root_changed(self, _text: str) -> None:
+        self.dataset_info = None
+        if hasattr(self, "dataset_preview_timer"):
+            self.dataset_preview_timer.stop()
+        if hasattr(self, "dataset_play_button"):
+            self.dataset_play_button.setChecked(False)
+        self.sequence_combo.clear()
+        self.adapter_edit.clear()
+        if hasattr(self, "dataset_save_button"):
+            self._set_custom_dataset_controls(True)
+
     def preview_dataset(self) -> None:
         if self._dataset_preview_busy:
             return
@@ -2594,7 +2670,7 @@ class MainWindow(QMainWindow):
         self.settings.preview_frame_index = frame_index
         self.log(f"生成数据集帧预览：{frame_index}")
         self._run_task(
-            lambda: services.preview_dataset_frame(
+            lambda: self.dataset_preview_session.preview(
                 self.dataset_root_edit.text().strip(),
                 adapter=self.adapter_edit.text().strip(),
                 sequence_id=self.sequence_combo.currentText().strip(),
@@ -2788,27 +2864,26 @@ class MainWindow(QMainWindow):
             self.dataset_summary.setText(_compact_json({"status": "invalid_dataset", "message": "Dataset root is required."}))
             return
         try:
-            sequences = services.suggest_dataset_manifest_sequences(dataset_root)
+            result = services.detect_dataset_sequences(dataset_root, self.adapter_edit.text().strip())
         except Exception as exc:
-            self.dataset_summary.setText(_compact_json({"status": "suggest_failed", "message": str(exc)}))
-            self.log(f"Dataset sequence auto-detect failed: {exc}")
+            self.dataset_summary.setText(_compact_json({"status": "detection_failed", "message": str(exc)}))
+            self.log(f"Dataset format detection failed: {exc}")
             return
-        self._set_dataset_sequence_rows(sequences)
+        definitions = result.get("sequence_definitions") if isinstance(result.get("sequence_definitions"), list) else []
+        sequence_ids = result.get("sequences") if isinstance(result.get("sequences"), list) else []
+        self._set_dataset_sequence_rows([dict(row) for row in definitions if isinstance(row, dict)])
         if not self.dataset_manifest_name_edit.text().strip():
             self.dataset_manifest_name_edit.setText(Path(dataset_root).name or "Custom Dataset")
-        self.adapter_edit.setText("manifest_dataset")
-        if sequences:
-            self.sequence_combo.setCurrentText(str(sequences[0].get("id") or ""))
-        self.dataset_summary.setText(
-            _compact_json(
-                {
-                    "status": "suggested_sequences",
-                    "sequence_count": len(sequences),
-                    "sequences": sequences,
-                }
-            )
+        self.adapter_edit.setText(str(result.get("adapter") or ""))
+        self._set_custom_dataset_controls(str(result.get("adapter") or "") == "manifest_dataset")
+        self.sequence_combo.clear()
+        for sequence_id in sequence_ids:
+            self.sequence_combo.addItem(str(sequence_id))
+        self.dataset_summary.setText(_compact_json(result))
+        self.log(
+            f"Dataset detected: adapter={result.get('adapter', services.NAN_TEXT)}, "
+            f"sequences={len(sequence_ids)}"
         )
-        self.log(f"Dataset sequences auto-detected: {len(sequences)}")
 
     def import_trainer_manifest(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -3525,6 +3600,8 @@ class MainWindow(QMainWindow):
 
     def _dataset_inspected(self, payload: dict[str, Any]) -> None:
         self.dataset_info = payload
+        self.adapter_edit.setText(str(payload.get("adapter") or ""))
+        self._set_custom_dataset_controls(str(payload.get("adapter") or "") == "manifest_dataset")
         self.dataset_summary.setText(_compact_json(payload))
         self.dataset_detail_summary.setText(_dataset_detail_text(payload))
         quality = payload.get("quality") if isinstance(payload.get("quality"), dict) else {}
@@ -3555,7 +3632,8 @@ class MainWindow(QMainWindow):
         self.dataset_frame_slider.setValue(frame_index)
         self.dataset_frame_label.setText(f"帧 {frame_index + 1 if frame_count else 0} / {frame_count}")
         self.dataset_summary.setText(_compact_json(payload))
-        self.log(f"预览完成: frame={payload.get('frame_id', services.NAN_TEXT)}")
+        if not self.dataset_play_button.isChecked():
+            self.log(f"预览完成: frame={payload.get('frame_id', services.NAN_TEXT)}")
 
     def _dataset_quality_ready(self, payload: dict[str, Any]) -> None:
         analysis = payload.get("analysis") if isinstance(payload.get("analysis"), dict) else {}
@@ -3715,7 +3793,9 @@ class MainWindow(QMainWindow):
         dataset_root = str(row.get("dataset_root") or "").strip()
         if dataset_root:
             self.dataset_root_edit.setText(dataset_root)
-        self.adapter_edit.setText(str(row.get("adapter") or ""))
+        adapter = str(row.get("adapter") or "")
+        self.adapter_edit.setText(adapter)
+        self._set_custom_dataset_controls(adapter == "manifest_dataset")
         sequence_id = str(row.get("sequence_id") or "")
         if sequence_id:
             self.sequence_combo.setCurrentText(sequence_id)
@@ -3751,7 +3831,7 @@ class MainWindow(QMainWindow):
         current_id = current.get("id") if isinstance(current, dict) else ""
         self.dataset_catalog_combo.blockSignals(True)
         self.dataset_catalog_combo.clear()
-        self.dataset_catalog_combo.addItem("Manual dataset path", {})
+        self.dataset_catalog_combo.addItem("临时数据集（直接选择文件夹）", {})
         selected_index = 0
         for row in self.catalog.get("dataset_manifests", []):
             dataset_id = str(row.get("id") or "")
@@ -3785,6 +3865,7 @@ class MainWindow(QMainWindow):
         if dataset_root:
             self.dataset_root_edit.setText(dataset_root)
         self.adapter_edit.setText(str(row.get("adapter") or "manifest_dataset"))
+        self._set_custom_dataset_controls(str(row.get("adapter") or "manifest_dataset") == "manifest_dataset")
         sequences = row.get("sequences") if isinstance(row.get("sequences"), list) else []
         self._set_dataset_sequence_rows(
             [item if isinstance(item, dict) else {"id": str(item), "root": "."} for item in sequences]
@@ -3796,6 +3877,13 @@ class MainWindow(QMainWindow):
         if sequences:
             self.sequence_combo.setCurrentIndex(0)
         self.dataset_summary.setText(_compact_json({"dataset": row}))
+
+    def _set_custom_dataset_controls(self, enabled: bool) -> None:
+        self.dataset_manifest_name_edit.setEnabled(enabled)
+        self.dataset_sequence_table.setEnabled(enabled)
+        self.dataset_sequence_add_button.setEnabled(enabled)
+        self.dataset_sequence_remove_button.setEnabled(enabled)
+        self.dataset_save_button.setEnabled(enabled)
 
     def _fill_training_preset_combo(self) -> None:
         current = self.training_preset_combo.currentData()
@@ -5199,26 +5287,35 @@ class MainWindow(QMainWindow):
         layout.addWidget(preview, 1)
         return frame
 
-    def _preview_label(self, placeholder: str) -> QLabel:
-        label = QLabel(placeholder)
-        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        label.setMinimumHeight(PREVIEW_MIN_HEIGHT)
-        label.setObjectName("previewPane")
-        label.setScaledContents(False)
-        label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        return label
+    def _preview_label(self, placeholder: str) -> StablePreviewLabel:
+        return StablePreviewLabel(placeholder)
 
     def _set_preview(self, label: QLabel, path: Any, placeholder: str) -> None:
         if not path or not Path(str(path)).exists():
-            label.setPixmap(QPixmap())
-            label.setText(placeholder)
+            if isinstance(label, StablePreviewLabel):
+                label.clear_preview(placeholder)
+            else:
+                label.setPixmap(QPixmap())
+                label.setText(placeholder)
             return
         pixmap = QPixmap(str(path))
         if pixmap.isNull():
-            label.setText(placeholder)
+            if isinstance(label, StablePreviewLabel):
+                label.clear_preview(placeholder)
+            else:
+                label.setText(placeholder)
             return
-        label.setText("")
-        label.setPixmap(pixmap.scaled(label.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+        if isinstance(label, StablePreviewLabel):
+            label.set_preview_pixmap(pixmap)
+        else:
+            label.setText("")
+            label.setPixmap(
+                pixmap.scaled(
+                    label.size(),
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+            )
 
     def _browse_dir(self, target: QLineEdit) -> None:
         path = QFileDialog.getExistingDirectory(self, "选择目录", target.text() or str(services.ROOT))
