@@ -253,19 +253,19 @@ def test_gui_dataset_training_page_exposes_training_studio_controls() -> None:
     labels = [label.text() for label in dataset_page.findChildren(QLabel)]
     buttons = [button.text() for button in dataset_page.findChildren(QPushButton)]
 
-    assert "Training config" in labels
-    assert "Training preset" in labels
-    assert "Training output" in labels
-    assert "Training config summary" in labels
-    assert "Latest metric curve" in labels
-    assert "Dataset name" in labels
-    assert "Manifest sequences" in labels
-    assert "Auto-detect sequences" in buttons
-    assert "Save dataset manifest" in buttons
-    assert "Preview dataset frame" in buttons
+    assert "训练配置" in labels
+    assert "训练预设" in labels
+    assert "输出目录" in labels
+    assert "配置摘要" in labels
+    assert "最近指标曲线" in labels
+    assert "数据集名称" in labels
+    assert "序列定义" in labels
+    assert "自动检测序列" in buttons
+    assert "保存数据集清单" in buttons
+    assert "预览数据帧" in buttons
     assert "预览 ORFD 图像" not in buttons
-    assert "Save training config" in buttons
-    assert "Start training/export" in buttons
+    assert "保存训练配置" in buttons
+    assert "开始训练 / 导出" in buttons
     assert hasattr(window, "training_preset_summary")
     assert hasattr(window, "training_output_edit")
     assert hasattr(window, "training_run_list")
@@ -280,9 +280,9 @@ def test_gui_dataset_preview_has_titles_and_readable_tabs() -> None:
     dataset_page = window.page_stack.widget(1)
     labels = [label.text() for label in dataset_page.findChildren(QLabel)]
 
-    assert "RGB preview" in labels
-    assert "Depth / Label preview" in labels
-    assert "Frame metadata" in labels
+    assert "RGB 预览" in labels
+    assert "深度 / 标签预览" in labels
+    assert "帧元数据" in labels
     assert "QTabBar::tab" in STYLESHEET
     assert "QTabBar::tab:selected" in STYLESHEET
     assert "#f5f5f7" in STYLESHEET
@@ -799,7 +799,7 @@ parameters:
 
     row = window.training_config_combo.currentData()
     buttons = [button.text() for button in window.page_stack.widget(1).findChildren(QPushButton)]
-    assert "Import training config" in buttons
+    assert "导入训练配置" in buttons
     assert row["id"] == "gui_bundle"
     assert row["training_preset_id"] == "gui_trainer"
     assert window.training_preset_combo.currentData()["id"] == "gui_trainer"
@@ -898,7 +898,7 @@ def test_gui_training_finished_loads_training_run_record_overview(tmp_path) -> N
 
     window._training_finished({"output_dir": str(run_dir / "model"), "training_run_path": record["path"]})
 
-    assert "Train tiny world model" in window.training_run_overview.toPlainText()
+    assert "训练 Tiny 世界模型" in window.training_run_overview.toPlainText()
     assert "loss: 0.1" in window.training_run_overview.toPlainText()
     assert window.latest_training_curve.history["loss"] == [0.5, 0.2, 0.1]
     assert window.training_curve.history["loss"] == [0.5, 0.2, 0.1]
@@ -955,7 +955,7 @@ def test_gui_registers_latest_training_artifact_as_world_model_config(tmp_path, 
 
     row = window.world_model_config_edit_combo.currentData()
     buttons = [button.text() for button in window.page_stack.widget(1).findChildren(QPushButton)]
-    assert "Register latest training artifact" in buttons
+    assert "注册最近训练产物" in buttons
     assert row["id"] == "Latest_Tiny"
     assert row["algorithm"] == "world_model_direct"
     assert row["world_model"] == "tiny_learned"
@@ -1095,7 +1095,7 @@ def test_gui_imports_world_model_config_for_home(tmp_path, monkeypatch) -> None:
 
     row = window.world_model_config_edit_combo.currentData()
     buttons = [button.text() for button in window.page_stack.widget(1).findChildren(QPushButton)]
-    assert "Import model/checkpoint" in buttons
+    assert "导入模型 / Checkpoint" in buttons
     assert row["id"] == "external_lewm_object"
     assert row["algorithm"] == "stablewm_lewm"
     assert row["world_model"] == "le_wm"
@@ -1118,7 +1118,7 @@ def test_gui_imports_world_model_directory_for_home(tmp_path, monkeypatch) -> No
 
     row = window.world_model_config_edit_combo.currentData()
     buttons = [button.text() for button in window.page_stack.widget(1).findChildren(QPushButton)]
-    assert "Import model folder" in buttons
+    assert "导入模型目录" in buttons
     assert row["id"] == "external_tiny_dir"
     assert row["algorithm"] == "world_model_direct"
     assert row["world_model"] == "tiny_learned"

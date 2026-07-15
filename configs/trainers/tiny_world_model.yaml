@@ -1,8 +1,8 @@
 trainer_id: tiny_world_model_script
-display_name: Tiny world model script
+display_name: Tiny 世界模型训练器
 runtime: python
 entrypoint: ../../scripts/train_world_model.py
-description: Train the built-in tiny dynamics model through the generic trainer manifest interface.
+description: 通过通用训练器接口训练内置轻量动力学模型。
 input:
   dataset_format: any_registered_adapter
 parameters:

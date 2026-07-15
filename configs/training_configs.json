@@ -1,0 +1,16 @@
+{
+  "configs": [
+    {
+      "id": "smoke_tiny_world_model",
+      "label": "Tiny 世界模型示例",
+      "training_preset_id": "tiny_world_model_script",
+      "dataset_root": "outputs/training_studio_smoke/datasets/mock_orfd",
+      "adapter": "orfd",
+      "sequence_id": "training/seq_0001",
+      "output_path": "outputs/training_studio_smoke/models/tiny_world_model",
+      "parameters": {
+        "ridge": 0.0001
+      }
+    }
+  ]
+}

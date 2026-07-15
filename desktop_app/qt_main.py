@@ -1272,50 +1272,48 @@ class MainWindow(QMainWindow):
         data_root = QVBoxLayout(data_tab)
         data_root.setContentsMargins(0, 0, 0, 0)
         data_root.setSpacing(CARD_SPACING)
-        data_root.addWidget(self._tab_header("Dataset import", "Register a dataset, inspect sequences, and preview RGB/depth or label frames."))
+        data_root.addWidget(self._tab_header("数据集", "导入数据源，检查序列和数据质量，并同步预览不同模态。"))
         data_layout = self._row_layout()
         dataset_browse = QPushButton("选择")
         self._configure_button(dataset_browse)
         dataset_browse.clicked.connect(lambda: self._browse_dir(self.dataset_root_edit))
-        dataset_import = QPushButton("导入 dataset manifest")
+        dataset_import = QPushButton("导入数据集清单")
         self._configure_button(dataset_import)
         dataset_import.clicked.connect(self.import_dataset_manifest)
-        dataset_save = QPushButton("Save dataset manifest")
+        dataset_save = QPushButton("保存数据集清单")
         self._configure_button(dataset_save)
         dataset_save.clicked.connect(self.save_dataset_manifest_from_gui)
-        dataset_suggest = QPushButton("Auto-detect sequences")
+        dataset_suggest = QPushButton("自动检测序列")
         self._configure_button(dataset_suggest)
         dataset_suggest.clicked.connect(self.suggest_dataset_manifest_sequences_from_gui)
         controls = self._group(
-            "Data source",
+            "数据源",
             [
-                self._field("Dataset catalog", self.dataset_catalog_combo),
+                self._field("数据集目录", self.dataset_catalog_combo),
                 dataset_import,
-                self._field("Dataset root", self._with_button(self.dataset_root_edit, dataset_browse)),
-                self._field("Dataset name", self.dataset_manifest_name_edit),
-                self._field("Manifest sequences", self.dataset_manifest_sequences_edit),
+                self._field("数据集根目录", self._with_button(self.dataset_root_edit, dataset_browse)),
+                self._field("数据集名称", self.dataset_manifest_name_edit),
+                self._field("序列定义", self.dataset_manifest_sequences_edit),
                 dataset_suggest,
                 dataset_save,
-                self._field("Sequence", self.sequence_combo),
-                self._field("Adapter", self.adapter_edit),
-                self._field("StableWM HDF5", self.stablewm_hdf5_edit),
+                self._field("序列", self.sequence_combo),
+                self._field("适配器", self.adapter_edit),
                 self._action_button("检查数据集", self.inspect_dataset),
-                self._action_button("Preview dataset frame", self.preview_dataset),
-                self._action_button("导出 StableWM HDF5", self.export_stablewm_hdf5),
+                self._action_button("预览数据帧", self.preview_dataset, primary=True),
             ],
         )
         data_layout.addWidget(controls, 1)
-        preview_box, preview_layout = self._new_group("Dataset preview")
+        preview_box, preview_layout = self._new_group("数据集预览")
         image_row = self._row_layout(spacing=CARD_SPACING)
         self.rgb_preview = self._preview_label("RGB: NaN")
         self.depth_preview = self._preview_label("Depth/Label: NaN")
-        image_row.addWidget(self._preview_panel("RGB preview", self.rgb_preview), 1)
-        image_row.addWidget(self._preview_panel("Depth / Label preview", self.depth_preview), 1)
+        image_row.addWidget(self._preview_panel("RGB 预览", self.rgb_preview), 1)
+        image_row.addWidget(self._preview_panel("深度 / 标签预览", self.depth_preview), 1)
         preview_layout.addLayout(image_row, 2)
         self.dataset_summary = QTextEdit()
         self.dataset_summary.setReadOnly(True)
         self.dataset_summary.setPlaceholderText("数据集检查结果：NaN")
-        preview_layout.addWidget(self._section_label("Frame metadata"))
+        preview_layout.addWidget(self._section_label("帧元数据"))
         preview_layout.addWidget(self.dataset_summary, 1)
         data_layout.addWidget(preview_box, 2)
         data_root.addLayout(data_layout, 1)
@@ -1325,61 +1323,57 @@ class MainWindow(QMainWindow):
         training_root = QVBoxLayout(training_tab)
         training_root.setContentsMargins(0, 0, 0, 0)
         training_root.setSpacing(CARD_SPACING)
-        training_root.addWidget(self._tab_header("Model training", "Choose a reusable training config or bind a local trainer script with parameters."))
+        training_root.addWidget(self._tab_header("模型训练", "选择可复用训练配置，或注册本地训练脚本和参数。"))
         training_layout = self._row_layout()
         model_browse = QPushButton("选择")
         self._configure_button(model_browse)
         model_browse.clicked.connect(lambda: self._browse_path_combo(self.home_model_combo))
-        model_import = QPushButton("Import model/checkpoint")
+        model_import = QPushButton("导入模型 / Checkpoint")
         self._configure_button(model_import)
         model_import.clicked.connect(self.import_world_model_config)
-        model_dir_import = QPushButton("Import model folder")
+        model_dir_import = QPushButton("导入模型目录")
         self._configure_button(model_dir_import)
         model_dir_import.clicked.connect(self.import_world_model_directory_config)
-        trainer_import = QPushButton("导入训练器 manifest")
+        trainer_import = QPushButton("导入训练器清单")
         self._configure_button(trainer_import)
         trainer_import.clicked.connect(self.import_trainer_manifest)
-        trainer_entry_browse = QPushButton("Select")
+        trainer_entry_browse = QPushButton("选择")
         self._configure_button(trainer_entry_browse)
         trainer_entry_browse.clicked.connect(lambda: self._browse_file(self.trainer_entrypoint_edit, "Select trainer entrypoint"))
-        self.save_trainer_button = QPushButton("Save trainer from script")
+        self.save_trainer_button = QPushButton("从脚本保存训练器")
         self._configure_button(self.save_trainer_button)
         self.save_trainer_button.clicked.connect(self.save_trainer_manifest_from_gui)
-        self.save_script_config_button = QPushButton("Save script training config")
+        self.save_script_config_button = QPushButton("保存脚本训练配置")
         self._configure_button(self.save_script_config_button)
         self.save_script_config_button.clicked.connect(self.save_script_training_config_from_gui)
-        self.run_script_config_button = QPushButton("Run script now")
-        self._configure_button(self.run_script_config_button, primary=True)
-        self.run_script_config_button.clicked.connect(self.run_script_training_config)
-        training_config_import = QPushButton("Import training config")
+        training_config_import = QPushButton("导入训练配置")
         self._configure_button(training_config_import)
         training_config_import.clicked.connect(self.import_training_config)
         training_controls = self._group(
-            "Training config",
+            "训练配置",
             [
-                self._field("Training config", self.training_config_combo),
+                self._field("训练配置", self.training_config_combo),
                 training_config_import,
-                self._field("Config name", self.training_config_name_edit),
-                self._field("Training preset", self.training_preset_combo),
-                self._section_label("Training config summary"),
+                self._field("配置名称", self.training_config_name_edit),
+                self._field("训练预设", self.training_preset_combo),
+                self._section_label("配置摘要"),
                 self.training_preset_summary,
-                self._field("Training parameters", self.trainer_params_edit),
-                self._field("Training output", self.training_output_edit),
-                self._action_button("Validate config", self.validate_training_config),
-                self._action_button("Save training config", self.save_training_config),
-                self._action_button("Start training/export", self.run_training_preset, primary=True),
+                self._field("训练参数", self.trainer_params_edit),
+                self._field("输出目录", self.training_output_edit),
+                self._action_button("验证配置", self.validate_training_config),
+                self._action_button("保存训练配置", self.save_training_config),
+                self._action_button("开始训练 / 导出", self.run_training_preset, primary=True),
             ],
         )
         trainer_box = self._group(
-            "Trainer / algorithm",
+            "训练器 / 算法",
             [
                 trainer_import,
-                self._field("Trainer entrypoint", self._with_button(self.trainer_entrypoint_edit, trainer_entry_browse)),
-                self._field("Trainer arguments", self.trainer_arguments_edit),
-                self._field("Trainer parameter schema", self.trainer_schema_edit),
+                self._field("训练入口", self._with_button(self.trainer_entrypoint_edit, trainer_entry_browse)),
+                self._field("命令参数", self.trainer_arguments_edit),
+                self._field("参数 Schema", self.trainer_schema_edit),
                 self.save_trainer_button,
                 self.save_script_config_button,
-                self.run_script_config_button,
             ],
         )
         left_column = QVBoxLayout()
@@ -1388,13 +1382,13 @@ class MainWindow(QMainWindow):
         left_column.addWidget(training_controls, 3)
         left_column.addWidget(trainer_box, 1)
         training_layout.addLayout(left_column, 1)
-        output_box, output_layout = self._new_group("Latest training result")
+        output_box, output_layout = self._new_group("最近训练结果")
         self.model_summary = QTextEdit()
         self.model_summary.setReadOnly(True)
         self.model_summary.setPlaceholderText("模型训练/推理结果：NaN")
         self.latest_training_curve = TrainingCurveWidget()
-        output_layout.addWidget(self._section_label("Latest metric curve"))
-        self.latest_metric_summary = QLabel("Metric curves: NaN")
+        output_layout.addWidget(self._section_label("最近指标曲线"))
+        self.latest_metric_summary = QLabel("指标曲线：NaN")
         self.latest_metric_summary.setObjectName("mutedText")
         self.latest_metric_summary.setWordWrap(True)
         output_layout.addWidget(self.latest_metric_summary)
@@ -1403,22 +1397,22 @@ class MainWindow(QMainWindow):
         self.latest_training_log.setReadOnly(True)
         self.latest_training_log.setMaximumHeight(100)
         self.latest_training_log.setPlaceholderText("Training logs: NaN")
-        output_layout.addWidget(self._section_label("Training logs"))
+        output_layout.addWidget(self._section_label("训练日志"))
         output_layout.addWidget(self.latest_training_log)
-        output_layout.addWidget(self._section_label("Training output"))
+        output_layout.addWidget(self._section_label("训练输出"))
         output_layout.addWidget(self.model_summary, 1)
         registry_box = self._group(
-            "Trained model registry",
+            "已训练模型",
             [
-                self._field("World model config", self.world_model_config_edit_combo),
-                self._field("Config name", self.model_config_name_edit),
-                self._field("Model path", self._with_button(self.home_model_combo, model_browse)),
+                self._field("世界模型配置", self.world_model_config_edit_combo),
+                self._field("配置名称", self.model_config_name_edit),
+                self._field("模型路径", self._with_button(self.home_model_combo, model_browse)),
                 model_import,
                 model_dir_import,
-                self._field("Algorithm", self.algorithm_combo),
-                self._field("World model", self.world_model_combo),
-                self._action_button("Register latest training artifact", self.register_latest_training_artifact_model),
-                self._action_button("Save world model config", self.save_world_model_config, primary=True),
+                self._field("算法", self.algorithm_combo),
+                self._field("世界模型", self.world_model_combo),
+                self._action_button("注册最近训练产物", self.register_latest_training_artifact_model),
+                self._action_button("保存世界模型配置", self.save_world_model_config, primary=True),
             ],
         )
         right_column = QVBoxLayout()
@@ -1434,23 +1428,23 @@ class MainWindow(QMainWindow):
         runs_root = QVBoxLayout(runs_tab)
         runs_root.setContentsMargins(0, 0, 0, 0)
         runs_root.setSpacing(CARD_SPACING)
-        runs_root.addWidget(self._tab_header("Training results", "Review completed runs, loss curves, artifacts, logs, and promoted model configs."))
+        runs_root.addWidget(self._tab_header("训练结果", "查看训练记录、指标曲线、产物、日志和已注册模型。"))
         runs_layout = self._row_layout()
-        run_list_box, run_list_layout = self._new_group("Training runs")
+        run_list_box, run_list_layout = self._new_group("训练记录")
         self.training_run_list = QListWidget()
         self.training_run_list.itemClicked.connect(self._load_selected_training_run)
         run_list_layout.addWidget(self.training_run_list, 1)
         runs_layout.addWidget(run_list_box, 1)
-        run_summary_box, run_summary_layout = self._new_group("Run details")
+        run_summary_box, run_summary_layout = self._new_group("运行详情")
         self.training_run_overview = QTextEdit()
         self.training_run_overview.setReadOnly(True)
         self.training_run_overview.setMaximumHeight(150)
         self.training_run_overview.setPlaceholderText("Training run summary: NaN")
-        run_summary_layout.addWidget(self._section_label("Run summary"))
+        run_summary_layout.addWidget(self._section_label("运行摘要"))
         run_summary_layout.addWidget(self.training_run_overview)
         self.training_curve = TrainingCurveWidget()
-        run_summary_layout.addWidget(self._section_label("Metric curve"))
-        self.training_run_metric_summary = QLabel("Metric curves: NaN")
+        run_summary_layout.addWidget(self._section_label("指标曲线"))
+        self.training_run_metric_summary = QLabel("指标曲线：NaN")
         self.training_run_metric_summary.setObjectName("mutedText")
         self.training_run_metric_summary.setWordWrap(True)
         run_summary_layout.addWidget(self.training_run_metric_summary)
@@ -1458,25 +1452,25 @@ class MainWindow(QMainWindow):
         self.training_run_summary = QTextEdit()
         self.training_run_summary.setReadOnly(True)
         self.training_run_summary.setPlaceholderText("Training run: NaN")
-        run_summary_layout.addWidget(self._section_label("Raw training_run.json"))
+        run_summary_layout.addWidget(self._section_label("原始 training_run.json"))
         run_summary_layout.addWidget(self.training_run_summary, 1)
         runs_layout.addWidget(run_summary_box, 2)
         runs_root.addLayout(runs_layout, 1)
-        tabs.addTab(runs_tab, "Training results")
+        tabs.addTab(runs_tab, "训练结果")
 
         processing_tab = QWidget()
         processing_layout = QVBoxLayout(processing_tab)
         processing_layout.setContentsMargins(0, 0, 0, 0)
         processing_layout.setSpacing(PAGE_SPACING)
-        processing_layout.addWidget(self._tab_header("Processing and labels", "Reserved tools for segmentation, masks, labels, and future dataset-to-map conversion."))
+        processing_layout.addWidget(self._tab_header("处理与标注", "集中放置分割、Mask、标签检查和未来的数据集转换工具。"))
         processing_hint = QLabel(
             "图像分割、标签检查、terrain mask 和数据集到 BeamNG 地图转换会放在这里；未实现项保持 NaN/未完成。"
         )
         processing_hint.setObjectName("mutedText")
         processing_hint.setWordWrap(True)
-        processing_layout.addWidget(self._group("Dataset processing and labels", [processing_hint]))
+        processing_layout.addWidget(self._group("数据处理与标注", [processing_hint]))
         processing_layout.addStretch(1)
-        tabs.addTab(processing_tab, "处理/标注")
+        tabs.addTab(processing_tab, "处理与标注")
 
         layout.addWidget(tabs, 1)
         return page
@@ -1981,12 +1975,12 @@ class MainWindow(QMainWindow):
             return
         manifest_path = str(preset.get("manifest_path") or "").strip()
         trainer_root = str(Path(manifest_path).parent) if manifest_path else None
-        self.log(f"Starting training config: {row.get('label', row.get('id', services.NAN_TEXT))}")
+        self.log(f"开始训练配置：{row.get('label', row.get('id', services.NAN_TEXT))}")
         self._run_task(
             lambda: services.run_training_config_job(row, trainer_root=trainer_root),
             self._training_config_finished,
-            "training config failed",
-            task_label=f"Train {preset.get('label', preset_id)}",
+            "训练配置运行失败",
+            task_label=f"训练 {preset.get('label', preset_id)}",
         )
 
     def validate_training_config(self) -> None:

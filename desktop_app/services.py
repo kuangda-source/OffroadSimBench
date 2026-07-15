@@ -679,67 +679,67 @@ def training_preset_entries(trainer_root: str | Path | None = None) -> list[dict
     rows = [
         {
             "id": "stablewm_hdf5",
-            "label": "ORFD / dataset -> StableWM HDF5",
+            "label": "数据集导出为 StableWM HDF5",
             "kind": "export",
             "available": True,
             "status": "available",
-            "description": "Export image sequences and actions into the HDF5 layout used by StableWM/LE-WM training.",
+            "description": "将图像序列和动作导出为 StableWM/LE-WM 训练使用的 HDF5 格式。",
         },
         {
             "id": "lewm_cost_model",
-            "label": "Train LE-WM cost model",
+            "label": "训练 LE-WM 代价模型",
             "kind": "training",
             "available": True,
             "status": "available",
-            "description": "Train the local lightweight LE-WM-compatible cost checkpoint from a StableWM HDF5 file.",
+            "description": "从 StableWM HDF5 训练本地轻量 LE-WM 兼容代价 checkpoint。",
         },
         {
             "id": "tiny_world_model",
-            "label": "Train tiny world model",
+            "label": "训练 Tiny 世界模型",
             "kind": "training",
             "available": True,
             "status": "available",
-            "description": "Fit the built-in tiny learned dynamics model for quick dataset sanity checks.",
+            "description": "训练内置轻量动力学模型，用于快速验证数据和训练流程。",
         },
         {
             "id": "beamng_region_training_data",
-            "label": "Collect BeamNG region training data",
+            "label": "采集 BeamNG 区域训练数据",
             "kind": "collection",
             "available": True,
             "status": "available",
-            "description": "Collect reusable BeamNG region episodes for simulator-trained world models.",
+            "description": "采集可复用的 BeamNG 区域 episode，供仿真世界模型训练。",
         },
         {
             "id": "region_world_model_training",
-            "label": "Train BeamNG region world model",
+            "label": "训练 BeamNG 区域世界模型",
             "kind": "training",
             "available": True,
             "status": "available",
-            "description": "Train the built-in tiny learned world model from collected BeamNG region episodes.",
+            "description": "使用已采集的 BeamNG 区域 episode 训练内置轻量世界模型。",
         },
         {
             "id": "lewm_full_self_supervised",
-            "label": "LE-WM full self-supervised training",
+            "label": "LE-WM 完整自监督训练",
             "kind": "training",
             "available": False,
             "status": UNFINISHED_TEXT,
-            "description": "Reserved adapter for the full visual latent LE-WM training stack.",
+            "description": "完整视觉潜变量 LE-WM 训练栈的预留适配器。",
         },
         {
             "id": "tdmpc2_adapter",
-            "label": "TD-MPC2 adapter",
+            "label": "TD-MPC2 适配器",
             "kind": "training",
             "available": False,
             "status": UNFINISHED_TEXT,
-            "description": "Reserved adapter slot for TD-MPC2-style model-based control experiments.",
+            "description": "TD-MPC2 模型控制实验的预留适配器。",
         },
         {
             "id": "dreamerv3_adapter",
-            "label": "DreamerV3 adapter",
+            "label": "DreamerV3 适配器",
             "kind": "training",
             "available": False,
             "status": UNFINISHED_TEXT,
-            "description": "Reserved adapter slot for DreamerV3-style world model training.",
+            "description": "DreamerV3 世界模型训练的预留适配器。",
         },
     ]
     manifest_ids = {row["id"] for row in rows}
@@ -1727,53 +1727,22 @@ def _training_record_validation(record: dict[str, Any]) -> dict[str, Any]:
 
 def training_config_entries(path: str | Path | None = None) -> list[dict[str, Any]]:
     config_path = Path(path or TRAINING_CONFIGS_PATH)
-    rows: dict[str, dict[str, Any]] = {
-        "smoke_tiny_world_model": _training_config_row(
-            {
-                "id": "smoke_tiny_world_model",
-                "label": "Smoke tiny world model",
-                "training_preset_id": "tiny_world_model_script",
-                "dataset_root": str(SMOKE_TRAINING_DATASET_ROOT),
-                "adapter": "orfd",
-                "sequence_id": SMOKE_TRAINING_SEQUENCE_ID,
-                "output_path": str(SMOKE_TINY_MODEL_OUTPUT_DIR),
-                "parameters": {"ridge": 0.0001},
-            }
-        ),
-        "orfd_stablewm_hdf5": _training_config_row(
-            {
-                "id": "orfd_stablewm_hdf5",
-                "label": "ORFD StableWM HDF5 export",
-                "training_preset_id": "stablewm_hdf5",
-                "dataset_root": "datasets/ORFD_Dataset_ICRA2022_ZIP",
-                "adapter": "orfd",
-                "sequence_id": "",
-                "output_path": "outputs/stablewm/orfd_gui.h5",
-                "parameters": {},
-            }
-        ),
-        "orfd_tiny_world_model": _training_config_row(
-            {
-                "id": "orfd_tiny_world_model",
-                "label": "ORFD tiny world model",
-                "training_preset_id": "tiny_world_model",
-                "dataset_root": "datasets/ORFD_Dataset_ICRA2022_ZIP",
-                "adapter": "orfd",
-                "sequence_id": "",
-                "output_path": "outputs/models/orfd_tiny_world_model",
-                "parameters": {},
-            }
-        ),
-    }
-    if config_path.exists():
-        payload = _read_json(config_path)
+    rows: dict[str, dict[str, Any]] = {}
+    source_paths = [TRAINING_CONFIGS_PATH]
+    if config_path.resolve() != TRAINING_CONFIGS_PATH.resolve():
+        source_paths.append(config_path)
+    for source_path in source_paths:
+        if not source_path.exists():
+            continue
+        payload = _read_json(source_path)
         raw_rows: Any = payload.get("configs", payload) if isinstance(payload, dict) else payload
-        if isinstance(raw_rows, list):
-            for raw in raw_rows:
-                if not isinstance(raw, dict):
-                    continue
-                row = _training_config_row(raw)
-                rows[row["id"]] = row
+        if not isinstance(raw_rows, list):
+            continue
+        for raw in raw_rows:
+            if not isinstance(raw, dict):
+                continue
+            row = _training_config_row(raw)
+            rows[row["id"]] = row
     return sorted(rows.values(), key=lambda row: str(row.get("label") or row.get("id") or ""))
 
 

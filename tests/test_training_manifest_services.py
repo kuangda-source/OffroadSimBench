@@ -186,7 +186,12 @@ def test_run_training_config_job_executes_external_trainer_config(tmp_path) -> N
 def test_smoke_tiny_training_config_creates_dataset_and_records_run(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(services, "SMOKE_TRAINING_DATASET_ROOT", tmp_path / "smoke_orfd")
     monkeypatch.setattr(services, "SMOKE_TINY_MODEL_OUTPUT_DIR", tmp_path / "tiny_model")
-    config = next(row for row in services.training_config_entries(tmp_path / "training_configs.json") if row["id"] == "smoke_tiny_world_model")
+    config = next(row for row in services.training_config_entries() if row["id"] == "smoke_tiny_world_model")
+    config = {
+        **config,
+        "dataset_root": str(services.SMOKE_TRAINING_DATASET_ROOT),
+        "output_path": str(services.SMOKE_TINY_MODEL_OUTPUT_DIR),
+    }
 
     report = services.validate_training_config_setup(config, trainer_root=services.CONFIG_ROOT / "trainers")
     payload = services.run_training_config_job(config, trainer_root=services.CONFIG_ROOT / "trainers")

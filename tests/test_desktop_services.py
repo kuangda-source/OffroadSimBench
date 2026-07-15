@@ -505,8 +505,7 @@ def test_training_config_save_and_list(tmp_path) -> None:
 
     defaults = services.training_config_entries(config_path)
     default_ids = {row["id"] for row in defaults}
-    assert "orfd_stablewm_hdf5" in default_ids
-    assert "orfd_tiny_world_model" in default_ids
+    assert default_ids == {"smoke_tiny_world_model"}
 
     saved = services.save_training_config(
         config_id="My Custom Train",

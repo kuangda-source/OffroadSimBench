@@ -94,10 +94,7 @@ def test_dataset_training_tabs_have_visible_section_titles() -> None:
         if label.objectName() == "tabTitle"
     }
 
-    assert "Dataset import" in titles
-    assert "Model training" in titles
-    assert "Training results" in titles
-    assert "Processing and labels" in titles
+    assert titles == {"数据集", "模型训练", "训练结果", "处理与标注"}
 
     window.close()
 
@@ -108,11 +105,50 @@ def test_dataset_training_page_separates_dataset_trainer_config_and_results() ->
 
     group_titles = {group.title() for group in window.page_stack.widget(1).findChildren(QGroupBox)}
 
-    assert "Data source" in group_titles
-    assert "Trainer / algorithm" in group_titles
-    assert "Training config" in group_titles
-    assert "Latest training result" in group_titles
-    assert "Trained model registry" in group_titles
+    assert "数据源" in group_titles
+    assert "训练器 / 算法" in group_titles
+    assert "训练配置" in group_titles
+    assert "最近训练结果" in group_titles
+    assert "已训练模型" in group_titles
+    assert "数据集预览" in group_titles
+
+    visible_actions = {button.text() for button in window.page_stack.widget(1).findChildren(QPushButton)}
+    assert "开始训练 / 导出" in visible_actions
+    assert "Run script now" not in visible_actions
+    assert "导出 StableWM HDF5" not in visible_actions
+
+    window.close()
+
+
+def test_default_smoke_training_config_is_selectable_and_uses_one_primary_start_action(monkeypatch) -> None:
+    _ensure_app()
+    window = MainWindow()
+    index = next(
+        index
+        for index in range(window.training_config_combo.count())
+        if (window.training_config_combo.itemData(index) or {}).get("id") == "smoke_tiny_world_model"
+    )
+    window.training_config_combo.setCurrentIndex(index)
+    captured = {}
+
+    def capture_task(fn, on_success, failure_label, *, task_label=""):
+        captured["task_label"] = task_label
+        captured["payload"] = fn()
+        on_success(captured["payload"])
+
+    monkeypatch.setattr(window, "_run_task", capture_task)
+    window.run_training_preset()
+
+    training_page = window.page_stack.widget(1)
+    primary_actions = [
+        button.text()
+        for button in training_page.findChildren(QPushButton)
+        if button.objectName() == "primaryButton"
+    ]
+    assert window.training_config_combo.currentData()["id"] == "smoke_tiny_world_model"
+    assert captured["task_label"] == "训练 Tiny 世界模型训练器"
+    assert captured["payload"]["artifact_type"] == "world_model"
+    assert primary_actions.count("开始训练 / 导出") == 1
 
     window.close()
 
