@@ -5,12 +5,14 @@ from __future__ import annotations
 import json
 import math
 import sys
+import threading
+import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QPointF, QObject, QRectF, QThread, QTimer, Qt, Signal, Slot
+from PySide6.QtCore import QPointF, QObject, QRectF, QTimer, Qt, Signal, Slot
 from PySide6.QtGui import QColor, QFont, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -84,19 +86,46 @@ class GuiSettings:
 class TaskWorker(QObject):
     finished = Signal(object)
     failed = Signal(str)
+    settled = Signal()
 
-    def __init__(self, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        fn: Callable[..., Any],
+        *args: Any,
+        cancel_hook: Callable[[], None] | None = None,
+        **kwargs: Any,
+    ) -> None:
         super().__init__()
         self.fn = fn
         self.args = args
         self.kwargs = kwargs
+        self.cancel_hook = cancel_hook
+        self._canceled = threading.Event()
+
+    def cancel(self) -> None:
+        if self._canceled.is_set():
+            return
+        self._canceled.set()
+        if self.cancel_hook is not None:
+            try:
+                self.cancel_hook()
+            except Exception:
+                pass
+
+    def is_canceled(self) -> bool:
+        return self._canceled.is_set()
 
     @Slot()
     def run(self) -> None:
         try:
-            self.finished.emit(self.fn(*self.args, **self.kwargs))
+            result = self.fn(*self.args, **self.kwargs)
+            if not self._canceled.is_set():
+                self.finished.emit(result)
         except Exception as exc:
-            self.failed.emit(str(exc))
+            if not self._canceled.is_set():
+                self.failed.emit(str(exc))
+        finally:
+            self.settled.emit()
 
 
 class AdvancedSettingsDialog(QDialog):
@@ -179,21 +208,58 @@ class MetricCard(QFrame):
 
 
 class TrainingCurveWidget(QWidget):
+    SERIES_COLORS = ("#007aff", "#ff9f0a", "#34c759", "#af52de", "#ff375f", "#5ac8fa")
+
     def __init__(self) -> None:
         super().__init__()
         self.history: dict[str, list[float]] = {}
+        self.steps: dict[str, list[float]] = {}
         self.primary_metric = ""
+        self.selected_metrics: list[str] = []
+        self.diagnostics: dict[str, Any] = {}
+        self.x_zoom = 1.0
+        self.hover_metric = ""
+        self.hover_index: int | None = None
+        self._projected_points: dict[str, list[tuple[int, float, float, float, float]]] = {}
+        self.setMouseTracking(True)
         self.setMinimumHeight(220)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
-    def set_history(self, history: dict[str, list[float]]) -> None:
-        self.history = {
-            str(key): [float(value) for value in values if math.isfinite(float(value))]
-            for key, values in history.items()
-            if values
-        }
+    def set_history(
+        self,
+        history: dict[str, list[float]],
+        steps: dict[str, list[float]] | None = None,
+    ) -> None:
+        normalized: dict[str, list[float]] = {}
+        normalized_steps: dict[str, list[float]] = {}
+        for key, values in history.items():
+            finite_values: list[float] = []
+            finite_steps: list[float] = []
+            raw_steps = steps.get(str(key), []) if isinstance(steps, dict) else []
+            for index, value in enumerate(values):
+                try:
+                    number = float(value)
+                except (TypeError, ValueError):
+                    continue
+                if math.isfinite(number):
+                    finite_values.append(number)
+                    try:
+                        step = float(raw_steps[index]) if index < len(raw_steps) else float(index)
+                    except (TypeError, ValueError):
+                        step = float(index)
+                    finite_steps.append(step if math.isfinite(step) else float(index))
+            if finite_values:
+                normalized[str(key)] = finite_values
+                normalized_steps[str(key)] = finite_steps
+        previous = self.primary_metric
+        previous_lengths = {key: len(values) for key, values in self.history.items()}
+        self.history = normalized
+        self.steps = normalized_steps
         priority = [
             "loss",
+            "train_loss",
+            "val_loss",
+            "validation_loss",
             "final_loss",
             "validation_rmse",
             "validation_mse",
@@ -205,53 +271,199 @@ class TrainingCurveWidget(QWidget):
             "metadata.mean_goal_distance",
             "total_frames",
         ]
-        self.primary_metric = next((key for key in priority if key in self.history), next(iter(self.history), ""))
+        primary = previous if previous in self.history else next(
+            (key for key in priority if key in self.history), next(iter(self.history), "")
+        )
+        self.set_primary_metric(primary)
+        if set(previous_lengths) != set(normalized) or any(
+            len(normalized[key]) < previous_lengths.get(key, 0) for key in normalized
+        ):
+            self.x_zoom = 1.0
+        self.hover_metric = ""
+        self.hover_index = None
         self.update()
 
+    def set_primary_metric(self, metric: str) -> None:
+        self.primary_metric = metric if metric in self.history else next(iter(self.history), "")
+        self.selected_metrics = self._related_metrics(self.primary_metric)
+        self.update()
+
+    def set_selected_metrics(self, metrics: list[str]) -> None:
+        selected = [metric for metric in metrics if metric in self.history]
+        self.selected_metrics = selected[:6]
+        if self.selected_metrics:
+            self.primary_metric = self.selected_metrics[0]
+        self.update()
+
+    def set_diagnostics(self, diagnostics: dict[str, Any]) -> None:
+        self.diagnostics = dict(diagnostics)
+        self.update()
+
+    def metric_names(self) -> list[str]:
+        return sorted(self.history)
+
+    def reset_zoom(self) -> None:
+        self.x_zoom = 1.0
+        self.update()
+
+    def _related_metrics(self, primary: str) -> list[str]:
+        if not primary:
+            return []
+        lowered = primary.lower()
+        if "loss" in lowered:
+            candidates = [
+                name
+                for name in self.history
+                if "loss" in name.lower() and not name.lower().startswith("resource.")
+            ]
+            ordered = [primary]
+            ordered.extend(name for name in candidates if name != primary and name.lower().startswith("train"))
+            ordered.extend(
+                name
+                for name in candidates
+                if name not in ordered and (name.lower().startswith("val") or "validation" in name.lower())
+            )
+            ordered.extend(name for name in candidates if name not in ordered)
+            return ordered[:4]
+        return [primary]
+
     def paintEvent(self, event: Any) -> None:
+        del event
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.fillRect(self.rect(), QColor("#ffffff"))
-        rect = self.rect().adjusted(18, 20, -18, -28)
+        rect = self.rect().adjusted(18, 34, -18, -28)
         painter.setPen(QPen(QColor("#d2d2d7"), 1))
         painter.drawRect(rect)
         for index in range(1, 4):
             y = rect.top() + rect.height() * index / 4
             painter.drawLine(rect.left(), int(y), rect.right(), int(y))
 
-        if not self.primary_metric:
+        visible_metrics = [name for name in self.selected_metrics if name in self.history]
+        if not visible_metrics:
             painter.setPen(QPen(QColor("#6e6e73"), 1))
             painter.setFont(QFont("Segoe UI", 11))
             painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, "Training metrics: NaN")
             return
 
-        values = self.history[self.primary_metric]
-        low = min(values)
-        high = max(values)
+        max_points = max(len(self.history[name]) for name in visible_metrics)
+        all_steps = [step for name in visible_metrics for step in self.steps.get(name, [])]
+        minimum_step = min(all_steps)
+        maximum_step = max(all_steps)
+        full_span = max(maximum_step - minimum_step, 1.0)
+        visible_start_step = maximum_step - full_span / self.x_zoom
+        visible_values = [
+            value
+            for name in visible_metrics
+            for step, value in zip(self.steps.get(name, []), self.history[name], strict=False)
+            if step >= visible_start_step
+        ]
+        if not visible_values:
+            visible_values = [value for name in visible_metrics for value in self.history[name]]
+        low = min(visible_values)
+        high = max(visible_values)
         if math.isclose(low, high):
             low -= 1.0
             high += 1.0
 
-        def project(index: int, value: float) -> tuple[float, float]:
-            x = rect.left() + (index / max(len(values) - 1, 1)) * rect.width()
+        def project(step: float, value: float) -> tuple[float, float]:
+            x = rect.left() + ((step - visible_start_step) / max(maximum_step - visible_start_step, 1e-12)) * rect.width()
             y = rect.bottom() - ((value - low) / (high - low)) * rect.height()
             return x, y
 
-        painter.setPen(QPen(QColor("#007aff"), 2))
-        points = [project(index, value) for index, value in enumerate(values)]
-        if len(points) == 1:
-            x, y = points[0]
-            painter.setBrush(QColor("#007aff"))
-            painter.drawEllipse(QRectF(x - 4, y - 4, 8, 8))
-        else:
-            for start, end in zip(points, points[1:], strict=False):
-                painter.drawLine(int(start[0]), int(start[1]), int(end[0]), int(end[1]))
+        self._projected_points = {}
+        legend_slot_width = rect.width() / max(len(visible_metrics), 1)
+        for series_index, metric in enumerate(visible_metrics):
+            color = QColor(self.SERIES_COLORS[series_index % len(self.SERIES_COLORS)])
+            values = self.history[metric]
+            metric_steps = self.steps.get(metric, list(range(len(values))))
+            projected = [
+                (index, step, value, *project(step, value))
+                for index, (step, value) in enumerate(zip(metric_steps, values, strict=False))
+                if step >= visible_start_step
+            ]
+            self._projected_points[metric] = projected
+            painter.setPen(QPen(color, 2))
+            for start, end in zip(projected, projected[1:], strict=False):
+                painter.drawLine(int(start[3]), int(start[4]), int(end[3]), int(end[4]))
+            if len(projected) == 1:
+                _, _, _, x, y = projected[0]
+                painter.setBrush(color)
+                painter.drawEllipse(QRectF(x - 4, y - 4, 8, 8))
+            legend_x = rect.left() + series_index * legend_slot_width
+            painter.setPen(QPen(color, 2))
+            painter.drawLine(legend_x, 16, legend_x + 14, 16)
+            painter.setPen(QPen(QColor("#1d1d1f"), 1))
+            label = f"{metric}: {services.display_value(values[-1])}"
+            label = painter.fontMetrics().elidedText(
+                label,
+                Qt.TextElideMode.ElideRight,
+                max(20, int(legend_slot_width - 24)),
+            )
+            painter.drawText(legend_x + 18, 20, label)
 
-        painter.setPen(QPen(QColor("#1d1d1f"), 1))
-        painter.setFont(QFont("Segoe UI", 10))
-        painter.drawText(18, 16, f"{self.primary_metric}: {services.display_value(values[-1])}")
+        warning_rows = self.diagnostics.get("warnings") if isinstance(self.diagnostics.get("warnings"), list) else []
+        painter.setPen(QPen(QColor("#ff3b30"), 2))
+        painter.setBrush(QColor("#ff3b30"))
+        for warning in warning_rows:
+            if not isinstance(warning, dict):
+                continue
+            metric = str(warning.get("metric") or "")
+            point_index = warning.get("point_index")
+            if not isinstance(point_index, int):
+                continue
+            point = next(
+                (row for row in self._projected_points.get(metric, []) if row[0] == point_index),
+                None,
+            )
+            if point is not None:
+                painter.drawEllipse(QRectF(point[3] - 4, point[4] - 4, 8, 8))
+
         painter.setPen(QPen(QColor("#6e6e73"), 1))
-        painter.drawText(rect.left(), self.height() - 8, f"points={len(values)}")
+        painter.drawText(
+            rect.left(),
+            self.height() - 8,
+            f"points={max_points}  step={visible_start_step:.4g}-{maximum_step:.4g}  zoom={self.x_zoom:.1f}x",
+        )
+        if self.hover_metric and self.hover_index is not None:
+            point = next(
+                (row for row in self._projected_points.get(self.hover_metric, []) if row[0] == self.hover_index),
+                None,
+            )
+            if point is not None:
+                painter.setPen(QPen(QColor("#1d1d1f"), 1, Qt.PenStyle.DashLine))
+                painter.drawLine(int(point[3]), rect.top(), int(point[3]), rect.bottom())
+
+    def mouseMoveEvent(self, event: Any) -> None:
+        position = event.position()
+        nearest: tuple[float, str, int, float, float] | None = None
+        for metric, points in self._projected_points.items():
+            for index, step, value, x, y in points:
+                distance = (position.x() - x) ** 2 + (position.y() - y) ** 2
+                if nearest is None or distance < nearest[0]:
+                    nearest = (distance, metric, index, step, value)
+        if nearest is not None and nearest[0] <= 18.0**2:
+            _, metric, index, step, value = nearest
+            self.hover_metric = metric
+            self.hover_index = index
+            self.setToolTip(f"{metric}\nstep: {step:.8g}\npoint: {index + 1}\nvalue: {value:.8g}")
+        else:
+            self.hover_metric = ""
+            self.hover_index = None
+            self.setToolTip("")
+        self.update()
+
+    def leaveEvent(self, event: Any) -> None:
+        del event
+        self.hover_metric = ""
+        self.hover_index = None
+        self.update()
+
+    def wheelEvent(self, event: Any) -> None:
+        factor = 1.25 if event.angleDelta().y() > 0 else 0.8
+        self.x_zoom = max(1.0, min(20.0, self.x_zoom * factor))
+        event.accept()
+        self.update()
 
 
 class TrajectoryCanvas(QWidget):
@@ -1020,8 +1232,9 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("OffroadSimBench Desktop")
         self.settings = GuiSettings()
         self.catalog: dict[str, list[dict[str, Any]]] = {}
-        self.threads: list[QThread] = []
+        self.threads: list[threading.Thread] = []
         self.workers: list[TaskWorker] = []
+        self.detached_task_names: list[str] = []
         self.metric_cards: dict[str, MetricCard] = {}
         self.nav_buttons: list[QPushButton] = []
         self.dataset_info: dict[str, Any] | None = None
@@ -1034,6 +1247,8 @@ class MainWindow(QMainWindow):
         self.training_job_queue = services.TrainingJobQueue(max_parallel=1)
         self._current_training_job_id = ""
         self._handled_training_job_ids: set[str] = set()
+        self._filtered_training_runs: list[dict[str, Any]] = []
+        self.latest_experiment_comparison: dict[str, Any] = {}
         self.training_job_timer = QTimer(self)
         self.training_job_timer.setInterval(250)
         self.training_job_timer.timeout.connect(self._refresh_training_jobs)
@@ -1063,6 +1278,11 @@ class MainWindow(QMainWindow):
         self.training_config_combo = self._combo()
         self.training_preset_combo = self._combo()
         self.training_artifact_combo = self._combo()
+        self.training_artifact_combo.currentIndexChanged.connect(lambda _: self._update_training_artifact_details())
+        self.inference_params_edit = QTextEdit()
+        self.inference_params_edit.setFixedHeight(68)
+        self.inference_params_edit.setPlaceholderText('{"max_samples": 8, "split_name": "test"}')
+        self._inference_params_artifact_path = ""
         self.training_preset_summary = QTextEdit()
         self.training_preset_summary.setReadOnly(True)
         self.training_preset_summary.setFixedHeight(126)
@@ -1118,6 +1338,8 @@ class MainWindow(QMainWindow):
         self.dataset_sequence_table.setAlternatingRowColors(True)
         self.dataset_root_edit = QLineEdit()
         self.dataset_root_edit.setPlaceholderText(r"datasets\ORFD_Dataset_ICRA2022_ZIP")
+        self.dataset_split_path_edit = QLineEdit()
+        self.dataset_split_path_edit.setPlaceholderText(r"outputs\dataset_splits\dataset_split.json")
         self.sequence_combo = self._combo(editable=True)
         self.adapter_edit = QLineEdit("orfd")
         self.stablewm_hdf5_edit = QLineEdit()
@@ -1296,6 +1518,7 @@ class MainWindow(QMainWindow):
     def _build_dataset_training_page(self) -> QWidget:
         page, layout = self._page()
         tabs = QTabWidget()
+        self.data_training_tabs = tabs
 
         data_tab = QWidget()
         data_root = QVBoxLayout(data_tab)
@@ -1416,6 +1639,11 @@ class MainWindow(QMainWindow):
         quality_layout = QVBoxLayout(quality_page)
         quality_layout.setContentsMargins(0, 0, 0, 0)
         quality_layout.setSpacing(CARD_SPACING)
+        split_browse = QPushButton("选择")
+        self._configure_button(split_browse)
+        split_browse.clicked.connect(
+            lambda: self._browse_file(self.dataset_split_path_edit, "选择数据划分文件")
+        )
         self.dataset_train_ratio = QDoubleSpinBox()
         self.dataset_validation_ratio = QDoubleSpinBox()
         self.dataset_test_ratio = QDoubleSpinBox()
@@ -1438,6 +1666,9 @@ class MainWindow(QMainWindow):
             object_name="datasetSplitToolbar",
         )
         quality_layout.addWidget(split_fields)
+        quality_layout.addWidget(
+            self._field("数据划分文件", self._with_button(self.dataset_split_path_edit, split_browse))
+        )
         quality_layout.addWidget(
             self._action_toolbar(
                 [
@@ -1559,10 +1790,30 @@ class MainWindow(QMainWindow):
         output_layout.addWidget(self.training_job_status_label)
         output_layout.addWidget(job_status_row)
         output_layout.addWidget(self._section_label("最近指标曲线"))
+        latest_metric_toolbar = QWidget()
+        latest_metric_toolbar_layout = QHBoxLayout(latest_metric_toolbar)
+        latest_metric_toolbar_layout.setContentsMargins(0, 0, 0, 0)
+        latest_metric_toolbar_layout.setSpacing(8)
+        latest_metric_toolbar_layout.addWidget(QLabel("指标"))
+        self.latest_metric_combo = QComboBox()
+        self.latest_metric_combo.setMinimumHeight(CONTROL_HEIGHT)
+        self.latest_metric_combo.currentTextChanged.connect(
+            lambda metric: self._select_training_metric(self.latest_training_curve, metric)
+        )
+        latest_metric_toolbar_layout.addWidget(self.latest_metric_combo, 1)
+        latest_reset_button = QPushButton("重置缩放")
+        self._configure_button(latest_reset_button)
+        latest_reset_button.clicked.connect(self.latest_training_curve.reset_zoom)
+        latest_metric_toolbar_layout.addWidget(latest_reset_button)
+        output_layout.addWidget(latest_metric_toolbar)
         self.latest_metric_summary = QLabel("指标曲线：NaN")
         self.latest_metric_summary.setObjectName("mutedText")
         self.latest_metric_summary.setWordWrap(True)
         output_layout.addWidget(self.latest_metric_summary)
+        self.latest_metric_warning_label = QLabel("训练诊断：NaN")
+        self.latest_metric_warning_label.setObjectName("mutedText")
+        self.latest_metric_warning_label.setWordWrap(True)
+        output_layout.addWidget(self.latest_metric_warning_label)
         output_layout.addWidget(self.latest_training_curve)
         self.latest_training_log = QTextEdit()
         self.latest_training_log.setReadOnly(True)
@@ -1613,9 +1864,75 @@ class MainWindow(QMainWindow):
         run_list_layout.addWidget(self._section_label("任务队列"))
         run_list_layout.addWidget(self.training_job_table)
         run_list_layout.addWidget(self._section_label("训练记录"))
+        filter_grid = QGridLayout()
+        filter_grid.setContentsMargins(0, 0, 0, 0)
+        filter_grid.setHorizontalSpacing(8)
+        filter_grid.setVerticalSpacing(8)
+        self.experiment_query_edit = QLineEdit()
+        self.experiment_query_edit.setPlaceholderText("搜索模型、数据集或 run id")
+        self.experiment_status_filter = QComboBox()
+        self.experiment_preset_filter = QComboBox()
+        self.experiment_dataset_filter = QComboBox()
+        for combo in (
+            self.experiment_status_filter,
+            self.experiment_preset_filter,
+            self.experiment_dataset_filter,
+        ):
+            combo.setMinimumHeight(CONTROL_HEIGHT)
+        self.experiment_date_from_edit = QLineEdit()
+        self.experiment_date_from_edit.setPlaceholderText("起始日期 YYYY-MM-DD")
+        self.experiment_date_to_edit = QLineEdit()
+        self.experiment_date_to_edit.setPlaceholderText("结束日期 YYYY-MM-DD")
+        for edit in (
+            self.experiment_query_edit,
+            self.experiment_date_from_edit,
+            self.experiment_date_to_edit,
+        ):
+            edit.setMinimumHeight(CONTROL_HEIGHT)
+        filter_grid.addWidget(self.experiment_query_edit, 0, 0, 1, 2)
+        filter_grid.addWidget(self.experiment_status_filter, 1, 0)
+        filter_grid.addWidget(self.experiment_preset_filter, 1, 1)
+        filter_grid.addWidget(self.experiment_dataset_filter, 2, 0, 1, 2)
+        filter_grid.addWidget(self.experiment_date_from_edit, 3, 0)
+        filter_grid.addWidget(self.experiment_date_to_edit, 3, 1)
+        run_list_layout.addLayout(filter_grid)
         self.training_run_list = QListWidget()
+        self.training_run_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.training_run_list.itemClicked.connect(self._load_selected_training_run)
         run_list_layout.addWidget(self.training_run_list, 1)
+        run_action_row = QWidget()
+        run_action_layout = QHBoxLayout(run_action_row)
+        run_action_layout.setContentsMargins(0, 0, 0, 0)
+        run_action_layout.setSpacing(8)
+        compare_runs_button = QPushButton("对比所选")
+        self._configure_button(compare_runs_button)
+        compare_runs_button.clicked.connect(self.compare_selected_training_runs)
+        rerun_button = QPushButton("重新运行")
+        self._configure_button(rerun_button)
+        rerun_button.clicked.connect(self.rerun_selected_training_run)
+        clone_run_button = QPushButton("复制配置")
+        self._configure_button(clone_run_button)
+        clone_run_button.clicked.connect(self.clone_selected_training_run)
+        cleanup_runs_button = QPushButton("清理无效")
+        self._configure_button(cleanup_runs_button)
+        cleanup_runs_button.clicked.connect(self.cleanup_selected_training_runs)
+        run_action_layout.addWidget(compare_runs_button)
+        run_action_layout.addWidget(rerun_button)
+        run_action_layout.addWidget(clone_run_button)
+        run_action_layout.addWidget(cleanup_runs_button)
+        run_list_layout.addWidget(run_action_row)
+        for control in (
+            self.experiment_query_edit,
+            self.experiment_date_from_edit,
+            self.experiment_date_to_edit,
+        ):
+            control.textChanged.connect(self._fill_training_run_list)
+        for control in (
+            self.experiment_status_filter,
+            self.experiment_preset_filter,
+            self.experiment_dataset_filter,
+        ):
+            control.currentIndexChanged.connect(self._fill_training_run_list)
         runs_layout.addWidget(run_list_box, 1)
         run_summary_box, run_summary_layout = self._new_group("运行详情")
         self.training_run_overview = QTextEdit()
@@ -1633,8 +1950,21 @@ class MainWindow(QMainWindow):
         self._configure_button(inference_button)
         inference_button.clicked.connect(self.run_selected_artifact_inference)
         inference_row_layout.addWidget(inference_button)
+        self.favorite_artifact_button = QPushButton("收藏")
+        self._configure_button(self.favorite_artifact_button)
+        self.favorite_artifact_button.clicked.connect(self.toggle_selected_artifact_favorite)
+        inference_row_layout.addWidget(self.favorite_artifact_button)
+        delete_artifact_button = QPushButton("删除产物")
+        self._configure_button(delete_artifact_button)
+        delete_artifact_button.clicked.connect(self.delete_selected_training_artifact)
+        inference_row_layout.addWidget(delete_artifact_button)
         run_summary_layout.addWidget(self._section_label("Checkpoint 推理"))
         run_summary_layout.addWidget(inference_row)
+        run_summary_layout.addWidget(self._field("推理参数", self.inference_params_edit))
+        self.training_artifact_detail_label = QLabel("Checkpoint：NaN")
+        self.training_artifact_detail_label.setObjectName("mutedText")
+        self.training_artifact_detail_label.setWordWrap(True)
+        run_summary_layout.addWidget(self.training_artifact_detail_label)
         self.inference_metric_summary = QLabel("推理指标：NaN")
         self.inference_metric_summary.setObjectName("mutedText")
         self.inference_metric_summary.setWordWrap(True)
@@ -1653,17 +1983,93 @@ class MainWindow(QMainWindow):
         run_summary_layout.addWidget(self.inference_preview)
         self.training_curve = TrainingCurveWidget()
         run_summary_layout.addWidget(self._section_label("指标曲线"))
+        run_metric_toolbar = QWidget()
+        run_metric_toolbar_layout = QHBoxLayout(run_metric_toolbar)
+        run_metric_toolbar_layout.setContentsMargins(0, 0, 0, 0)
+        run_metric_toolbar_layout.setSpacing(8)
+        run_metric_toolbar_layout.addWidget(QLabel("指标"))
+        self.training_metric_combo = QComboBox()
+        self.training_metric_combo.setMinimumHeight(CONTROL_HEIGHT)
+        self.training_metric_combo.currentTextChanged.connect(
+            lambda metric: self._select_training_metric(self.training_curve, metric)
+        )
+        run_metric_toolbar_layout.addWidget(self.training_metric_combo, 1)
+        export_metrics_button = QPushButton("导出指标与曲线")
+        self._configure_button(export_metrics_button)
+        export_metrics_button.clicked.connect(self.export_selected_training_metrics)
+        run_metric_toolbar_layout.addWidget(export_metrics_button)
+        run_summary_layout.addWidget(run_metric_toolbar)
         self.training_run_metric_summary = QLabel("指标曲线：NaN")
         self.training_run_metric_summary.setObjectName("mutedText")
         self.training_run_metric_summary.setWordWrap(True)
         run_summary_layout.addWidget(self.training_run_metric_summary)
+        self.training_metric_warning_label = QLabel("训练诊断：NaN")
+        self.training_metric_warning_label.setObjectName("mutedText")
+        self.training_metric_warning_label.setWordWrap(True)
+        run_summary_layout.addWidget(self.training_metric_warning_label)
         run_summary_layout.addWidget(self.training_curve)
         self.training_run_summary = QTextEdit()
         self.training_run_summary.setReadOnly(True)
         self.training_run_summary.setPlaceholderText("Training run: NaN")
         run_summary_layout.addWidget(self._section_label("原始 training_run.json"))
         run_summary_layout.addWidget(self.training_run_summary, 1)
-        runs_layout.addWidget(run_summary_box, 2)
+
+        comparison_page = QWidget()
+        comparison_layout = QVBoxLayout(comparison_page)
+        comparison_layout.setContentsMargins(0, 0, 0, 0)
+        comparison_layout.setSpacing(10)
+        comparison_toolbar = QWidget()
+        comparison_toolbar_layout = QHBoxLayout(comparison_toolbar)
+        comparison_toolbar_layout.setContentsMargins(0, 0, 0, 0)
+        comparison_toolbar_layout.setSpacing(8)
+        comparison_toolbar_layout.addWidget(QLabel("排名指标"))
+        self.experiment_metric_combo = QComboBox()
+        self.experiment_metric_combo.setMinimumHeight(CONTROL_HEIGHT)
+        comparison_toolbar_layout.addWidget(self.experiment_metric_combo, 1)
+        self.experiment_direction_combo = QComboBox()
+        self.experiment_direction_combo.setMinimumHeight(CONTROL_HEIGHT)
+        self.experiment_direction_combo.addItem("自动方向", "auto")
+        self.experiment_direction_combo.addItem("越小越好", "min")
+        self.experiment_direction_combo.addItem("越大越好", "max")
+        comparison_toolbar_layout.addWidget(self.experiment_direction_combo)
+        rerank_button = QPushButton("重新排名")
+        self._configure_button(rerank_button)
+        rerank_button.clicked.connect(self.compare_selected_training_runs)
+        comparison_toolbar_layout.addWidget(rerank_button)
+        comparison_layout.addWidget(comparison_toolbar)
+        self.experiment_comparison_summary = QLabel("实验对比：请选择至少两次训练。")
+        self.experiment_comparison_summary.setObjectName("mutedText")
+        self.experiment_comparison_summary.setWordWrap(True)
+        comparison_layout.addWidget(self.experiment_comparison_summary)
+        self.experiment_comparison_table = QTableWidget(0, 5)
+        self.experiment_comparison_table.setHorizontalHeaderLabels(["排名", "实验", "指标值", "状态", "参数"])
+        self.experiment_comparison_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.experiment_comparison_table.verticalHeader().setVisible(False)
+        self.experiment_comparison_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.experiment_comparison_table.setMaximumHeight(220)
+        comparison_layout.addWidget(self.experiment_comparison_table)
+        self.experiment_comparison_curve = TrainingCurveWidget()
+        comparison_layout.addWidget(self.experiment_comparison_curve)
+        comparison_actions = QWidget()
+        comparison_actions_layout = QHBoxLayout(comparison_actions)
+        comparison_actions_layout.setContentsMargins(0, 0, 0, 0)
+        comparison_actions_layout.setSpacing(8)
+        mark_best_button = QPushButton("标记最佳")
+        self._configure_button(mark_best_button)
+        mark_best_button.clicked.connect(self.mark_best_experiment)
+        export_report_button = QPushButton("导出 Markdown / HTML")
+        self._configure_button(export_report_button)
+        export_report_button.clicked.connect(self.export_experiment_comparison_report)
+        comparison_actions_layout.addWidget(mark_best_button)
+        comparison_actions_layout.addWidget(export_report_button)
+        comparison_actions_layout.addStretch(1)
+        comparison_layout.addWidget(comparison_actions)
+        comparison_layout.addStretch(1)
+
+        self.training_result_tabs = QTabWidget()
+        self.training_result_tabs.addTab(run_summary_box, "运行详情")
+        self.training_result_tabs.addTab(comparison_page, "实验对比")
+        runs_layout.addWidget(self.training_result_tabs, 2)
         runs_root.addLayout(runs_layout, 1)
         tabs.addTab(runs_tab, "训练结果")
 
@@ -1991,6 +2397,7 @@ class MainWindow(QMainWindow):
             self._navigation_preview_finished,
             "navigation realtime preview failed",
             task_label="刷新 BeamNG 预览",
+            cancel_hook=self.navigation_preview_session.close,
         )
 
     def _finish_navigation_preview_task(self) -> None:
@@ -2013,10 +2420,31 @@ class MainWindow(QMainWindow):
             self.training_job_timer.stop()
         if hasattr(self, "training_job_queue"):
             self.training_job_queue.close(cancel_running=True)
+        for worker in list(self.workers):
+            worker.cancel()
         if self.region_task_dialog is not None:
             self.region_task_dialog.close()
             self.region_task_dialog = None
         self.navigation_preview_session.close()
+        deadline = time.monotonic() + 1.5
+        for thread in list(self.threads):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            thread.join(timeout=remaining)
+        alive_pairs = [
+            (thread, worker)
+            for thread, worker in zip(self.threads, self.workers, strict=False)
+            if thread.is_alive()
+        ]
+        self.threads = [thread for thread, _ in alive_pairs]
+        self.workers = [worker for _, worker in alive_pairs]
+        self.detached_task_names = [thread.name for thread, _ in alive_pairs]
+        if self.detached_task_names:
+            self.log("后台任务仍在安全退出：" + ", ".join(self.detached_task_names))
+        self._busy_depth = 0
+        while QApplication.overrideCursor() is not None:
+            QApplication.restoreOverrideCursor()
         super().closeEvent(event)
 
     def run_guided_demo(self) -> None:
@@ -2204,6 +2632,7 @@ class MainWindow(QMainWindow):
                 validation_ratio=ratios[1],
                 test_ratio=ratios[2],
                 seed=self.settings.seed,
+                output_path=self.dataset_split_path_edit.text().strip() or None,
             ),
             self._dataset_split_ready,
             "数据划分失败",
@@ -2483,6 +2912,7 @@ class MainWindow(QMainWindow):
             dataset_root=self.dataset_root_edit.text().strip(),
             adapter=self.adapter_edit.text().strip(),
             sequence_id=self.sequence_combo.currentText().strip(),
+            split_path=self.dataset_split_path_edit.text().strip(),
             output_path=self.training_output_edit.text().strip(),
             parameters=parameters,
             parameter_schema=schema or None,
@@ -2615,6 +3045,7 @@ class MainWindow(QMainWindow):
                 dataset_root=self.dataset_root_edit.text().strip(),
                 adapter=self.adapter_edit.text().strip(),
                 sequence_id=self.sequence_combo.currentText().strip(),
+                split_path=self.dataset_split_path_edit.text().strip(),
                 output_path=output_path,
                 parameters=parameters,
             )
@@ -2638,6 +3069,7 @@ class MainWindow(QMainWindow):
             "dataset_root": self.dataset_root_edit.text().strip(),
             "adapter": self.adapter_edit.text().strip(),
             "sequence_id": self.sequence_combo.currentText().strip(),
+            "split_path": self.dataset_split_path_edit.text().strip(),
             "output_path": self._current_training_output_path(preset_id),
             "parameters": self._trainer_parameters_from_text(),
         }
@@ -3139,6 +3571,7 @@ class MainWindow(QMainWindow):
         self.log(f"质量报告完成：status={payload.get('status', services.NAN_TEXT)}")
 
     def _dataset_split_ready(self, payload: dict[str, Any]) -> None:
+        self.dataset_split_path_edit.setText(str(payload.get("path") or ""))
         self.dataset_split_summary.setText(_dataset_split_text(payload))
         self.log(f"数据划分完成：{payload.get('path', services.NAN_TEXT)}")
 
@@ -3286,6 +3719,7 @@ class MainWindow(QMainWindow):
         sequence_id = str(row.get("sequence_id") or "")
         if sequence_id:
             self.sequence_combo.setCurrentText(sequence_id)
+        self.dataset_split_path_edit.setText(str(row.get("split_path") or ""))
         preset_id = str(row.get("training_preset_id") or "")
         if preset_id:
             self._select_training_preset(preset_id)
@@ -3477,6 +3911,7 @@ class MainWindow(QMainWindow):
             value_type = str(spec.get("type") or "str").lower()
             choices = spec.get("enum") if isinstance(spec.get("enum"), list) else []
             value = values.get(name, spec.get("default"))
+            form_control: QWidget
             if choices:
                 control: QWidget = QComboBox()
                 for choice in choices:
@@ -3505,10 +3940,23 @@ class MainWindow(QMainWindow):
                 control.setSingleStep(float(spec.get("step", 0.01)))
                 control.setValue(float(value or 0.0))
                 control.valueChanged.connect(self._trainer_parameter_control_changed)
+            elif value_type in {"path", "file", "directory"}:
+                control = QLineEdit()
+                control.setText("" if value is None else str(value))
+                control.textChanged.connect(self._trainer_parameter_control_changed)
+                browse = QPushButton("选择")
+                self._configure_button(browse)
+                if value_type == "directory":
+                    browse.clicked.connect(lambda _=False, target=control: self._browse_dir(target))
+                else:
+                    browse.clicked.connect(lambda _=False, target=control: self._browse_any_file(target))
+                form_control = self._with_button(control, browse)
             else:
                 control = QLineEdit()
                 control.setText("" if value is None else str(value))
                 control.textChanged.connect(self._trainer_parameter_control_changed)
+            if value_type not in {"path", "file", "directory"}:
+                form_control = control
             control.setObjectName(f"trainerParameter_{name}")
             control.setMinimumHeight(CONTROL_HEIGHT)
             description = str(spec.get("description") or "").strip()
@@ -3518,7 +3966,7 @@ class MainWindow(QMainWindow):
             if spec.get("required") is True:
                 label += " *"
             self.trainer_parameter_controls[name] = control
-            self.trainer_parameter_form_layout.addRow(label, control)
+            self.trainer_parameter_form_layout.addRow(label, form_control)
         self._update_trainer_parameter_dependencies()
 
     def _set_trainer_parameter_values(self, values: dict[str, Any]) -> None:
@@ -3699,14 +4147,68 @@ class MainWindow(QMainWindow):
     def _fill_training_run_list(self) -> None:
         if not hasattr(self, "training_run_list"):
             return
+        runs = [dict(run) for run in self.catalog.get("training_runs", [])]
+        self._fill_experiment_filter_combo(
+            self.experiment_status_filter,
+            [(value, value) for value in sorted({str(run.get("status") or "") for run in runs if run.get("status")})],
+            "全部状态",
+        )
+        self._fill_experiment_filter_combo(
+            self.experiment_preset_filter,
+            sorted(
+                {
+                    (str(run.get("preset_label") or run.get("preset_id") or ""), str(run.get("preset_id") or ""))
+                    for run in runs
+                    if run.get("preset_id")
+                }
+            ),
+            "全部模型/训练器",
+        )
+        self._fill_experiment_filter_combo(
+            self.experiment_dataset_filter,
+            sorted(
+                {
+                    (Path(str(run.get("dataset_root"))).name or str(run.get("dataset_root")), str(run.get("dataset_root")))
+                    for run in runs
+                    if run.get("dataset_root")
+                }
+            ),
+            "全部数据集",
+        )
+        self._filtered_training_runs = services.filter_training_runs(
+            runs,
+            query=self.experiment_query_edit.text(),
+            preset_id=str(self.experiment_preset_filter.currentData() or ""),
+            dataset_root=str(self.experiment_dataset_filter.currentData() or ""),
+            status=str(self.experiment_status_filter.currentData() or ""),
+            date_from=self.experiment_date_from_edit.text().strip(),
+            date_to=self.experiment_date_to_edit.text().strip(),
+        )
         self.training_run_list.clear()
-        for run in self.catalog.get("training_runs", [])[:100]:
+        for run in self._filtered_training_runs[:200]:
             label = str(run.get("preset_label") or run.get("preset_id") or services.NAN_TEXT)
             status = str(run.get("status") or services.NAN_TEXT)
             artifact = str(run.get("artifact_path") or run.get("relative_path") or "")
-            item = QListWidgetItem(f"{label} | {status} | {artifact}")
+            best_mark = "★ " if run.get("best_marks") else ""
+            item = QListWidgetItem(f"{best_mark}{label} | {status} | {artifact}")
             item.setData(Qt.ItemDataRole.UserRole, dict(run))
             self.training_run_list.addItem(item)
+
+    def _fill_experiment_filter_combo(
+        self,
+        combo: QComboBox,
+        rows: list[tuple[str, str]],
+        all_label: str,
+    ) -> None:
+        current = str(combo.currentData() or "")
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItem(all_label, "")
+        for label, value in rows:
+            combo.addItem(label, value)
+        index = combo.findData(current)
+        combo.setCurrentIndex(index if index >= 0 else 0)
+        combo.blockSignals(False)
 
     def _fill_training_artifact_combo(self) -> None:
         if not hasattr(self, "training_artifact_combo"):
@@ -3721,12 +4223,85 @@ class MainWindow(QMainWindow):
                 continue
             label = str(artifact.get("label") or artifact.get("id") or services.NAN_TEXT)
             capability = "可推理" if artifact.get("inference_available") else "无推理入口"
-            self.training_artifact_combo.addItem(f"{label} | {capability}", dict(artifact))
+            tags = []
+            if artifact.get("latest"):
+                tags.append("latest")
+            if artifact.get("best"):
+                tags.append("best")
+            if artifact.get("favorite"):
+                tags.append("★")
+            tag_text = f" [{' / '.join(tags)}]" if tags else ""
+            self.training_artifact_combo.addItem(f"{label}{tag_text} | {capability}", dict(artifact))
             if str(artifact.get("artifact_path") or "") == current_path:
                 selected_index = self.training_artifact_combo.count() - 1
         if self.training_artifact_combo.count():
             self.training_artifact_combo.setCurrentIndex(selected_index)
         self.training_artifact_combo.blockSignals(False)
+        self._update_training_artifact_details()
+
+    def _update_training_artifact_details(self) -> None:
+        if not hasattr(self, "training_artifact_detail_label"):
+            return
+        data = self.training_artifact_combo.currentData()
+        artifact = dict(data) if isinstance(data, dict) else {}
+        if not artifact:
+            self.inference_params_edit.clear()
+            self._inference_params_artifact_path = ""
+            self.training_artifact_detail_label.setText("Checkpoint：NaN")
+            self.favorite_artifact_button.setText("收藏")
+            return
+        artifact_path = str(artifact.get("artifact_path") or "")
+        if artifact_path != self._inference_params_artifact_path:
+            manifest_path = str(artifact.get("trainer_manifest_path") or "")
+            try:
+                defaults = services.inference_parameter_defaults(manifest_path) if manifest_path else {}
+            except Exception:
+                defaults = {}
+            self.inference_params_edit.setPlainText(json.dumps(defaults, indent=2, ensure_ascii=False))
+            self._inference_params_artifact_path = artifact_path
+        tags = [name for name in ("latest", "best", "favorite") if artifact.get(name)]
+        metrics = artifact.get("metrics") if isinstance(artifact.get("metrics"), dict) else {}
+        parameters = artifact.get("parameters") if isinstance(artifact.get("parameters"), dict) else {}
+        self.training_artifact_detail_label.setText(
+            f"Checkpoint：{artifact.get('artifact_path', services.NAN_TEXT)} | "
+            f"标签：{', '.join(tags) if tags else '无'} | epoch: {services.display_value(artifact.get('epoch'))} | "
+            f"metrics: {_mapping_preview(metrics)} | parameters: {_mapping_preview(parameters)}"
+        )
+        self.favorite_artifact_button.setText("取消收藏" if artifact.get("favorite") else "收藏")
+
+    def toggle_selected_artifact_favorite(self) -> None:
+        data = self.training_artifact_combo.currentData()
+        artifact = dict(data) if isinstance(data, dict) else {}
+        path = str(artifact.get("training_run_path") or "")
+        if not path:
+            return
+        try:
+            services.set_training_artifact_favorite(path, not bool(artifact.get("favorite")))
+        except Exception as exc:
+            self.training_artifact_detail_label.setText(f"Checkpoint 收藏失败：{exc}")
+            return
+        self.refresh_catalogs()
+
+    def delete_selected_training_artifact(self) -> None:
+        data = self.training_artifact_combo.currentData()
+        artifact = dict(data) if isinstance(data, dict) else {}
+        path = str(artifact.get("training_run_path") or "")
+        if not path:
+            return
+        answer = QMessageBox.question(
+            self,
+            "删除训练产物",
+            "只会删除 checkpoint/模型产物并保留训练记录；被配置引用的产物会拒绝删除。是否继续？",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            payload = services.delete_training_artifact(path)
+        except Exception as exc:
+            self.training_artifact_detail_label.setText(f"Checkpoint 删除失败：{exc}")
+            return
+        self.log(f"训练产物已删除: {payload['artifact_path']}")
+        self.refresh_catalogs()
 
     def run_selected_artifact_inference(self) -> None:
         data = self.training_artifact_combo.currentData()
@@ -3737,6 +4312,13 @@ class MainWindow(QMainWindow):
         if not artifact.get("inference_available"):
             self.inference_metric_summary.setText("推理指标：该训练器没有声明 inference 入口")
             return
+        try:
+            inference_parameters = json.loads(self.inference_params_edit.toPlainText().strip() or "{}")
+            if not isinstance(inference_parameters, dict):
+                raise ValueError("推理参数必须是 JSON 对象。")
+        except (json.JSONDecodeError, ValueError) as exc:
+            self.inference_metric_summary.setText(f"推理参数无效：{exc}")
+            return
         manifest_path = str(artifact.get("trainer_manifest_path") or "")
         self._run_task(
             lambda: services.run_inference_manifest_job(
@@ -3745,6 +4327,8 @@ class MainWindow(QMainWindow):
                 dataset_root=self.dataset_root_edit.text().strip(),
                 adapter=self.adapter_edit.text().strip(),
                 sequence_id=self.sequence_combo.currentText().strip(),
+                split_path=str(artifact.get("split_path") or self.dataset_split_path_edit.text().strip()),
+                parameters=inference_parameters,
             ),
             self._inference_finished,
             "推理运行失败",
@@ -3755,17 +4339,12 @@ class MainWindow(QMainWindow):
         metrics = payload.get("metrics") if isinstance(payload.get("metrics"), dict) else {}
         self.inference_metric_summary.setText("推理指标：" + _compact_json(metrics))
         predictions = payload.get("predictions") if isinstance(payload.get("predictions"), list) else []
+        columns, normalized_rows = _inference_prediction_rows(predictions[:100])
+        self.inference_prediction_table.setColumnCount(len(columns))
+        self.inference_prediction_table.setHorizontalHeaderLabels(columns)
         self.inference_prediction_table.setRowCount(min(100, len(predictions)))
-        for row_index, prediction in enumerate(predictions[:100]):
-            row = prediction if isinstance(prediction, dict) else {}
-            predicted = row.get("predicted") if isinstance(row.get("predicted"), dict) else {}
-            actual = row.get("actual") if isinstance(row.get("actual"), dict) else {}
-            px = _number_or_nan(predicted.get("x"))
-            py = _number_or_nan(predicted.get("y"))
-            ax = _number_or_nan(actual.get("x"))
-            ay = _number_or_nan(actual.get("y"))
-            error = math.hypot(px - ax, py - ay) if all(math.isfinite(value) for value in (px, py, ax, ay)) else math.nan
-            values = [row.get("sample", row_index), px, py, ax, ay, error]
+        for row_index, row in enumerate(normalized_rows):
+            values = [row.get(column) for column in columns]
             for column, value in enumerate(values):
                 self.inference_prediction_table.setItem(row_index, column, QTableWidgetItem(services.display_value(value)))
         previews = payload.get("previews") if isinstance(payload.get("previews"), dict) else {}
@@ -3813,8 +4392,26 @@ class MainWindow(QMainWindow):
         status = str(current.get("status") or services.NAN_TEXT)
         message = str(current.get("message") or "")
         progress = float(current.get("progress") or 0.0)
+        eta_seconds = current.get("eta_seconds")
+        eta_text = (
+            f" | ETA {_format_duration(float(eta_seconds))}"
+            if isinstance(eta_seconds, (int, float)) and math.isfinite(float(eta_seconds))
+            else ""
+        )
+        resources = current.get("resources") if isinstance(current.get("resources"), dict) else {}
+        resource_parts = []
+        for key, label, suffix in (
+            ("cpu_percent", "CPU", "%"),
+            ("memory_mb", "RAM", " MB"),
+            ("gpu_percent", "GPU", "%"),
+            ("gpu_memory_mb", "VRAM", " MB"),
+        ):
+            value = resources.get(key)
+            if isinstance(value, (int, float)) and math.isfinite(float(value)):
+                resource_parts.append(f"{label} {float(value):.1f}{suffix}")
+        resource_text = f" | {' / '.join(resource_parts)}" if resource_parts else ""
         self.training_job_status_label.setText(
-            f"训练任务：{current.get('job_id', services.NAN_TEXT)} | {status} | {message}"
+            f"训练任务：{current.get('job_id', services.NAN_TEXT)} | {status} | {message}{eta_text}{resource_text}"
         )
         self.training_job_progress.setValue(max(0, min(100, int(round(progress * 100)))))
         self.training_job_progress.setFormat(f"{status} %p%")
@@ -3828,6 +4425,8 @@ class MainWindow(QMainWindow):
             cursor = self.latest_training_log.textCursor()
             cursor.movePosition(cursor.MoveOperation.End)
             self.latest_training_log.setTextCursor(cursor)
+        if active:
+            self._set_live_training_metric_views(services.live_training_metric_record(current))
         job_id = str(current.get("job_id") or "")
         if not active and job_id and job_id not in self._handled_training_job_ids:
             self._handled_training_job_ids.add(job_id)
@@ -3898,6 +4497,180 @@ class MainWindow(QMainWindow):
         elif artifact_path and artifact_type == "hdf5":
             self.stablewm_hdf5_edit.setText(artifact_path)
 
+    def _selected_training_runs(self) -> list[dict[str, Any]]:
+        items = self.training_run_list.selectedItems()
+        if not items and self.training_run_list.currentItem() is not None:
+            items = [self.training_run_list.currentItem()]
+        return [
+            dict(data)
+            for item in items
+            if isinstance((data := item.data(Qt.ItemDataRole.UserRole)), dict)
+        ]
+
+    def compare_selected_training_runs(self) -> None:
+        runs = self._selected_training_runs()
+        names = services.experiment_metric_names(runs)
+        current_metric = self.experiment_metric_combo.currentText()
+        self.experiment_metric_combo.blockSignals(True)
+        self.experiment_metric_combo.clear()
+        self.experiment_metric_combo.addItems(names)
+        if current_metric in names:
+            self.experiment_metric_combo.setCurrentText(current_metric)
+        self.experiment_metric_combo.blockSignals(False)
+        try:
+            comparison = services.compare_training_runs(
+                runs,
+                metric=self.experiment_metric_combo.currentText(),
+                direction=str(self.experiment_direction_combo.currentData() or "auto"),
+            )
+        except ValueError as exc:
+            self.experiment_comparison_summary.setText(f"实验对比：{exc}")
+            return
+        self.latest_experiment_comparison = comparison
+        selected_metric = str(comparison["metric"])
+        if self.experiment_metric_combo.findText(selected_metric) >= 0:
+            self.experiment_metric_combo.setCurrentText(selected_metric)
+        self.experiment_comparison_summary.setText(
+            f"最佳实验：{comparison['best_run_id']} | {selected_metric}="
+            f"{services.display_value(comparison['best_value'])} | "
+            f"方向：{comparison['direction']} | 对比 {comparison['run_count']} 次"
+        )
+        rows = comparison.get("rows") if isinstance(comparison.get("rows"), list) else []
+        self.experiment_comparison_table.setRowCount(len(rows))
+        for row_index, row in enumerate(rows):
+            parameter_text = json.dumps(row.get("parameters") or {}, ensure_ascii=False, sort_keys=True)
+            values = [
+                f"★ {row['rank']}" if row.get("best") else row.get("rank"),
+                row.get("run_id"),
+                services.display_value(row.get("value")),
+                row.get("status"),
+                parameter_text,
+            ]
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(str(value))
+                item.setData(Qt.ItemDataRole.UserRole, dict(row))
+                self.experiment_comparison_table.setItem(row_index, column, item)
+        curves = comparison.get("curves") if isinstance(comparison.get("curves"), dict) else {}
+        curve_steps = comparison.get("curve_steps") if isinstance(comparison.get("curve_steps"), dict) else {}
+        self.experiment_comparison_curve.set_history(curves, curve_steps)
+        self.experiment_comparison_curve.set_selected_metrics(list(curves))
+        self.training_result_tabs.setCurrentIndex(1)
+
+    def rerun_selected_training_run(self) -> None:
+        runs = self._selected_training_runs()
+        if not runs:
+            return
+        run = runs[0]
+        row = {
+            "id": f"{run.get('run_id') or run.get('preset_id') or 'experiment'} rerun",
+            "label": f"{run.get('preset_label') or run.get('preset_id') or 'Experiment'} rerun",
+            "training_preset_id": str(run.get("preset_id") or ""),
+            "dataset_root": str(run.get("dataset_root") or ""),
+            "adapter": str(run.get("adapter") or ""),
+            "sequence_id": str(run.get("sequence_id") or ""),
+            "split_path": str(run.get("split_snapshot_path") or run.get("split_path") or ""),
+            "output_path": "",
+            "parameters": dict(run.get("parameters") if isinstance(run.get("parameters"), dict) else {}),
+        }
+        summary = run.get("summary") if isinstance(run.get("summary"), dict) else {}
+        manifest_path = str(
+            run.get("trainer_manifest_snapshot_path")
+            or summary.get("trainer_manifest_path")
+            or ""
+        )
+        trainer_root = str(Path(manifest_path).parent) if manifest_path else None
+        try:
+            job = services.queue_training_config_job(
+                self.training_job_queue,
+                row,
+                trainer_root=trainer_root,
+            )
+        except Exception as exc:
+            self.training_run_overview.setText(f"重新运行失败：{exc}")
+            return
+        self._current_training_job_id = job.job_id
+        self._handled_training_job_ids.discard(job.job_id)
+        self.training_job_timer.start()
+        self.model_summary.setText(_compact_json(job.snapshot()))
+        self.log(f"实验已重新入队：{job.job_id}")
+        self._refresh_training_jobs()
+
+    def mark_best_experiment(self) -> None:
+        comparison = self.latest_experiment_comparison
+        rows = comparison.get("rows") if isinstance(comparison.get("rows"), list) else []
+        best = rows[0] if rows else {}
+        path = str(best.get("path") or "")
+        if not path:
+            self.experiment_comparison_summary.setText("实验对比：最佳实验没有可写入的 training_run.json。")
+            return
+        try:
+            services.mark_best_training_run(
+                path,
+                metric=str(comparison.get("metric") or "metric"),
+                direction=str(comparison.get("direction") or "min"),
+                value=float(best.get("value")),
+            )
+        except Exception as exc:
+            self.experiment_comparison_summary.setText(f"实验对比：标记失败：{exc}")
+            return
+        self.log(f"已标记最佳实验: {best.get('run_id', services.NAN_TEXT)}")
+        self.refresh_catalogs()
+
+    def clone_selected_training_run(self) -> None:
+        runs = self._selected_training_runs()
+        if not runs:
+            return
+        try:
+            config = services.clone_training_config_from_run(runs[0])
+        except Exception as exc:
+            self.training_run_overview.setText(f"复制训练配置失败：{exc}")
+            return
+        self.refresh_catalogs()
+        self._select_training_config(str(config.get("id") or ""))
+        self.data_training_tabs.setCurrentIndex(1)
+        self.log(f"训练配置已复制: {config.get('label', services.NAN_TEXT)}")
+
+    def cleanup_selected_training_runs(self) -> None:
+        paths = [str(run.get("path") or "") for run in self._selected_training_runs() if run.get("path")]
+        if not paths:
+            return
+        preview = services.cleanup_training_runs(paths, dry_run=True)
+        candidates = preview.get("candidates") if isinstance(preview.get("candidates"), list) else []
+        if not candidates:
+            reasons = "; ".join(str(row.get("reason") or "") for row in preview.get("refused", []))
+            self.training_run_overview.setText(f"没有可安全清理的实验。{reasons}")
+            return
+        answer = QMessageBox.question(
+            self,
+            "清理失败/无效实验",
+            f"将删除 {len(candidates)} 个未被配置引用的失败或无效实验目录。是否继续？",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        result = services.cleanup_training_runs(paths, dry_run=False)
+        self.log(f"已清理无效实验: {len(result.get('removed', []))}")
+        self.refresh_catalogs()
+
+    def export_experiment_comparison_report(self) -> None:
+        if not self.latest_experiment_comparison:
+            self.experiment_comparison_summary.setText("实验对比：请先运行对比。")
+            return
+        output_dir = QFileDialog.getExistingDirectory(
+            self,
+            "选择实验报告目录",
+            str(services.ROOT / "outputs" / "training_reports"),
+        )
+        if not output_dir:
+            return
+        payload = services.export_experiment_report(self.latest_experiment_comparison, output_dir)
+        curve_path = Path(output_dir) / "experiment_curves.png"
+        saved = self.experiment_comparison_curve.grab().save(str(curve_path), "PNG")
+        payload["curve_path"] = str(curve_path.resolve()) if saved else services.NAN_TEXT
+        self.experiment_comparison_summary.setText(
+            f"报告已导出：{payload['markdown_path']} | {payload['html_path']}"
+        )
+        self.log(f"实验对比报告已导出: {payload['output_dir']}")
+
     def _set_training_run_views(self, payload: dict[str, Any]) -> dict[str, Any]:
         run = _training_run_record_from_payload(payload)
         self.latest_training_run_record = dict(run)
@@ -3906,18 +4679,73 @@ class MainWindow(QMainWindow):
         if hasattr(self, "training_run_summary"):
             self.training_run_summary.setText(_compact_json(run))
         history = services.training_metric_history(run)
+        history_steps = services.training_metric_steps(run)
+        diagnostics = services.training_metric_diagnostics(run)
         metric_summary = _metric_history_summary(history)
+        diagnostic_summary = _metric_diagnostics_summary(diagnostics)
         if hasattr(self, "training_run_metric_summary"):
             self.training_run_metric_summary.setText(metric_summary)
         if hasattr(self, "latest_metric_summary"):
             self.latest_metric_summary.setText(metric_summary)
+        if hasattr(self, "training_metric_warning_label"):
+            self.training_metric_warning_label.setText(diagnostic_summary)
+        if hasattr(self, "latest_metric_warning_label"):
+            self.latest_metric_warning_label.setText(diagnostic_summary)
         if hasattr(self, "latest_training_log"):
             self.latest_training_log.setText(_training_log_summary(run))
         if hasattr(self, "training_curve"):
-            self.training_curve.set_history(history)
+            self.training_curve.set_history(history, history_steps)
+            self.training_curve.set_diagnostics(diagnostics)
+            self._fill_training_metric_combo(self.training_metric_combo, self.training_curve)
         if hasattr(self, "latest_training_curve"):
-            self.latest_training_curve.set_history(history)
+            self.latest_training_curve.set_history(history, history_steps)
+            self.latest_training_curve.set_diagnostics(diagnostics)
+            self._fill_training_metric_combo(self.latest_metric_combo, self.latest_training_curve)
         return run
+
+    def _set_live_training_metric_views(self, run: dict[str, Any]) -> None:
+        history = services.training_metric_history(run)
+        history_steps = services.training_metric_steps(run)
+        if not history:
+            return
+        diagnostics = run.get("metric_diagnostics") if isinstance(run.get("metric_diagnostics"), dict) else {}
+        self.latest_training_curve.set_history(history, history_steps)
+        self.latest_training_curve.set_diagnostics(diagnostics)
+        self._fill_training_metric_combo(self.latest_metric_combo, self.latest_training_curve)
+        self.latest_metric_summary.setText(_metric_history_summary(history))
+        self.latest_metric_warning_label.setText(_metric_diagnostics_summary(diagnostics))
+
+    def _fill_training_metric_combo(self, combo: QComboBox, curve: TrainingCurveWidget) -> None:
+        current = combo.currentText()
+        names = curve.metric_names()
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItems(names)
+        selected = current if current in names else curve.primary_metric
+        if selected:
+            combo.setCurrentText(selected)
+        combo.blockSignals(False)
+        curve.set_primary_metric(selected)
+
+    def _select_training_metric(self, curve: TrainingCurveWidget, metric: str) -> None:
+        curve.set_primary_metric(metric)
+
+    def export_selected_training_metrics(self) -> None:
+        record = dict(self.latest_training_run_record)
+        if not services.training_metric_history(record):
+            self.training_metric_warning_label.setText("训练诊断：没有可导出的指标。")
+            return
+        record_path = Path(str(record.get("path") or "")) if record.get("path") else services.ROOT / "outputs"
+        default_dir = record_path.parent / "metric_exports" if record_path.suffix else record_path / "metric_exports"
+        selected = QFileDialog.getExistingDirectory(self, "选择指标导出目录", str(default_dir))
+        if not selected:
+            return
+        payload = services.export_training_metrics(record, selected)
+        curve_path = Path(selected) / "training_curves.png"
+        saved = self.training_curve.grab().save(str(curve_path), "PNG")
+        payload["curve_path"] = str(curve_path.resolve()) if saved else services.NAN_TEXT
+        self.model_summary.setText(_compact_json(payload))
+        self.log(f"训练指标已导出: {payload['output_dir']}")
 
     def _set_beamng_quality_views(self, payload: dict[str, Any]) -> None:
         if hasattr(self, "beamng_quality_report"):
@@ -4001,21 +4829,22 @@ class MainWindow(QMainWindow):
         failure_label: str,
         *,
         task_label: str = "",
+        cancel_hook: Callable[[], None] | None = None,
     ) -> None:
-        thread = QThread(self)
-        worker = TaskWorker(fn)
-        worker.moveToThread(thread)
+        worker = TaskWorker(fn, cancel_hook=cancel_hook)
+        thread = threading.Thread(
+            target=worker.run,
+            name=f"desktop-task-{len(self.threads) + 1}",
+            daemon=True,
+        )
         self._set_busy(True, task_label or _task_label_from_failure(failure_label))
-        thread.started.connect(worker.run)
-        worker.finished.connect(on_success)
-        worker.failed.connect(lambda message: self._task_failed(failure_label, message))
-        worker.finished.connect(lambda _: self._set_busy(False))
-        worker.failed.connect(lambda _: self._set_busy(False))
-        worker.finished.connect(thread.quit)
-        worker.failed.connect(thread.quit)
-        thread.finished.connect(worker.deleteLater)
-        thread.finished.connect(thread.deleteLater)
-        thread.finished.connect(lambda: self._remove_thread(thread, worker))
+        worker.finished.connect(lambda result: None if worker.is_canceled() else on_success(result))
+        worker.failed.connect(
+            lambda message: None if worker.is_canceled() else self._task_failed(failure_label, message)
+        )
+        worker.finished.connect(lambda _: None if worker.is_canceled() else self._set_busy(False))
+        worker.failed.connect(lambda _: None if worker.is_canceled() else self._set_busy(False))
+        worker.settled.connect(lambda: self._remove_thread(thread, worker))
         self.threads.append(thread)
         self.workers.append(worker)
         thread.start()
@@ -4046,11 +4875,19 @@ class MainWindow(QMainWindow):
             self.beamng_summary.setText(_compact_json({"status": "preview_failed", "message": message}))
             self._finish_navigation_preview_task()
 
-    def _remove_thread(self, thread: QThread, worker: TaskWorker) -> None:
+    def _remove_thread(self, thread: threading.Thread, worker: TaskWorker) -> None:
         if thread in self.threads:
             self.threads.remove(thread)
         if worker in self.workers:
             self.workers.remove(worker)
+        if thread.name in self.detached_task_names:
+            self.detached_task_names.remove(thread.name)
+
+    def detached_task_entries(self) -> list[dict[str, Any]]:
+        return [
+            {"name": thread.name, "alive": thread.is_alive(), "daemon": thread.daemon}
+            for thread in self.threads
+        ]
 
     def log(self, text: str) -> None:
         self.log_view.append(text)
@@ -4398,6 +5235,16 @@ class MainWindow(QMainWindow):
         if path:
             target.setText(path)
 
+    def _browse_any_file(self, target: QLineEdit) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "选择文件",
+            target.text() or str(services.ROOT),
+            "All files (*)",
+        )
+        if path:
+            target.setText(path)
+
     def _browse_path_combo(self, target: QComboBox) -> None:
         path = QFileDialog.getExistingDirectory(self, "Select directory", self._path_combo_value(target) or str(services.ROOT))
         if path:
@@ -4565,6 +5412,50 @@ def _number_or_nan(value: Any) -> float:
         return math.nan
 
 
+def _inference_prediction_rows(predictions: list[Any]) -> tuple[list[str], list[dict[str, Any]]]:
+    rows = [row if isinstance(row, dict) else {"sample": index, "value": row} for index, row in enumerate(predictions)]
+    coordinate_rows = any(isinstance(row.get("predicted"), dict) and isinstance(row.get("actual"), dict) for row in rows)
+    if coordinate_rows:
+        columns = ["sample", "predicted.x", "predicted.y", "actual.x", "actual.y", "position_error"]
+        normalized: list[dict[str, Any]] = []
+        for index, row in enumerate(rows):
+            predicted = row.get("predicted") if isinstance(row.get("predicted"), dict) else {}
+            actual = row.get("actual") if isinstance(row.get("actual"), dict) else {}
+            px = _number_or_nan(predicted.get("x"))
+            py = _number_or_nan(predicted.get("y"))
+            ax = _number_or_nan(actual.get("x"))
+            ay = _number_or_nan(actual.get("y"))
+            error = math.hypot(px - ax, py - ay) if all(math.isfinite(value) for value in (px, py, ax, ay)) else math.nan
+            normalized.append(
+                {
+                    "sample": row.get("sample", index),
+                    "predicted.x": px,
+                    "predicted.y": py,
+                    "actual.x": ax,
+                    "actual.y": ay,
+                    "position_error": error,
+                }
+            )
+        return columns, normalized
+
+    flattened = [_flatten_prediction_row(row) for row in rows]
+    names = {key for row in flattened for key in row}
+    preferred = [key for key in ("sample", "frame_id", "index") if key in names]
+    columns = preferred + sorted(name for name in names if name not in preferred)[: max(0, 8 - len(preferred))]
+    return columns or ["sample"], flattened
+
+
+def _flatten_prediction_row(row: dict[str, Any], prefix: str = "") -> dict[str, Any]:
+    flattened: dict[str, Any] = {}
+    for key, value in row.items():
+        name = f"{prefix}.{key}" if prefix else str(key)
+        if isinstance(value, dict):
+            flattened.update(_flatten_prediction_row(value, name))
+        elif not isinstance(value, (list, tuple, dict)):
+            flattened[name] = value
+    return flattened
+
+
 def _validation_int(validation: dict[str, Any], key: str, default: int) -> int:
     try:
         return int(validation.get(key))
@@ -4578,11 +5469,40 @@ def _compact_json(payload: Any) -> str:
     return json.dumps(payload, indent=2, ensure_ascii=False, default=str)
 
 
+def _mapping_preview(payload: dict[str, Any], *, limit: int = 4) -> str:
+    if not payload:
+        return services.NAN_TEXT
+    items = list(payload.items())
+    preview = ", ".join(f"{key}={services.display_value(value)}" for key, value in items[:limit])
+    remaining = len(items) - limit
+    return preview + (f" (+{remaining})" if remaining > 0 else "")
+
+
 def _metric_history_summary(history: dict[str, list[float]]) -> str:
     if not history:
         return "Metric curves: NaN"
     parts = [f"{key} ({len(values)} pts)" for key, values in sorted(history.items()) if values]
     return "Metric curves: " + (", ".join(parts) if parts else services.NAN_TEXT)
+
+
+def _metric_diagnostics_summary(diagnostics: dict[str, Any]) -> str:
+    status = str(diagnostics.get("status") or services.NAN_TEXT)
+    warnings = diagnostics.get("warnings") if isinstance(diagnostics.get("warnings"), list) else []
+    if not warnings:
+        resources = diagnostics.get("resource_metrics") if isinstance(diagnostics.get("resource_metrics"), list) else []
+        resource_text = f" | resources: {', '.join(resources)}" if resources else ""
+        return f"Training diagnostics: {status}{resource_text}"
+    messages = [str(row.get("message") or "") for row in warnings if isinstance(row, dict)]
+    return f"Training diagnostics: {status} | " + " | ".join(message for message in messages if message)
+
+
+def _format_duration(seconds: float) -> str:
+    total = max(0, int(round(seconds)))
+    hours, remainder = divmod(total, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours:
+        return f"{hours:d}:{minutes:02d}:{secs:02d}"
+    return f"{minutes:02d}:{secs:02d}"
 
 
 def _demo_result_payload(payload: dict[str, Any]) -> dict[str, Any]:

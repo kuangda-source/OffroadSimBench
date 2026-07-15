@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import signal
+import shutil
 import subprocess
 import threading
 import time
@@ -14,6 +16,11 @@ from collections import deque
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, TextIO
+
+try:
+    import psutil
+except ImportError:  # pragma: no cover - exercised when the optional GUI dependency is absent.
+    psutil = None
 
 
 TRAINING_JOB_FILENAME = "training_job.json"
@@ -48,14 +55,17 @@ class ProcessTrainingJob:
         self.finalizer = finalizer
         self._lock = threading.RLock()
         self._done = threading.Event()
+        self._resource_stop = threading.Event()
         self._cancel_requested = False
         self._process: subprocess.Popen[str] | None = None
+        self._started_monotonic: float | None = None
         self._state: dict[str, Any] = {
             "job_id": self.job_id,
             "status": "queued",
             "progress": 0.0,
             "current_step": None,
             "total_steps": None,
+            "eta_seconds": None,
             "message": "Queued",
             "command": self.command,
             "working_directory": str(self.working_directory),
@@ -70,6 +80,8 @@ class ProcessTrainingJob:
             "finished_at": None,
             "error": "",
             "result": {},
+            "resources": {},
+            "resource_history": {},
             "metadata": self.metadata,
         }
         self._persist()
@@ -104,7 +116,12 @@ class ProcessTrainingJob:
             self._finish(status="canceled", message="Canceled before start", result=result)
             return True
         if process is not None and process.poll() is None:
-            _terminate_process_tree(process)
+            threading.Thread(
+                target=_terminate_process_tree,
+                args=(process,),
+                name=f"training-cancel-{self.job_id}",
+                daemon=True,
+            ).start()
         return True
 
     def _start(self) -> None:
@@ -112,6 +129,7 @@ class ProcessTrainingJob:
             if self._cancel_requested or self._state["status"] == "canceled":
                 return
             self._state.update(status="running", message="Running", started_at=_timestamp())
+            self._started_monotonic = time.monotonic()
             self._persist_locked()
         thread = threading.Thread(target=self._run, name=f"training-job-{self.job_id}", daemon=True)
         thread.start()
@@ -120,6 +138,7 @@ class ProcessTrainingJob:
         stdout_file = self.stdout_path.open("w", encoding="utf-8", buffering=1)
         stderr_file = self.stderr_path.open("w", encoding="utf-8", buffering=1)
         finalizer_called = False
+        resource_thread: threading.Thread | None = None
         try:
             process_options: dict[str, Any] = {}
             if os.name == "nt":
@@ -143,6 +162,14 @@ class ProcessTrainingJob:
                 self._state["pid"] = process.pid
                 self._persist_locked()
                 cancel_after_spawn = self._cancel_requested
+            self._resource_stop.clear()
+            resource_thread = threading.Thread(
+                target=self._sample_resources,
+                args=(process.pid,),
+                name=f"training-resources-{self.job_id}",
+                daemon=True,
+            )
+            resource_thread.start()
             if cancel_after_spawn and process.poll() is None:
                 _terminate_process_tree(process)
             stdout_thread = threading.Thread(
@@ -158,17 +185,29 @@ class ProcessTrainingJob:
             stdout_thread.start()
             stderr_thread.start()
             return_code = process.wait()
+            self._resource_stop.set()
+            resource_thread.join(timeout=2.0)
             stdout_thread.join(timeout=5.0)
             stderr_thread.join(timeout=5.0)
             with self._lock:
                 self._state["return_code"] = return_code
             finalizer_called = self.finalizer is not None
             result = self.finalizer(self) if self.finalizer is not None else {}
+            result_status = str(result.get("status") or "") if isinstance(result, dict) else ""
             if self._cancel_requested:
                 self._finish(status="canceled", message="Canceled", result=result)
             elif return_code != 0:
                 error = _tail_text(self.stderr_path) or _tail_text(self.stdout_path) or f"Exit code {return_code}"
                 self._finish(status="failed", message="Trainer failed", error=error, result=result)
+            elif result_status == "failed":
+                self._finish(
+                    status="failed",
+                    message="Trainer output validation failed",
+                    error=str(result.get("error") or "Trainer output validation failed"),
+                    result=result,
+                )
+            elif result_status == "canceled":
+                self._finish(status="canceled", message="Canceled", result=result)
             else:
                 self._finish(status="completed", message="Completed", progress=1.0, result=result)
         except Exception as exc:
@@ -180,6 +219,9 @@ class ProcessTrainingJob:
                     result = {}
             self._finish(status="failed", message="Trainer failed", error=str(exc), result=result)
         finally:
+            self._resource_stop.set()
+            if resource_thread is not None and resource_thread.is_alive():
+                resource_thread.join(timeout=1.0)
             stdout_file.close()
             stderr_file.close()
             with self._lock:
@@ -228,12 +270,41 @@ class ProcessTrainingJob:
         with self._lock:
             if progress is not None:
                 self._state["progress"] = max(0.0, min(1.0, progress))
+                if self._started_monotonic is not None and 0.0 < progress < 1.0:
+                    elapsed = max(0.0, time.monotonic() - self._started_monotonic)
+                    self._state["eta_seconds"] = elapsed * (1.0 - progress) / progress
+                elif progress >= 1.0:
+                    self._state["eta_seconds"] = 0.0
             if current is not None:
                 self._state["current_step"] = current
             if total is not None:
                 self._state["total_steps"] = total
             self._state["message"] = message
             self._persist_locked()
+
+    def _sample_resources(self, pid: int) -> None:
+        sampler = _ProcessResourceSampler(pid)
+        while not self._resource_stop.is_set():
+            sample = sampler.sample()
+            if sample:
+                with self._lock:
+                    previous = self._state.get("resources") if isinstance(self._state.get("resources"), dict) else {}
+                    effective_sample = dict(sample)
+                    if (
+                        float(effective_sample.get("memory_mb", 0.0)) <= 0.0
+                        and float(previous.get("memory_mb", 0.0)) > 0.0
+                    ):
+                        effective_sample.pop("memory_mb", None)
+                    self._state["resources"] = {**previous, **effective_sample}
+                    history = self._state.setdefault("resource_history", {})
+                    for key, value in effective_sample.items():
+                        if isinstance(value, (int, float)) and math.isfinite(float(value)):
+                            values = history.setdefault(str(key), [])
+                            values.append(float(value))
+                            if len(values) > 2000:
+                                del values[:-2000]
+                    self._persist_locked()
+            self._resource_stop.wait(0.5)
 
     def _finish(
         self,
@@ -364,6 +435,118 @@ class TrainingJobQueue:
         return running < self.max_parallel
 
 
+class _ProcessResourceSampler:
+    """Collect bounded process telemetry without making GPU support mandatory."""
+
+    def __init__(self, pid: int) -> None:
+        self.pid = int(pid)
+        self.started = time.monotonic()
+        self.process = None
+        self._processes: dict[int, Any] = {}
+        self._sample_count = 0
+        self._last_gpu: dict[str, float] = {}
+        if psutil is not None:
+            try:
+                self.process = psutil.Process(self.pid)
+                self.process.cpu_percent(interval=None)
+                self._processes[self.pid] = self.process
+            except (psutil.Error, OSError):
+                self.process = None
+
+    def sample(self) -> dict[str, float]:
+        values: dict[str, float] = {"elapsed_sec": max(0.0, time.monotonic() - self.started)}
+        pids = {self.pid}
+        if self.process is not None and psutil is not None:
+            try:
+                discovered = [self.process, *self.process.children(recursive=True)]
+            except (psutil.Error, OSError):
+                discovered = [self.process]
+            for discovered_process in discovered:
+                process_pid = int(discovered_process.pid)
+                if process_pid not in self._processes:
+                    try:
+                        cached = psutil.Process(process_pid)
+                        cached.cpu_percent(interval=None)
+                        self._processes[process_pid] = cached
+                    except (psutil.Error, OSError):
+                        continue
+            cpu_percent = 0.0
+            memory_bytes = 0
+            stale_pids: list[int] = []
+            for process_pid, process in self._processes.items():
+                try:
+                    pids.add(process_pid)
+                    cpu_percent += float(process.cpu_percent(interval=None))
+                    memory_bytes += int(process.memory_info().rss)
+                except (psutil.Error, OSError):
+                    stale_pids.append(process_pid)
+            for process_pid in stale_pids:
+                self._processes.pop(process_pid, None)
+            values["cpu_percent"] = cpu_percent
+            values["memory_mb"] = memory_bytes / (1024.0 * 1024.0)
+
+        self._sample_count += 1
+        if self._sample_count == 1 or self._sample_count % 4 == 0:
+            self._last_gpu = _nvidia_resource_sample(pids)
+        values.update(self._last_gpu)
+        return values
+
+
+def _nvidia_resource_sample(pids: set[int]) -> dict[str, float]:
+    executable = shutil.which("nvidia-smi")
+    if executable is None:
+        return {}
+    try:
+        apps = subprocess.run(
+            [
+                executable,
+                "--query-compute-apps=pid,used_memory",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=1.0,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    memory_mb = 0.0
+    matched = False
+    for line in apps.stdout.splitlines():
+        parts = [part.strip() for part in line.split(",")]
+        if len(parts) < 2:
+            continue
+        try:
+            process_id = int(parts[0])
+            used_memory = float(parts[1])
+        except ValueError:
+            continue
+        if process_id in pids:
+            matched = True
+            memory_mb += used_memory
+    if not matched:
+        return {}
+    sample = {"gpu_memory_mb": memory_mb}
+    try:
+        devices = subprocess.run(
+            [
+                executable,
+                "--query-gpu=utilization.gpu",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=1.0,
+        )
+        utilization = [float(line.strip()) for line in devices.stdout.splitlines() if line.strip()]
+    except (OSError, ValueError, subprocess.SubprocessError):
+        utilization = []
+    if utilization:
+        sample["gpu_percent"] = max(utilization)
+    return sample
+
+
 def _tail_text(path: Path, *, max_chars: int = 4000) -> str:
     if not path.is_file():
         return ""
@@ -372,18 +555,29 @@ def _tail_text(path: Path, *, max_chars: int = 4000) -> str:
 
 
 def _terminate_process_tree(process: subprocess.Popen[str]) -> None:
-    """Terminate the trainer and workers spawned below it."""
+    """Ask a trainer group to stop, then force its process tree after a grace period."""
 
     if process.poll() is not None:
         return
     if os.name == "nt":
-        completed = subprocess.run(
-            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if completed.returncode != 0 and process.poll() is None:
+        try:
+            process.send_signal(signal.CTRL_BREAK_EVENT)
+            process.wait(timeout=3.0)
+            return
+        except (OSError, subprocess.SubprocessError):
+            pass
+        try:
+            completed = subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=5.0,
+            )
+            taskkill_failed = completed.returncode != 0
+        except (OSError, subprocess.TimeoutExpired):
+            taskkill_failed = True
+        if taskkill_failed and process.poll() is None:
             process.terminate()
         return
     try:
@@ -391,6 +585,16 @@ def _terminate_process_tree(process: subprocess.Popen[str]) -> None:
     except (ProcessLookupError, PermissionError):
         if process.poll() is None:
             process.terminate()
+    try:
+        process.wait(timeout=3.0)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        if process.poll() is None:
+            process.kill()
 
 
 def _timestamp() -> str:

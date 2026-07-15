@@ -191,7 +191,13 @@ support-subgoal 评估和 route-guided 对比；2026-07-07 独立对比中 route
 
 桌面 GUI 的 `数据集与训练` 页面现在作为独立训练可视化平台使用：可以检查和预览 ORFD 等数据集，选择训练/导出预设，查看当前训练配置摘要和最近指标曲线，运行 StableWM HDF5 导出、LE-WM-compatible cost model 训练或 tiny world model 训练。每次成功的训练或导出都会在产物目录旁写入 `training_run.json`，GUI 的 `Training results` 页会自动索引这些记录并展示产物路径、参数和指标。`LE-WM full self-supervised`、`TD-MPC2` 和 `DreamerV3` 目前作为未完成的可插拔预设保留，不会伪造训练结果。
 
-训练记录支持 `history` 字段保存 loss、RMSE、frame count 等曲线数据；GUI 会在训练结果页绘制可用的主指标曲线，没有真实 history 时只展示单点指标或 NaN。
+训练记录支持 `history` 字段保存 loss、RMSE、学习率、吞吐率和模型自定义指标。GUI 可切换主指标，自动叠加 train/validation loss，支持滚轮缩放、悬停数值、异常点标记，并诊断 NaN、loss 爆炸、指标长期不更新；指标原始 JSON/CSV 和当前曲线 PNG 可从训练结果页一起导出。异步训练任务还会采样 CPU、内存以及可用时的 NVIDIA GPU/显存数据。
+
+`训练结果` 页同时支持按模型/训练器、数据集、状态、日期和文本筛选，多选实验后按共享指标及明确的最小化/最大化方向排名，展示参数、最终指标和按真实 step 对齐的叠加曲线。最佳实验可写回标记，也可复制为复训配置并导出 Markdown、HTML 和 PNG 报告；清理功能只允许删除 `outputs/` 下未被配置引用的失败、取消、中断或产物缺失实验。
+
+训练启动前会验证 train/validation/test 样本互斥；每次实验保存 trainer manifest、split 与 trainer entrypoint 的 SHA-256，历史复跑会强制校验快照和代码完整性。训练器声明的 artifact 必须真实存在，数值发散、推理进程失败或推理后处理失败都会留下可追溯的失败记录；相对路径配置引用也会阻止误删 checkpoint。
+
+仓库内置 `Tiny RGB 深度基线` 作为真实感知训练验收模型。它通过普通 `trainer.yaml` 接入，直接读取 ORFD zip 中同步的 RGB 与 16-bit dense depth，并实际消费工作台生成的 split JSON：训练只读取 `train`，验证只读取 `validation`，推理可在 GUI 参数中选择 `validation` 或 `test`。它逐 epoch 输出真实 train/validation RMSE，保存可推理的 `model.json + weights.npz`，并生成输入、真值深度和预测深度三联图。该模型用于验证训练平台闭环，不作为高精度深度估计基准。
 
 外部数据集可以通过 `dataset_manifest.yaml` 接入 `manifest_dataset` adapter，也可以在 GUI 的数据集页点击 `导入 dataset manifest` 导入。导入时系统会把 manifest 安装到 `configs/datasets/<dataset_id>/`，并把 sequence 的相对 root 改写为绝对路径，方便之后在数据集目录下复用。manifest 描述 sequence 根目录、pose CSV 和传感器/标签资产模板，系统会把它转换为统一的 `DatasetSequence`：
 
@@ -210,6 +216,8 @@ sequences:
 ```
 
 外部模型或算法训练可以通过 `configs/trainers/*/trainer.yaml` 或 `configs/trainers/*.yaml` 接入，也可以在 GUI 的训练页点击 `Import trainer manifest` 导入。训练器 manifest 声明 entrypoint、参数 schema 和命令参数模板；GUI 会把它显示为训练预设，并把参数 JSON、stdout/stderr、metrics/history 和 `training_run.json` 一起记录下来：
+
+推理协议既可写在 `trainer.yaml` 的 `inference` 段，也可通过 `inference_manifest: inference.yaml` 使用独立文件；同目录 `inference.yaml` 还会被自动发现。GUI 会读取其参数 schema，并允许直接配置批量样本数及 validation/test split。
 
 ```yaml
 trainer_id: my_world_model
@@ -258,7 +266,11 @@ The Dataset stage now includes `同步预览`, `数据详情`, and `质量与划
 
 Training configs combine a dataset root, adapter, sequence, training preset, output path, and JSON parameters into one reusable GUI selection. Built-in configs include `ORFD StableWM HDF5 export`, `ORFD tiny world model`, and `Smoke tiny world model`. The smoke config creates a tiny ORFD-style dataset under `outputs/training_studio_smoke/datasets/mock_orfd`, trains a local tiny model, writes a `training_run.json`, and provides metric history for the GUI curves. Users can edit the current fields and click `Save training config` to persist a new entry in `configs/training_configs.json`. `Start training/export` now runs the current training config through a single service boundary, whether the preset is built in or backed by an imported trainer manifest. The `Validate config` action performs a dry run before training: it checks dataset availability, resolves the selected trainer manifest, coerces parameter types, reports missing required parameters, and shows the external command preview when the preset is backed by a local script.
 
-Training records support a `history` field for loss, RMSE, frame count, or other curve data. The GUI plots the primary available metric in the training results tab, lists the available curve names, and falls back to single-point metrics or NaN when no real history exists.
+Training records support a `history` field for loss, RMSE, learning rate, throughput, resource usage, or custom metrics. The GUI can switch the primary metric, overlays train/validation loss, supports wheel zoom and point hover, marks anomalies, and diagnoses non-finite values, exploding loss, stalled metrics, and inactive event streams. Raw JSON/CSV data and the visible PNG curve can be exported together. Managed jobs sample CPU and memory plus NVIDIA GPU/VRAM when available.
+
+The Training Results tab also works as an experiment manager. Runs can be filtered by model/trainer, dataset, status, date, or text; multiple selected runs can be ranked by any shared metric with an explicit min/max direction. The comparison view shows parameters, final values, and step-aligned overlaid curves, can persist a best-run mark, clone a run into a reusable training config, and export Markdown/HTML plus a PNG chart. Cleanup is deliberately limited to failed, canceled, interrupted, or artifact-missing runs under `outputs/`; completed artifacts and any run referenced by a configuration are refused.
+
+`Tiny RGB Depth Baseline` is the built-in real-perception acceptance trainer. It uses the same manifest protocol, reads synchronized RGB and 16-bit dense depth directly from ORFD zip sequences, and consumes the generated split JSON: training uses `train`, validation uses `validation`, and GUI inference can select `validation` or `test`. It emits real train/validation RMSE each epoch, saves an inferable `model.json + weights.npz`, and produces an RGB/target/prediction preview. It validates the workbench workflow and is not presented as a state-of-the-art depth estimator.
 
 External trainers can report metrics through a JSON object on stdout or through sidecar files in the selected output directory. Supported sidecars are `metrics.json` for final scalar metrics, `history.json` for metric arrays, and `events.jsonl` for per-step JSON events such as `{"step": 1, "loss": 0.9}`.
 
@@ -302,14 +314,24 @@ modality requirements, and optional split-file requirements. Copy
 platform. See `docs/trainer_protocol.md` for the complete schema.
 
 Manifest-backed training runs use a persistent FIFO task queue with live
-stdout/stderr, JSON or `Epoch n/N` progress updates, cancellation, and explicit
-completed/failed/canceled records. See `docs/training_jobs.md` for the runtime
+stdout/stderr, JSON or `Epoch n/N` progress updates, cancellation, direct reruns
+from an existing experiment, and explicit completed/failed/canceled records. See `docs/training_jobs.md` for the runtime
 contract.
 
-Completed artifacts are cataloged with source-run metrics, size, existence, and
-inference capability. A manifest may declare a model-specific inference entry
-without platform code changes; the GUI then runs it on the selected dataset and
-shows predictions, metrics, and preview images in the Training Results tab.
+Completed artifacts are cataloged with source-run metrics, parameters, epoch,
+size, existence, latest/best/favorite tags, and inference capability. A manifest
+may embed a model-specific inference entry, reference a standalone
+`inference.yaml`, or use an automatically discovered sibling file without
+platform code changes; the
+GUI then runs it on the selected dataset and shows predictions, metrics, and
+preview images in the Training Results tab. Artifact deletion preserves the run
+record and is refused while a saved configuration references the artifact.
+Before launch, split files are checked for duplicate samples and cross-split
+leakage. Each run snapshots and hashes its trainer manifest and split, hashes
+the trainer entrypoint, and verifies all hashes before a historical rerun. Missing
+declared artifacts, numerical divergence, inference process errors, and
+post-processing errors are persisted as failed runs; relative configuration
+references are included in checkpoint deletion protection.
 
 ```yaml
 trainer_id: my_world_model

@@ -357,3 +357,50 @@ def test_gui_tracks_manifest_job_progress_logs_and_completion(tmp_path) -> None:
     assert record["status"] == "completed"
     assert record["history"]["loss"][-1] == 0.125
     window.close()
+
+
+def test_gui_close_stops_generic_qthreads() -> None:
+    QApplication.instance() or QApplication([])
+    window = MainWindow()
+    completed = threading.Event()
+    cancel_called = threading.Event()
+    callbacks = []
+
+    def bounded_task() -> str:
+        time.sleep(0.3)
+        completed.set()
+        return "done"
+
+    window._run_task(
+        bounded_task,
+        callbacks.append,
+        "long task",
+        cancel_hook=cancel_called.set,
+    )
+    assert _process_until(lambda: bool(window.threads), timeout=1.0)
+    active = list(window.threads)
+
+    window.close()
+
+    assert window.threads == []
+    assert cancel_called.is_set()
+    assert completed.is_set()
+    assert callbacks == []
+    assert all(not thread.is_alive() for thread in active)
+
+
+def test_gui_close_retains_and_reports_noncooperative_detached_task() -> None:
+    QApplication.instance() or QApplication([])
+    window = MainWindow()
+    release = threading.Event()
+    window._run_task(lambda: release.wait(timeout=5.0), lambda _: None, "blocking task")
+    assert _process_until(lambda: bool(window.threads), timeout=1.0)
+
+    window.close()
+
+    entries = window.detached_task_entries()
+    assert entries and entries[0]["alive"] is True
+    assert window.detached_task_names == [entries[0]["name"]]
+    release.set()
+    assert _process_until(lambda: not window.threads, timeout=2.0)
+    assert window.detached_task_entries() == []

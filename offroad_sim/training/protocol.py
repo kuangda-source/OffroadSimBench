@@ -12,7 +12,19 @@ from typing import Any, Mapping
 
 TRAINER_SCHEMA_VERSION = 1
 LAUNCH_KINDS = {"python_script", "python_module", "executable"}
-PARAMETER_TYPES = {"str", "string", "path", "int", "integer", "float", "number", "bool", "boolean"}
+PARAMETER_TYPES = {
+    "str",
+    "string",
+    "path",
+    "file",
+    "directory",
+    "int",
+    "integer",
+    "float",
+    "number",
+    "bool",
+    "boolean",
+}
 
 
 @dataclass(frozen=True, slots=True)

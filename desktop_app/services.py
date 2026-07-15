@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import csv
+import hashlib
 import json
 import math
+import shutil
 import subprocess
 import sys
 import threading
 import time
+import uuid
 from html import escape
 from dataclasses import asdict, dataclass, field, is_dataclass
 from pathlib import Path
@@ -25,6 +29,7 @@ from offroad_sim.datasets import (
     build_dataset_split,
     create_mock_orfd_dataset,
     default_dataset_registry,
+    validate_dataset_split_payload,
 )
 from offroad_sim.datasets import DatasetFrame, DatasetSequence
 from offroad_sim.evaluation import run_episode
@@ -87,6 +92,7 @@ INFERENCE_RUN_FILENAME = "inference_run.json"
 DATASET_MANIFEST_FILENAMES = ("dataset_manifest.yaml", "dataset_manifest.yml")
 DATASET_MANIFEST_DIRS = (CONFIG_ROOT / "datasets",)
 TRAINER_MANIFEST_FILENAMES = ("trainer.yaml", "trainer.yml")
+INFERENCE_MANIFEST_FILENAMES = ("inference.yaml", "inference.yml")
 TRAINER_MANIFEST_DIRS = (CONFIG_ROOT / "trainers", ROOT / "trainers")
 NAN_TEXT = "NaN"
 REGION_TRAINING_COLLECTION_FILENAME = "region_training_collection.json"
@@ -817,7 +823,9 @@ def trainer_manifest_entries(root: str | Path | None = None) -> list[dict[str, A
 
 def load_trainer_manifest(path: str | Path) -> dict[str, Any]:
     manifest_path = Path(path).resolve()
-    normalized = normalize_trainer_manifest(load_yaml_file(manifest_path), manifest_path=manifest_path)
+    data = load_yaml_file(manifest_path)
+    inference_manifest_path = _attach_external_inference_manifest(data, manifest_path)
+    normalized = normalize_trainer_manifest(data, manifest_path=manifest_path)
     trainer_id = _safe_name(str(normalized["trainer_id"]))
     launch = dict(normalized["launch"])
     return {
@@ -835,9 +843,159 @@ def load_trainer_manifest(path: str | Path) -> dict[str, Any]:
         "input": dict(normalized["input"]),
         "outputs": dict(normalized["outputs"]),
         "inference": dict(normalized["inference"]),
+        "inference_manifest_path": str(inference_manifest_path) if inference_manifest_path else "",
         "manifest_path": str(manifest_path),
         "manifest_dir": str(manifest_path.parent),
     }
+
+
+def _snapshot_training_inputs(
+    output_dir: Path,
+    manifest_path: str | Path,
+    split_path: str = "",
+) -> dict[str, str]:
+    """Persist portable, hash-addressed copies of inputs used by one run."""
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    source_manifest = Path(manifest_path).resolve()
+    manifest_data = load_yaml_file(source_manifest)
+    external_inference = _attach_external_inference_manifest(manifest_data, source_manifest)
+    manifest_data = normalize_trainer_manifest(manifest_data, manifest_path=source_manifest)
+    _rebase_manifest_launch_paths(manifest_data, source_manifest.parent)
+    if external_inference and isinstance(manifest_data.get("inference"), dict):
+        inference = manifest_data["inference"]
+        launch = inference.get("launch") if isinstance(inference.get("launch"), dict) else {}
+        _rebase_launch_paths(launch, external_inference.parent)
+        inference["launch"] = launch
+        manifest_data.pop("inference_manifest", None)
+    manifest_snapshot = output_dir / "trainer_manifest.snapshot.yaml"
+    try:
+        import yaml
+    except ModuleNotFoundError as exc:
+        raise RuntimeError("PyYAML is required to snapshot trainer manifests.") from exc
+    manifest_snapshot.write_text(
+        yaml.safe_dump(manifest_data, sort_keys=False, allow_unicode=True),
+        encoding="utf-8",
+    )
+    provenance = {
+        "trainer_manifest_source_path": str(source_manifest),
+        "trainer_manifest_snapshot_path": str(manifest_snapshot.resolve()),
+        "trainer_manifest_sha256": _file_sha256(manifest_snapshot),
+    }
+    for prefix, launch in (
+        ("trainer", manifest_data.get("launch")),
+        (
+            "inference",
+            manifest_data.get("inference", {}).get("launch")
+            if isinstance(manifest_data.get("inference"), dict)
+            else None,
+        ),
+    ):
+        if not isinstance(launch, dict):
+            continue
+        entrypoint_value = str(launch.get("entrypoint") or "").strip()
+        if not entrypoint_value:
+            continue
+        entrypoint = Path(entrypoint_value)
+        if entrypoint.is_file():
+            provenance[f"{prefix}_entrypoint_path"] = str(entrypoint.resolve())
+            provenance[f"{prefix}_entrypoint_sha256"] = _file_sha256(entrypoint)
+    if split_path:
+        source_split = Path(split_path).resolve()
+        payload = json.loads(source_split.read_text(encoding="utf-8"))
+        validate_dataset_split_payload(payload)
+        split_snapshot = output_dir / "dataset_split.snapshot.json"
+        split_snapshot.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+        provenance.update(
+            split_source_path=str(source_split),
+            split_snapshot_path=str(split_snapshot.resolve()),
+            split_sha256=_file_sha256(split_snapshot),
+        )
+    return provenance
+
+
+def _verify_recorded_training_snapshot(path: str | Path, kind: str) -> None:
+    """Reject edited run snapshots and trainer code before a historical rerun."""
+
+    candidate = Path(path).resolve()
+    record_path = candidate.parent / TRAINING_RUN_FILENAME
+    if not record_path.is_file():
+        return
+    try:
+        record = _read_json(record_path)
+    except (OSError, json.JSONDecodeError):
+        return
+    if kind == "manifest":
+        path_key = "trainer_manifest_snapshot_path"
+        hash_key = "trainer_manifest_sha256"
+    elif kind == "split":
+        path_key = "split_snapshot_path"
+        hash_key = "split_sha256"
+    else:
+        raise ValueError(f"Unknown training snapshot kind: {kind}")
+    recorded_path = str(record.get(path_key) or "").strip()
+    expected_hash = str(record.get(hash_key) or "").strip()
+    if not recorded_path or Path(recorded_path).resolve() != candidate:
+        return
+    if not candidate.is_file():
+        raise FileNotFoundError(f"Recorded {kind} snapshot is missing: {candidate}")
+    actual_hash = _file_sha256(candidate)
+    if not expected_hash or actual_hash != expected_hash:
+        raise ValueError(
+            f"Recorded {kind} snapshot failed SHA-256 verification: {candidate}"
+        )
+    if kind == "manifest":
+        for prefix in ("trainer", "inference"):
+            entrypoint_value = str(record.get(f"{prefix}_entrypoint_path") or "").strip()
+            entrypoint_hash = str(record.get(f"{prefix}_entrypoint_sha256") or "").strip()
+            if not entrypoint_value or not entrypoint_hash:
+                continue
+            entrypoint = Path(entrypoint_value).resolve()
+            if not entrypoint.is_file() or _file_sha256(entrypoint) != entrypoint_hash:
+                raise ValueError(
+                    f"Recorded {prefix} entrypoint failed SHA-256 verification: {entrypoint}"
+                )
+
+
+def _rebase_manifest_launch_paths(data: dict[str, Any], base_dir: Path) -> None:
+    launch = data.get("launch") if isinstance(data.get("launch"), dict) else {}
+    if launch:
+        _rebase_launch_paths(launch, base_dir)
+        data["launch"] = launch
+    elif data.get("entrypoint"):
+        entrypoint = Path(str(data["entrypoint"]))
+        if not entrypoint.is_absolute():
+            data["entrypoint"] = str((base_dir / entrypoint).resolve())
+    inference = data.get("inference") if isinstance(data.get("inference"), dict) else {}
+    inference_launch = inference.get("launch") if isinstance(inference.get("launch"), dict) else {}
+    if inference_launch:
+        _rebase_launch_paths(inference_launch, base_dir)
+        inference["launch"] = inference_launch
+
+
+def _rebase_launch_paths(launch: dict[str, Any], base_dir: Path) -> None:
+    entrypoint_value = str(launch.get("entrypoint") or "").strip()
+    kind = str(launch.get("kind") or "python_script")
+    entrypoint_is_path = any(separator in entrypoint_value for separator in ("/", "\\")) or entrypoint_value.startswith(".")
+    if entrypoint_value and (kind == "python_script" or entrypoint_is_path):
+        entrypoint = Path(entrypoint_value)
+        if not entrypoint.is_absolute():
+            launch["entrypoint"] = str((base_dir / entrypoint).resolve())
+    working_value = str(launch.get("working_directory") or "").strip()
+    if working_value:
+        working_directory = Path(working_value)
+        if not working_directory.is_absolute():
+            launch["working_directory"] = str((base_dir / working_directory).resolve())
+    else:
+        launch["working_directory"] = str(base_dir.resolve())
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def import_trainer_manifest(source_path: str | Path, destination_root: str | Path | None = None) -> dict[str, Any]:
@@ -848,6 +1006,9 @@ def import_trainer_manifest(source_path: str | Path, destination_root: str | Pat
         raise FileNotFoundError(f"Trainer manifest not found: {source}")
     source_row = load_trainer_manifest(source)
     data = load_yaml_file(source)
+    if source_row.get("inference_manifest_path"):
+        data.pop("inference_manifest", None)
+        data["inference"] = dict(source_row.get("inference") or {})
     launch = data.get("launch") if isinstance(data.get("launch"), dict) else None
     if launch is not None:
         entrypoint_value = str(launch.get("entrypoint") or "").strip()
@@ -882,6 +1043,48 @@ def import_trainer_manifest(source_path: str | Path, destination_root: str | Pat
         raise RuntimeError("PyYAML is required to import trainer manifests.") from exc
     target.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True), encoding="utf-8")
     return load_trainer_manifest(target)
+
+
+def _attach_external_inference_manifest(data: dict[str, Any], trainer_path: Path) -> Path | None:
+    if isinstance(data.get("inference"), dict) and data["inference"]:
+        return None
+    declared = str(data.get("inference_manifest") or "").strip()
+    if declared:
+        candidate = (trainer_path.parent / declared).resolve()
+    else:
+        candidate = next(
+            (
+                trainer_path.with_name(name)
+                for name in INFERENCE_MANIFEST_FILENAMES
+                if trainer_path.with_name(name).is_file()
+            ),
+            trainer_path.with_name(INFERENCE_MANIFEST_FILENAMES[0]),
+        )
+    if not candidate.is_file():
+        if declared:
+            raise FileNotFoundError(f"Inference manifest not found: {candidate}")
+        return None
+    payload = load_yaml_file(candidate)
+    raw = payload.get("inference") if isinstance(payload.get("inference"), dict) else payload
+    if not isinstance(raw, dict):
+        raise ValueError(f"Inference manifest must contain a mapping: {candidate}")
+    inference = {
+        str(key): value
+        for key, value in raw.items()
+        if key not in {"schema_version", "inference_id", "display_name", "description"}
+    }
+    launch = dict(inference.get("launch") if isinstance(inference.get("launch"), dict) else {})
+    kind = str(launch.get("kind") or "python_script")
+    entrypoint = str(launch.get("entrypoint") or "").strip()
+    entrypoint_is_path = any(separator in entrypoint for separator in ("/", "\\")) or entrypoint.startswith(".")
+    if entrypoint and (kind == "python_script" or entrypoint_is_path) and not Path(entrypoint).is_absolute():
+        launch["entrypoint"] = str((candidate.parent / entrypoint).resolve())
+    working_directory = str(launch.get("working_directory") or "").strip()
+    if working_directory and not Path(working_directory).is_absolute():
+        launch["working_directory"] = str((candidate.parent / working_directory).resolve())
+    inference["launch"] = launch
+    data["inference"] = inference
+    return candidate
 
 
 def save_trainer_manifest(
@@ -953,9 +1156,14 @@ def run_trainer_manifest_job(
     sequence_id: str = "",
     split_path: str = "",
 ) -> dict[str, Any]:
+    _verify_recorded_training_snapshot(manifest_path, "manifest")
+    if split_path:
+        _verify_recorded_training_snapshot(split_path, "split")
     manifest = load_trainer_manifest(manifest_path)
     target_dir = Path(output_dir or ROOT / "outputs" / "training_runs" / f"{manifest['id']}_{_timestamp()}")
     target_dir.mkdir(parents=True, exist_ok=True)
+    provenance = _snapshot_training_inputs(target_dir, manifest_path, split_path)
+    execution_split_path = str(provenance.get("split_snapshot_path") or split_path)
     resolved_parameters = _trainer_parameters(manifest.get("parameters", {}), parameters or {})
     command = _trainer_command(
         manifest,
@@ -964,7 +1172,7 @@ def run_trainer_manifest_job(
         resolved_parameters,
         adapter,
         sequence_id,
-        split_path,
+        execution_split_path,
     )
     manifest_dir = Path(str(manifest["manifest_dir"]))
     working_directory = resolve_trainer_working_directory(manifest, manifest_dir)
@@ -989,6 +1197,7 @@ def run_trainer_manifest_job(
             dataset_root=dataset_root,
             adapter=adapter,
             sequence_id=sequence_id,
+            split_path=split_path,
             artifact_path=str(target_dir.resolve()),
             artifact_type=str(manifest.get("outputs", {}).get("artifact_type") or "artifact"),
             parameters=resolved_parameters,
@@ -998,6 +1207,7 @@ def run_trainer_manifest_job(
                 "stderr": completed.stderr.strip(),
             },
             logs={"stdout": str(stdout_path), "stderr": str(stderr_path)},
+            provenance=provenance,
         )
         raise RuntimeError((completed.stderr or completed.stdout or "trainer command failed").strip())
 
@@ -1005,6 +1215,7 @@ def run_trainer_manifest_job(
     payload = _trainer_result_payload(manifest, target_dir, completed.stdout, command)
     metrics = payload.get("metrics") if isinstance(payload.get("metrics"), dict) else {}
     history = payload.get("history") if isinstance(payload.get("history"), dict) else {}
+    history_steps = payload.get("history_steps") if isinstance(payload.get("history_steps"), dict) else {}
     artifact_path = str(
         payload.get("checkpoint_path")
         or payload.get("model_path")
@@ -1015,6 +1226,33 @@ def run_trainer_manifest_job(
     )
     artifact_path = str(_resolve_trainer_output_path(target_dir, artifact_path))
     artifact_type = str(payload.get("artifact_type") or outputs.get("artifact_type") or "artifact")
+    try:
+        _require_training_artifact(artifact_path)
+    except FileNotFoundError as exc:
+        write_training_run_record(
+            target_dir,
+            preset_id=manifest["id"],
+            status="failed",
+            dataset_root=dataset_root,
+            adapter=adapter,
+            sequence_id=sequence_id,
+            split_path=split_path,
+            artifact_path=artifact_path,
+            artifact_type=artifact_type,
+            metrics=metrics,
+            history=history,
+            history_steps=history_steps,
+            parameters=resolved_parameters,
+            summary={
+                "trainer_manifest_path": str(Path(manifest_path).resolve()),
+                "command": command,
+                "working_directory": str(working_directory),
+                "error": str(exc),
+            },
+            logs={"stdout": str(stdout_path), "stderr": str(stderr_path)},
+            provenance=provenance,
+        )
+        raise
     record = write_training_run_record(
         target_dir,
         preset_id=manifest["id"],
@@ -1022,10 +1260,12 @@ def run_trainer_manifest_job(
         dataset_root=dataset_root,
         adapter=adapter,
         sequence_id=sequence_id,
+        split_path=split_path,
         artifact_path=artifact_path,
         artifact_type=artifact_type,
         metrics=metrics,
         history=history,
+        history_steps=history_steps,
         parameters=resolved_parameters,
         summary={
             "trainer_manifest_path": str(Path(manifest_path).resolve()),
@@ -1033,10 +1273,12 @@ def run_trainer_manifest_job(
             "working_directory": str(working_directory),
         },
         logs={"stdout": str(stdout_path), "stderr": str(stderr_path)},
+        provenance=provenance,
     )
     payload["output_dir"] = str(target_dir.resolve())
     payload["metrics"] = metrics
     payload["history"] = history
+    payload["history_steps"] = history_steps
     payload["artifact_path"] = artifact_path
     payload["artifact_type"] = artifact_type
     payload["training_run_path"] = record["path"]
@@ -1057,9 +1299,14 @@ def queue_trainer_manifest_job(
 ) -> ProcessTrainingJob:
     """Queue a trainer manifest and finalize its standard training record."""
 
+    _verify_recorded_training_snapshot(manifest_path, "manifest")
+    if split_path:
+        _verify_recorded_training_snapshot(split_path, "split")
     manifest = load_trainer_manifest(manifest_path)
     target_dir = Path(output_dir or ROOT / "outputs" / "training_runs" / f"{manifest['id']}_{_timestamp()}")
     target_dir.mkdir(parents=True, exist_ok=True)
+    provenance = _snapshot_training_inputs(target_dir, manifest_path, split_path)
+    execution_split_path = str(provenance.get("split_snapshot_path") or split_path)
     resolved_parameters = _trainer_parameters(manifest.get("parameters", {}), parameters or {})
     command = _trainer_command(
         manifest,
@@ -1068,7 +1315,7 @@ def queue_trainer_manifest_job(
         resolved_parameters,
         adapter,
         sequence_id,
-        split_path,
+        execution_split_path,
     )
     manifest_dir = Path(str(manifest["manifest_dir"]))
     working_directory = resolve_trainer_working_directory(manifest, manifest_dir)
@@ -1083,6 +1330,7 @@ def queue_trainer_manifest_job(
         dataset_root=dataset_root,
         adapter=adapter,
         sequence_id=sequence_id,
+        split_path=split_path,
         artifact_path=str(target_dir.resolve()),
         artifact_type=str(outputs.get("artifact_type") or "artifact"),
         parameters=resolved_parameters,
@@ -1092,10 +1340,21 @@ def queue_trainer_manifest_job(
             "working_directory": str(working_directory),
         },
         logs={"stdout": str(stdout_path), "stderr": str(stderr_path)},
+        provenance=provenance,
     )
 
     def finalize(job: ProcessTrainingJob) -> dict[str, Any]:
         snapshot = job.snapshot()
+        resource_history = snapshot.get("resource_history") if isinstance(snapshot.get("resource_history"), dict) else {}
+        normalized_resources = {
+            f"resource.{key}": list(values)
+            for key, values in resource_history.items()
+            if isinstance(values, list) and values
+        }
+        resource_steps = {
+            key: list(resource_history.get("elapsed_sec", range(len(values))))[: len(values)]
+            for key, values in normalized_resources.items()
+        }
         return_code = snapshot.get("return_code")
         stdout = stdout_path.read_text(encoding="utf-8", errors="replace") if stdout_path.is_file() else ""
         stderr = stderr_path.read_text(encoding="utf-8", errors="replace") if stderr_path.is_file() else ""
@@ -1107,6 +1366,15 @@ def queue_trainer_manifest_job(
             status = "completed"
 
         if status != "completed":
+            metric_diagnostics = training_metric_diagnostics(
+                {
+                    "status": status,
+                    "history": normalized_resources,
+                    "summary": {
+                        "events_path": str(_trainer_output_file(target_dir, outputs.get("events_file"), "events.jsonl"))
+                    },
+                }
+            )
             record = write_training_run_record(
                 target_dir,
                 preset_id=manifest["id"],
@@ -1114,8 +1382,11 @@ def queue_trainer_manifest_job(
                 dataset_root=dataset_root,
                 adapter=adapter,
                 sequence_id=sequence_id,
+                split_path=split_path,
                 artifact_path=str(target_dir.resolve()),
                 artifact_type=str(outputs.get("artifact_type") or "artifact"),
+                history=normalized_resources,
+                history_steps=resource_steps,
                 parameters=resolved_parameters,
                 summary={
                     "trainer_manifest_path": str(Path(manifest_path).resolve()),
@@ -1123,14 +1394,34 @@ def queue_trainer_manifest_job(
                     "working_directory": str(working_directory),
                     "return_code": return_code,
                     "error": stderr.strip() or stdout[-1000:].strip(),
+                    "resource_sampling_available": bool(normalized_resources),
+                    "events_path": str(_trainer_output_file(target_dir, outputs.get("events_file"), "events.jsonl")),
+                    "metric_diagnostics": metric_diagnostics,
                 },
                 logs={"stdout": str(stdout_path), "stderr": str(stderr_path)},
+                provenance=provenance,
             )
             return {"status": status, "training_run_path": record["path"]}
 
         payload = _trainer_result_payload(manifest, target_dir, stdout, command)
         metrics = payload.get("metrics") if isinstance(payload.get("metrics"), dict) else {}
         history = payload.get("history") if isinstance(payload.get("history"), dict) else {}
+        history_steps = payload.get("history_steps") if isinstance(payload.get("history_steps"), dict) else {}
+        history.update(normalized_resources)
+        history_steps.update(resource_steps)
+        for key, values in normalized_resources.items():
+            if values:
+                metrics.setdefault(key, values[-1])
+        events_path = str(_trainer_output_file(target_dir, outputs.get("events_file"), "events.jsonl"))
+        metric_diagnostics = training_metric_diagnostics(
+            {
+                "status": "completed",
+                "metrics": metrics,
+                "history": history,
+                "history_steps": history_steps,
+                "summary": {"events_path": events_path},
+            }
+        )
         artifact_path = str(
             payload.get("checkpoint_path")
             or payload.get("model_path")
@@ -1141,6 +1432,35 @@ def queue_trainer_manifest_job(
         )
         artifact_path = str(_resolve_trainer_output_path(target_dir, artifact_path))
         artifact_type = str(payload.get("artifact_type") or outputs.get("artifact_type") or "artifact")
+        try:
+            _require_training_artifact(artifact_path)
+        except FileNotFoundError as exc:
+            record = write_training_run_record(
+                target_dir,
+                preset_id=manifest["id"],
+                status="failed",
+                dataset_root=dataset_root,
+                adapter=adapter,
+                sequence_id=sequence_id,
+                split_path=split_path,
+                artifact_path=artifact_path,
+                artifact_type=artifact_type,
+                metrics=metrics,
+                history=history,
+                history_steps=history_steps,
+                parameters=resolved_parameters,
+                summary={
+                    "trainer_manifest_path": str(Path(manifest_path).resolve()),
+                    "command": command,
+                    "working_directory": str(working_directory),
+                    "training_job_path": str(job.state_path),
+                    "error": str(exc),
+                    "events_path": events_path,
+                },
+                logs={"stdout": str(stdout_path), "stderr": str(stderr_path)},
+                provenance=provenance,
+            )
+            return {"status": "failed", "error": str(exc), "training_run_path": record["path"]}
         record = write_training_run_record(
             target_dir,
             preset_id=manifest["id"],
@@ -1148,27 +1468,35 @@ def queue_trainer_manifest_job(
             dataset_root=dataset_root,
             adapter=adapter,
             sequence_id=sequence_id,
+            split_path=split_path,
             artifact_path=artifact_path,
             artifact_type=artifact_type,
             metrics=metrics,
             history=history,
+            history_steps=history_steps,
             parameters=resolved_parameters,
             summary={
                 "trainer_manifest_path": str(Path(manifest_path).resolve()),
                 "command": command,
                 "working_directory": str(working_directory),
                 "training_job_path": str(job.state_path),
+                "resource_sampling_available": bool(normalized_resources),
+                "events_path": events_path,
+                "metric_diagnostics": metric_diagnostics,
             },
             logs={"stdout": str(stdout_path), "stderr": str(stderr_path)},
+            provenance=provenance,
         )
         payload.update(
             status="completed",
             output_dir=str(target_dir.resolve()),
             metrics=metrics,
             history=history,
+            history_steps=history_steps,
             artifact_path=artifact_path,
             artifact_type=artifact_type,
             training_run_path=record["path"],
+            metric_diagnostics=metric_diagnostics,
             command=command,
         )
         return payload
@@ -1184,6 +1512,9 @@ def queue_trainer_manifest_job(
             "dataset_root": dataset_root,
             "adapter": adapter,
             "sequence_id": sequence_id,
+            "split_path": split_path,
+            "trainer_manifest_path": str(Path(manifest_path).resolve()),
+            "events_path": str(_trainer_output_file(target_dir, outputs.get("events_file"), "events.jsonl")),
         },
         finalizer=finalize,
     )
@@ -1225,6 +1556,7 @@ def validate_inference_setup(
     dataset_root: str,
     adapter: str = "",
     sequence_id: str = "",
+    split_path: str = "",
     parameters: dict[str, Any] | None = None,
     output_dir: str = "",
 ) -> dict[str, Any]:
@@ -1264,7 +1596,7 @@ def validate_inference_setup(
             dataset_root=dataset_root,
             adapter=adapter,
             sequence_id=sequence_id,
-            split_path="",
+            split_path=split_path,
         )
         issues.extend(str(item) for item in compatibility.get("issues", []))
     target_dir = Path(
@@ -1284,6 +1616,7 @@ def validate_inference_setup(
                 parameters=resolved_parameters,
                 adapter=adapter,
                 sequence_id=sequence_id,
+                split_path=split_path,
             )
             working_directory = str(
                 resolve_trainer_working_directory(inference, Path(str(manifest["manifest_dir"])))
@@ -1300,12 +1633,24 @@ def validate_inference_setup(
         "dataset_root": dataset_root,
         "adapter": adapter,
         "sequence_id": sequence_id,
+        "split_path": split_path,
         "parameters": resolved_parameters,
         "compatibility": compatibility,
         "output_dir": str(target_dir.resolve()),
         "command_preview": command,
         "working_directory": working_directory,
     }
+
+
+def inference_parameter_defaults(manifest_path: str | Path) -> dict[str, Any]:
+    """Return validated default parameters for a manifest inference entrypoint."""
+
+    manifest = load_trainer_manifest(manifest_path)
+    inference = manifest.get("inference") if isinstance(manifest.get("inference"), dict) else {}
+    if not inference:
+        return {}
+    schema = inference.get("parameters") if isinstance(inference.get("parameters"), dict) else {}
+    return _trainer_parameters(schema, {})
 
 
 def run_inference_manifest_job(
@@ -1315,6 +1660,7 @@ def run_inference_manifest_job(
     dataset_root: str,
     adapter: str = "",
     sequence_id: str = "",
+    split_path: str = "",
     parameters: dict[str, Any] | None = None,
     output_dir: str = "",
 ) -> dict[str, Any]:
@@ -1326,6 +1672,7 @@ def run_inference_manifest_job(
         dataset_root=dataset_root,
         adapter=adapter,
         sequence_id=sequence_id,
+        split_path=split_path,
         parameters=parameters,
         output_dir=output_dir,
     )
@@ -1352,62 +1699,83 @@ def run_inference_manifest_job(
     stdout_path.write_text(completed.stdout or "", encoding="utf-8")
     stderr_path.write_text(completed.stderr or "", encoding="utf-8")
     outputs = inference.get("outputs") if isinstance(inference.get("outputs"), dict) else {}
-    if completed.returncode != 0:
+
+    def persist_failure(error: str) -> dict[str, Any]:
         failed = {
             "run_id": target_dir.name,
             "status": "failed",
+            "trainer_id": manifest["id"],
+            "trainer_manifest_path": str(Path(manifest_path).resolve()),
             "artifact_path": report["artifact_path"],
-            "dataset_root": dataset_root,
+            "dataset_root": str(Path(dataset_root).resolve()),
             "adapter": adapter,
             "sequence_id": sequence_id,
+            "split_path": split_path,
+            "parameters": report["parameters"],
             "metrics": {},
             "history": {},
             "predictions": [],
+            "prediction_count": 0,
             "previews": {},
-            "error": (completed.stderr or completed.stdout or "Inference command failed").strip(),
+            "error": error,
             "command": command,
+            "logs": {"stdout": str(stdout_path.resolve()), "stderr": str(stderr_path.resolve())},
+            "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        }
+        (target_dir / INFERENCE_RUN_FILENAME).write_text(
+            json.dumps(failed, indent=2, ensure_ascii=False, default=str),
+            encoding="utf-8",
+        )
+        return failed
+
+    if completed.returncode != 0:
+        failed = persist_failure((completed.stderr or completed.stdout or "Inference command failed").strip())
+        raise RuntimeError(failed["error"])
+    try:
+        payload = _trainer_result_payload({"outputs": outputs}, target_dir, completed.stdout or "", command)
+        predictions = payload.get("predictions") if isinstance(payload.get("predictions"), list) else []
+        predictions_path = _trainer_output_file(target_dir, outputs.get("predictions_file"), "predictions.json")
+        if not predictions and predictions_path.is_file():
+            raw_predictions = json.loads(predictions_path.read_text(encoding="utf-8"))
+            predictions = (
+                raw_predictions
+                if isinstance(raw_predictions, list)
+                else list(raw_predictions.get("predictions", []))
+            )
+        previews = _normalize_inference_previews(payload.get("previews"), target_dir)
+        configured_preview = str(outputs.get("preview_file") or "").strip()
+        if configured_preview:
+            preview_path = _resolve_trainer_output_path(target_dir, configured_preview)
+            if preview_path.is_file():
+                previews.setdefault("primary", str(preview_path))
+        record = {
+            "run_id": target_dir.name,
+            "status": "completed",
+            "trainer_id": manifest["id"],
+            "trainer_manifest_path": str(Path(manifest_path).resolve()),
+            "artifact_path": report["artifact_path"],
+            "dataset_root": str(Path(dataset_root).resolve()),
+            "adapter": adapter,
+            "sequence_id": sequence_id,
+            "split_path": split_path,
+            "parameters": report["parameters"],
+            "metrics": dict(payload.get("metrics") or {}),
+            "history": dict(payload.get("history") or {}),
+            "predictions": predictions,
+            "prediction_count": len(predictions),
+            "previews": previews,
+            "command": command,
+            "logs": {"stdout": str(stdout_path.resolve()), "stderr": str(stderr_path.resolve())},
             "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         }
         record_path = target_dir / INFERENCE_RUN_FILENAME
-        record_path.write_text(json.dumps(failed, indent=2, ensure_ascii=False), encoding="utf-8")
-        raise RuntimeError(failed["error"])
-
-    payload = _trainer_result_payload({"outputs": outputs}, target_dir, completed.stdout or "", command)
-    predictions = payload.get("predictions") if isinstance(payload.get("predictions"), list) else []
-    predictions_path = _trainer_output_file(target_dir, outputs.get("predictions_file"), "predictions.json")
-    if not predictions and predictions_path.is_file():
-        raw_predictions = json.loads(predictions_path.read_text(encoding="utf-8"))
-        predictions = raw_predictions if isinstance(raw_predictions, list) else list(raw_predictions.get("predictions", []))
-    previews = _normalize_inference_previews(payload.get("previews"), target_dir)
-    configured_preview = str(outputs.get("preview_file") or "").strip()
-    if configured_preview:
-        preview_path = _resolve_trainer_output_path(target_dir, configured_preview)
-        if preview_path.is_file():
-            previews.setdefault("primary", str(preview_path))
-    record = {
-        "run_id": target_dir.name,
-        "status": "completed",
-        "trainer_id": manifest["id"],
-        "trainer_manifest_path": str(Path(manifest_path).resolve()),
-        "artifact_path": report["artifact_path"],
-        "dataset_root": str(Path(dataset_root).resolve()),
-        "adapter": adapter,
-        "sequence_id": sequence_id,
-        "parameters": report["parameters"],
-        "metrics": dict(payload.get("metrics") or {}),
-        "history": dict(payload.get("history") or {}),
-        "predictions": predictions,
-        "prediction_count": len(predictions),
-        "previews": previews,
-        "command": command,
-        "logs": {"stdout": str(stdout_path.resolve()), "stderr": str(stderr_path.resolve())},
-        "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-    }
-    record_path = target_dir / INFERENCE_RUN_FILENAME
-    record_path.write_text(json.dumps(record, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
-    record["path"] = str(record_path.resolve())
-    record["output_dir"] = str(target_dir.resolve())
-    return record
+        record_path.write_text(json.dumps(record, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
+        record["path"] = str(record_path.resolve())
+        record["output_dir"] = str(target_dir.resolve())
+        return record
+    except Exception as exc:
+        failed = persist_failure(f"Inference post-processing failed: {exc}")
+        raise RuntimeError(failed["error"]) from exc
 
 
 def run_training_config_job(
@@ -1582,18 +1950,25 @@ def write_training_run_record(
     dataset_root: str = "",
     adapter: str = "",
     sequence_id: str = "",
+    split_path: str = "",
     artifact_path: str = "",
     artifact_type: str = "",
     metrics: dict[str, Any] | None = None,
     history: dict[str, Any] | None = None,
+    history_steps: dict[str, Any] | None = None,
     parameters: dict[str, Any] | None = None,
     summary: dict[str, Any] | None = None,
     logs: dict[str, Any] | None = None,
+    provenance: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     target_dir = Path(run_dir)
     target_dir.mkdir(parents=True, exist_ok=True)
     record_path = target_dir / TRAINING_RUN_FILENAME
     preset = next((row for row in training_preset_entries() if row["id"] == preset_id), {})
+    normalized_history, normalized_history_steps = _normalize_metric_series(
+        history or {},
+        history_steps or {},
+    )
     payload: dict[str, Any] = {
         "run_id": _safe_name(target_dir.name or preset_id),
         "preset_id": preset_id,
@@ -1602,15 +1977,18 @@ def write_training_run_record(
         "dataset_root": dataset_root,
         "adapter": adapter,
         "sequence_id": sequence_id,
+        "split_path": str(Path(split_path).resolve()) if split_path else "",
         "artifact_path": str(Path(artifact_path).resolve()) if artifact_path else "",
         "artifact_type": artifact_type,
         "metrics": dict(metrics or {}),
-        "history": _normalize_metric_history(history or {}),
+        "history": normalized_history,
+        "history_steps": normalized_history_steps,
         "parameters": dict(parameters or {}),
         "summary": dict(summary or {}),
         "logs": _normalize_log_paths(logs or {}),
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
     }
+    payload.update(dict(provenance or {}))
     record_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
     payload["path"] = str(record_path.resolve())
     payload["relative_path"] = _relative_to_root(record_path)
@@ -1701,12 +2079,97 @@ def training_artifact_entries(root: str | Path | None = None) -> list[dict[str, 
                 "training_run_path": str(run.get("path") or ""),
                 "trainer_manifest_path": manifest_path,
                 "inference_available": inference_available,
+                "dataset_root": str(run.get("dataset_root") or ""),
+                "adapter": str(run.get("adapter") or ""),
+                "sequence_id": str(run.get("sequence_id") or ""),
+                "split_path": str(run.get("split_path") or ""),
                 "metrics": dict(run.get("metrics") if isinstance(run.get("metrics"), dict) else {}),
+                "parameters": dict(run.get("parameters") if isinstance(run.get("parameters"), dict) else {}),
+                "epoch": _training_artifact_epoch(run),
+                "favorite": bool(run.get("favorite")),
+                "best": bool(run.get("best_marks")),
+                "best_marks": dict(run.get("best_marks") if isinstance(run.get("best_marks"), dict) else {}),
                 "created_at": run.get("created_at"),
                 "mtime": run.get("mtime", 0.0),
             }
         )
-    return sorted(rows, key=lambda row: -float(row.get("mtime", 0.0)))
+    rows.sort(
+        key=lambda row: (
+            bool(row.get("created_at")),
+            str(row.get("created_at") or ""),
+            float(row.get("mtime", 0.0)),
+        ),
+        reverse=True,
+    )
+    for index, row in enumerate(rows):
+        row["latest"] = index == 0
+    return rows
+
+
+def set_training_artifact_favorite(training_run_path: str | Path, favorite: bool) -> dict[str, Any]:
+    path = Path(training_run_path)
+    payload = _read_json(path)
+    if not isinstance(payload, dict):
+        raise ValueError(f"Training run is invalid: {path}")
+    payload["favorite"] = bool(favorite)
+    payload["favorite_updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
+    payload["path"] = str(path.resolve())
+    return payload
+
+
+def delete_training_artifact(
+    training_run_path: str | Path,
+    *,
+    output_root: str | Path | None = None,
+) -> dict[str, Any]:
+    """Delete one unreferenced artifact while preserving its training record."""
+
+    run_path = Path(training_run_path).resolve()
+    record = _read_json(run_path)
+    if not isinstance(record, dict):
+        raise ValueError(f"Training run is invalid: {run_path}")
+    artifact_value = _training_record_artifact_path(record)
+    if not artifact_value:
+        raise ValueError("Training run does not declare an artifact path.")
+    artifact = Path(artifact_value).resolve()
+    allowed_root = Path(output_root or ROOT / "outputs").resolve()
+    try:
+        artifact.relative_to(allowed_root)
+    except ValueError as exc:
+        raise ValueError(f"Artifact is outside the managed output root: {artifact}") from exc
+    if artifact in {allowed_root, run_path.parent} or (artifact.is_dir() and (artifact / TRAINING_RUN_FILENAME).is_file()):
+        raise ValueError("Refusing to delete an entire training-run directory as an artifact.")
+    references = _configuration_references_for_paths([artifact, run_path])
+    if references:
+        raise ValueError("Artifact is referenced by configuration: " + ", ".join(references))
+    if not artifact.exists():
+        raise FileNotFoundError(f"Training artifact not found: {artifact}")
+    if artifact.is_dir():
+        shutil.rmtree(artifact)
+    else:
+        artifact.unlink()
+    record["artifact_deleted_at"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+    record["favorite"] = False
+    run_path.write_text(json.dumps(record, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
+    return {
+        "training_run_path": str(run_path),
+        "artifact_path": str(artifact),
+        "deleted": True,
+    }
+
+
+def _training_artifact_epoch(run: dict[str, Any]) -> float | None:
+    metrics = run.get("metrics") if isinstance(run.get("metrics"), dict) else {}
+    for key in ("epoch", "best_epoch", "final_epoch"):
+        value = _float_or_nan(metrics.get(key))
+        if math.isfinite(value):
+            return float(value)
+    history = training_metric_history(run)
+    for key in ("epoch", "global_step", "step"):
+        if history.get(key):
+            return float(history[key][-1])
+    return None
 
 
 def inference_run_entries(root: str | Path | None = None) -> list[dict[str, Any]]:
@@ -1731,12 +2194,638 @@ def inference_run_entries(root: str | Path | None = None) -> list[dict[str, Any]
 
 
 def training_metric_history(record: dict[str, Any]) -> dict[str, list[float]]:
-    history = _normalize_metric_history(record.get("history") if isinstance(record.get("history"), dict) else {})
+    raw_history = record.get("history") if isinstance(record.get("history"), dict) else {}
+    raw_steps = record.get("history_steps") if isinstance(record.get("history_steps"), dict) else {}
+    history, _ = _normalize_metric_series(raw_history, raw_steps)
     metrics = record.get("metrics")
     if isinstance(metrics, dict):
         for key, value in _numeric_metric_items(metrics):
             history.setdefault(key, [value])
     return history
+
+
+def training_metric_steps(record: dict[str, Any]) -> dict[str, list[float]]:
+    raw_history = record.get("history") if isinstance(record.get("history"), dict) else {}
+    raw_steps = record.get("history_steps") if isinstance(record.get("history_steps"), dict) else {}
+    history, steps = _normalize_metric_series(raw_history, raw_steps)
+    metrics = record.get("metrics")
+    if isinstance(metrics, dict):
+        for key, value in _numeric_metric_items(metrics):
+            if key not in history:
+                steps[key] = [0.0]
+    return steps
+
+
+def live_training_metric_record(job: dict[str, Any]) -> dict[str, Any]:
+    """Build a transient training record from events and sampled resources."""
+
+    metadata = job.get("metadata") if isinstance(job.get("metadata"), dict) else {}
+    output_dir = Path(str(job.get("output_dir") or ROOT / "outputs"))
+    events_value = str(metadata.get("events_path") or output_dir / "events.jsonl")
+    history, history_steps = _read_metric_events_with_steps(Path(events_value))
+    resource_history = job.get("resource_history") if isinstance(job.get("resource_history"), dict) else {}
+    elapsed = resource_history.get("elapsed_sec")
+    elapsed_values = list(elapsed) if isinstance(elapsed, list) else []
+    for key, values in resource_history.items():
+        if isinstance(values, list) and values:
+            metric_values: list[float] = []
+            metric_steps: list[float] = []
+            for index, raw_value in enumerate(values):
+                value = _float_or_nan(raw_value)
+                if not math.isfinite(value):
+                    continue
+                raw_step = elapsed_values[index] if index < len(elapsed_values) else index
+                step = _float_or_nan(raw_step)
+                metric_values.append(float(value))
+                metric_steps.append(float(step) if math.isfinite(step) else float(index))
+            if metric_values:
+                history[f"resource.{key}"] = metric_values
+                history_steps[f"resource.{key}"] = metric_steps
+    record = {
+        "run_id": job.get("job_id"),
+        "status": job.get("status"),
+        "history": history,
+        "history_steps": history_steps,
+        "summary": {"events_path": events_value},
+        "mtime": time.time(),
+    }
+    record["metric_diagnostics"] = training_metric_diagnostics(record)
+    return record
+
+
+def training_metric_diagnostics(
+    record: dict[str, Any],
+    *,
+    stale_window: int = 20,
+    explosion_ratio: float = 20.0,
+    no_update_seconds: float = 120.0,
+) -> dict[str, Any]:
+    """Detect non-finite, exploding, stalled, and inactive training metrics."""
+
+    warnings: list[dict[str, Any]] = []
+    warning_keys: set[tuple[str, str]] = set()
+    raw_series = _raw_training_metric_series(record)
+    summary = record.get("summary") if isinstance(record.get("summary"), dict) else {}
+    events_path = Path(str(summary.get("events_path") or "")) if summary.get("events_path") else None
+    if events_path is not None and events_path.is_file():
+        for key, values in _read_raw_metric_events(events_path).items():
+            raw_series.setdefault(key, []).extend(values)
+
+    def add(severity: str, code: str, metric: str, message: str, **details: Any) -> None:
+        dedupe_key = (code, metric)
+        if dedupe_key in warning_keys:
+            return
+        warning_keys.add(dedupe_key)
+        warnings.append(
+            {
+                "severity": severity,
+                "code": code,
+                "metric": metric,
+                "message": message,
+                **details,
+            }
+        )
+
+    for metric, values in raw_series.items():
+        if any(not math.isfinite(value) for value in values):
+            add("critical", "non_finite", metric, f"{metric} contains NaN or infinity.")
+
+    history = training_metric_history(record)
+    history_steps = training_metric_steps(record)
+    for metric, values in history.items():
+        lowered = metric.lower()
+        if "loss" in lowered and len(values) >= 2:
+            for index, value in enumerate(values[1:], start=1):
+                previous = [abs(item) for item in values[:index] if math.isfinite(item)]
+                baseline = min(previous) if previous else 0.0
+                threshold = max(1.0, baseline * float(explosion_ratio))
+                if abs(value) > threshold:
+                    add(
+                        "critical",
+                        "loss_explosion",
+                        metric,
+                        f"{metric} jumped to {value:.6g} at point {index + 1}.",
+                        point_index=index,
+                        value=value,
+                        threshold=threshold,
+                    )
+                    break
+        if (
+            len(values) >= stale_window
+            and not lowered.startswith("resource.")
+            and lowered not in {"step", "epoch", "iteration", "global_step"}
+        ):
+            tail = values[-stale_window:]
+            tolerance = max(1e-12, abs(sum(tail) / len(tail)) * 1e-5)
+            if max(tail) - min(tail) <= tolerance:
+                add(
+                    "warning",
+                    "metric_stalled",
+                    metric,
+                    f"{metric} has not changed across the last {stale_window} points.",
+                    point_index=len(values) - 1,
+                    value=values[-1],
+                )
+
+    status = str(record.get("status") or "").lower()
+    if status in {"queued", "running", "canceling"} and events_path is not None:
+        try:
+            age_seconds = max(0.0, time.time() - events_path.stat().st_mtime)
+        except OSError:
+            age_seconds = math.inf
+        if age_seconds >= no_update_seconds:
+            add(
+                "warning",
+                "no_recent_update",
+                "events",
+                f"No metric event has been written for {age_seconds:.0f} seconds.",
+                age_seconds=age_seconds,
+            )
+
+    severity_rank = {"healthy": 0, "warning": 1, "critical": 2}
+    diagnostic_status = "healthy"
+    for warning in warnings:
+        severity = str(warning.get("severity") or "warning")
+        if severity_rank.get(severity, 1) > severity_rank[diagnostic_status]:
+            diagnostic_status = severity
+    return {
+        "status": diagnostic_status,
+        "warning_count": len(warnings),
+        "warnings": warnings,
+        "metric_count": len(history),
+        "point_count": sum(len(values) for values in history.values()),
+        "resource_metrics": sorted(key for key in history if key.startswith("resource.")),
+    }
+
+
+def export_training_metrics(record: dict[str, Any], output_dir: str | Path | None = None) -> dict[str, Any]:
+    """Persist normalized metrics, diagnostics, and a rectangular CSV table."""
+
+    record_path = Path(str(record.get("path") or "")) if record.get("path") else None
+    if output_dir is not None:
+        target_dir = Path(output_dir)
+    elif record_path is not None:
+        target_dir = record_path.parent / "metric_exports"
+    else:
+        target_dir = ROOT / "outputs" / "training_reports" / f"metrics_{_timestamp()}"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    history = training_metric_history(record)
+    history_steps = training_metric_steps(record)
+    diagnostics = training_metric_diagnostics(record)
+    json_path = target_dir / "training_metrics.json"
+    csv_path = target_dir / "training_metrics.csv"
+    payload = {
+        "schema_version": 1,
+        "run_id": record.get("run_id"),
+        "preset_id": record.get("preset_id"),
+        "status": record.get("status"),
+        "metrics": record.get("metrics") if isinstance(record.get("metrics"), dict) else {},
+        "history": history,
+        "history_steps": history_steps,
+        "diagnostics": diagnostics,
+    }
+    json_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
+    metric_names = sorted(history)
+    all_steps = sorted({step for name in metric_names for step in history_steps.get(name, [])})
+    with csv_path.open("w", encoding="utf-8", newline="") as stream:
+        writer = csv.writer(stream)
+        writer.writerow(["step", *metric_names])
+        value_maps = {
+            name: dict(zip(history_steps.get(name, []), history[name], strict=False)) for name in metric_names
+        }
+        for step in all_steps:
+            writer.writerow(
+                [
+                    step,
+                    *[value_maps[name].get(step, "") for name in metric_names],
+                ]
+            )
+    return {
+        "output_dir": str(target_dir.resolve()),
+        "json_path": str(json_path.resolve()),
+        "csv_path": str(csv_path.resolve()),
+        "metric_count": len(metric_names),
+        "point_count": len(all_steps),
+        "diagnostics": diagnostics,
+    }
+
+
+def filter_training_runs(
+    runs: list[dict[str, Any]],
+    *,
+    query: str = "",
+    preset_id: str = "",
+    dataset_root: str = "",
+    status: str = "",
+    date_from: str = "",
+    date_to: str = "",
+) -> list[dict[str, Any]]:
+    """Filter experiment records without assuming a model-specific schema."""
+
+    query_text = query.strip().lower()
+    filtered: list[dict[str, Any]] = []
+    for run in runs:
+        created_date = str(run.get("created_at") or "")[:10]
+        haystack = " ".join(
+            str(run.get(key) or "")
+            for key in ("run_id", "preset_id", "preset_label", "dataset_root", "adapter", "artifact_path")
+        ).lower()
+        if query_text and query_text not in haystack:
+            continue
+        if preset_id and str(run.get("preset_id") or "") != preset_id:
+            continue
+        if dataset_root and str(run.get("dataset_root") or "") != dataset_root:
+            continue
+        if status and str(run.get("status") or "") != status:
+            continue
+        if date_from and (not created_date or created_date < date_from):
+            continue
+        if date_to and (not created_date or created_date > date_to):
+            continue
+        filtered.append(dict(run))
+    return filtered
+
+
+def experiment_metric_names(runs: list[dict[str, Any]]) -> list[str]:
+    names: set[str] = set()
+    for run in runs:
+        names.update(training_metric_history(run))
+    return sorted(names)
+
+
+def compare_training_runs(
+    runs: list[dict[str, Any]],
+    *,
+    metric: str = "",
+    direction: str = "auto",
+) -> dict[str, Any]:
+    """Rank comparable runs and return parameter, metric, and curve evidence."""
+
+    if len(runs) < 2:
+        raise ValueError("Select at least two training runs for comparison.")
+    available_metrics = experiment_metric_names(runs)
+    selected_metric = metric if metric in available_metrics else _default_comparison_metric(available_metrics)
+    if not selected_metric:
+        raise ValueError("Selected runs do not contain comparable numeric metrics.")
+    resolved_direction = _metric_direction(selected_metric) if direction == "auto" else direction
+    if resolved_direction not in {"min", "max"}:
+        raise ValueError("Comparison direction must be auto, min, or max.")
+
+    rows: list[dict[str, Any]] = []
+    curves: dict[str, list[float]] = {}
+    curve_steps: dict[str, list[float]] = {}
+    for index, run in enumerate(runs):
+        history = training_metric_history(run)
+        steps = training_metric_steps(run)
+        values = history.get(selected_metric, [])
+        if not values:
+            continue
+        run_id = str(run.get("run_id") or f"run_{index + 1}")
+        label = str(run.get("preset_label") or run.get("preset_id") or run_id)
+        curve_key = f"{label} [{run_id}]"
+        curves[curve_key] = list(values)
+        curve_steps[curve_key] = list(steps.get(selected_metric, range(len(values))))
+        rows.append(
+            {
+                "run_id": run_id,
+                "label": label,
+                "status": str(run.get("status") or ""),
+                "created_at": run.get("created_at"),
+                "dataset_root": str(run.get("dataset_root") or ""),
+                "preset_id": str(run.get("preset_id") or ""),
+                "artifact_path": str(run.get("artifact_path") or ""),
+                "metric": selected_metric,
+                "value": float(values[-1]),
+                "parameters": dict(run.get("parameters") if isinstance(run.get("parameters"), dict) else {}),
+                "final_metrics": {
+                    key: series[-1] for key, series in history.items() if series
+                },
+                "path": str(run.get("path") or ""),
+            }
+        )
+    if len(rows) < 2:
+        raise ValueError(f"At least two selected runs must contain metric: {selected_metric}")
+    rows.sort(key=lambda row: float(row["value"]), reverse=resolved_direction == "max")
+    for rank, row in enumerate(rows, start=1):
+        row["rank"] = rank
+        row["best"] = rank == 1
+    parameter_names = sorted({key for row in rows for key in row["parameters"]})
+    return {
+        "metric": selected_metric,
+        "direction": resolved_direction,
+        "available_metrics": available_metrics,
+        "rows": rows,
+        "best_run_id": rows[0]["run_id"],
+        "best_value": rows[0]["value"],
+        "parameter_names": parameter_names,
+        "curves": curves,
+        "curve_steps": curve_steps,
+        "run_count": len(rows),
+    }
+
+
+def mark_best_training_run(run_path: str | Path, *, metric: str, direction: str, value: float) -> dict[str, Any]:
+    path = Path(run_path)
+    payload = _read_json(path)
+    if not isinstance(payload, dict):
+        raise ValueError(f"Training run is invalid: {path}")
+    marks = payload.get("best_marks") if isinstance(payload.get("best_marks"), dict) else {}
+    marks[str(metric)] = {
+        "direction": direction,
+        "value": float(value),
+        "marked_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+    }
+    payload["best_marks"] = marks
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
+    payload["path"] = str(path.resolve())
+    return payload
+
+
+def clone_training_config_from_run(
+    run: dict[str, Any],
+    *,
+    label: str = "",
+    path: str | Path | None = None,
+) -> dict[str, Any]:
+    run_id = str(run.get("run_id") or run.get("preset_id") or "experiment")
+    clone_label = label or f"{run.get('preset_label') or run.get('preset_id') or run_id} copy"
+    return save_training_config(
+        config_id=f"{_safe_name(run_id)}_copy_{_timestamp()}",
+        label=clone_label,
+        training_preset_id=str(run.get("preset_id") or "tiny_world_model"),
+        dataset_root=str(run.get("dataset_root") or ""),
+        adapter=str(run.get("adapter") or ""),
+        sequence_id=str(run.get("sequence_id") or ""),
+        split_path=str(run.get("split_path") or ""),
+        output_path="",
+        parameters=dict(run.get("parameters") if isinstance(run.get("parameters"), dict) else {}),
+        path=path,
+    )
+
+
+def export_experiment_report(
+    comparison: dict[str, Any],
+    output_dir: str | Path,
+    *,
+    title: str = "Training Experiment Comparison",
+) -> dict[str, Any]:
+    target_dir = Path(output_dir)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    rows = comparison.get("rows") if isinstance(comparison.get("rows"), list) else []
+    parameter_names = comparison.get("parameter_names") if isinstance(comparison.get("parameter_names"), list) else []
+    headers = ["Rank", "Run", "Preset", str(comparison.get("metric") or "Metric"), *parameter_names]
+    table_rows = []
+    for row in rows:
+        parameters = row.get("parameters") if isinstance(row.get("parameters"), dict) else {}
+        table_rows.append(
+            [
+                str(row.get("rank") or ""),
+                str(row.get("run_id") or ""),
+                str(row.get("label") or ""),
+                display_value(row.get("value")),
+                *[display_value(parameters.get(name)) for name in parameter_names],
+            ]
+        )
+    markdown_lines = [
+        f"# {_markdown_text(title, table=False)}",
+        "",
+        f"- Metric: {_markdown_text(comparison.get('metric') or NAN_TEXT, table=False)}",
+        f"- Direction: {_markdown_text(comparison.get('direction') or NAN_TEXT, table=False)}",
+        f"- Best run: {_markdown_text(comparison.get('best_run_id') or NAN_TEXT, table=False)}",
+        f"- Best value: {_markdown_text(display_value(comparison.get('best_value')), table=False)}",
+        "",
+        "| " + " | ".join(_markdown_text(value) for value in headers) + " |",
+        "| " + " | ".join("---" for _ in headers) + " |",
+    ]
+    markdown_lines.extend("| " + " | ".join(_markdown_text(value) for value in row) + " |" for row in table_rows)
+    markdown_path = target_dir / "experiment_report.md"
+    markdown_path.write_text("\n".join(markdown_lines) + "\n", encoding="utf-8")
+
+    html_headers = "".join(f"<th>{escape(header)}</th>" for header in headers)
+    html_rows = "".join(
+        "<tr>" + "".join(f"<td>{escape(value)}</td>" for value in row) + "</tr>" for row in table_rows
+    )
+    html_path = target_dir / "experiment_report.html"
+    html_path.write_text(
+        "<!doctype html><html><head><meta charset='utf-8'><title>"
+        + escape(title)
+        + "</title><style>body{font-family:Segoe UI,Arial;margin:32px;color:#1d1d1f}"
+        "table{border-collapse:collapse;width:100%}th,td{border:1px solid #d2d2d7;padding:8px;text-align:left}"
+        "th{background:#f5f5f7}</style></head><body>"
+        + f"<h1>{escape(title)}</h1><p>Metric: <b>{escape(str(comparison.get('metric') or NAN_TEXT))}</b> "
+        + f"({escape(str(comparison.get('direction') or NAN_TEXT))}); best run: "
+        + f"<b>{escape(str(comparison.get('best_run_id') or NAN_TEXT))}</b></p>"
+        + f"<table><thead><tr>{html_headers}</tr></thead><tbody>{html_rows}</tbody></table></body></html>",
+        encoding="utf-8",
+    )
+    return {
+        "output_dir": str(target_dir.resolve()),
+        "markdown_path": str(markdown_path.resolve()),
+        "html_path": str(html_path.resolve()),
+        "run_count": len(table_rows),
+    }
+
+
+def _markdown_text(value: Any, *, table: bool = True) -> str:
+    text = str(value).replace("\r\n", "\n").replace("\r", "\n")
+    text = text.replace("`", "\\`").replace("|", "\\|")
+    return text.replace("\n", "<br>") if table else text.replace("\n", " ")
+
+
+def cleanup_training_runs(
+    run_paths: list[str | Path],
+    *,
+    output_root: str | Path | None = None,
+    dry_run: bool = True,
+) -> dict[str, Any]:
+    """Remove only unreferenced failed or invalid run directories under output_root."""
+
+    allowed_root = Path(output_root or ROOT / "outputs").resolve()
+    removed: list[str] = []
+    refused: list[dict[str, Any]] = []
+    candidates: list[str] = []
+    for value in run_paths:
+        path = Path(value).resolve()
+        run_dir = path.parent if path.name == TRAINING_RUN_FILENAME else path
+        record_path = run_dir / TRAINING_RUN_FILENAME
+        try:
+            run_dir.relative_to(allowed_root)
+        except ValueError:
+            refused.append({"path": str(run_dir), "reason": "outside output root"})
+            continue
+        if run_dir == allowed_root or not record_path.is_file():
+            refused.append({"path": str(run_dir), "reason": "missing or unsafe training_run.json"})
+            continue
+        record = _read_json(record_path)
+        status = str(record.get("status") or "").lower() if isinstance(record, dict) else "invalid"
+        artifact_value = _training_record_artifact_path(record) if isinstance(record, dict) else ""
+        artifact_exists = bool(artifact_value and Path(artifact_value).exists())
+        removable = status in {"failed", "canceled", "interrupted", "invalid"} or not artifact_exists
+        if not removable:
+            refused.append({"path": str(run_dir), "reason": "completed run has a valid artifact"})
+            continue
+        references = _training_run_references(record_path, artifact_value)
+        if references:
+            refused.append({"path": str(run_dir), "reason": "referenced by configuration", "references": references})
+            continue
+        candidates.append(str(run_dir))
+        if not dry_run:
+            shutil.rmtree(run_dir)
+            removed.append(str(run_dir))
+    return {
+        "dry_run": dry_run,
+        "candidates": candidates,
+        "removed": removed,
+        "refused": refused,
+    }
+
+
+def _default_comparison_metric(names: list[str]) -> str:
+    priority = (
+        "validation_loss",
+        "val_loss",
+        "validation_rmse",
+        "validation_mse",
+        "loss",
+        "final_loss",
+        "accuracy",
+        "iou",
+        "reward",
+    )
+    return next((name for name in priority if name in names), names[0] if names else "")
+
+
+def _metric_direction(metric: str) -> str:
+    lowered = metric.lower()
+    minimize_tokens = ("loss", "error", "rmse", "mse", "mae", "distance", "latency", "risk", "collision")
+    return "min" if any(token in lowered for token in minimize_tokens) else "max"
+
+
+def _training_run_references(run_path: Path, artifact_path: str) -> list[str]:
+    paths = [run_path.resolve()]
+    if artifact_path:
+        paths.append(Path(artifact_path).resolve())
+    return _configuration_references_for_paths(paths)
+
+
+def _configuration_references_for_paths(paths: list[Path]) -> list[str]:
+    resolved_paths = {path.resolve() for path in paths}
+    resolved_values = {str(path) for path in resolved_paths}
+    needles = {
+        candidate
+        for value in resolved_values
+        for candidate in (value, value.replace("\\", "/"), json.dumps(value, ensure_ascii=False)[1:-1])
+    }
+    references: list[str] = []
+    if not CONFIG_ROOT.exists():
+        return references
+    for path in CONFIG_ROOT.rglob("*"):
+        if path.suffix.lower() not in {".json", ".yaml", ".yml"} or not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        matched = any(needle and needle in text for needle in needles)
+        try:
+            payload = _load_mapping_file(path)
+        except (OSError, ValueError, json.JSONDecodeError):
+            payload = {}
+        if not matched:
+            for value in _nested_string_values(payload):
+                raw = value.strip()
+                if not raw:
+                    continue
+                candidate = Path(raw)
+                candidates = (
+                    [candidate.resolve()]
+                    if candidate.is_absolute()
+                    else [(path.parent / candidate).resolve(), (ROOT / candidate).resolve()]
+                )
+                if any(
+                    _path_references_target(candidate_path, target)
+                    for candidate_path in candidates
+                    for target in resolved_paths
+                ):
+                    matched = True
+                    break
+        if matched:
+            references.append(str(path.resolve()))
+    return sorted(references)
+
+
+def _nested_string_values(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [item for nested in value.values() for item in _nested_string_values(nested)]
+    if isinstance(value, (list, tuple)):
+        return [item for nested in value for item in _nested_string_values(nested)]
+    return []
+
+
+def _path_references_target(candidate: Path, target: Path) -> bool:
+    if candidate == target:
+        return True
+    if target.is_dir():
+        try:
+            candidate.relative_to(target)
+        except ValueError:
+            return False
+        return True
+    return False
+
+
+def _raw_training_metric_series(record: dict[str, Any]) -> dict[str, list[float]]:
+    rows: dict[str, list[float]] = {}
+    for source_name in ("history", "metrics"):
+        source = record.get(source_name)
+        if not isinstance(source, dict):
+            continue
+        for key, values in _raw_metric_series(source).items():
+            rows.setdefault(key, []).extend(values)
+    return rows
+
+
+def _raw_metric_series(payload: dict[str, Any], prefix: str = "") -> dict[str, list[float]]:
+    rows: dict[str, list[float]] = {}
+    for key, raw in payload.items():
+        name = f"{prefix}.{key}" if prefix else str(key)
+        if isinstance(raw, dict):
+            nested = _raw_metric_series(raw, name)
+            for nested_name, values in nested.items():
+                rows.setdefault(nested_name, []).extend(values)
+            continue
+        values = raw if isinstance(raw, (list, tuple)) else [raw]
+        converted: list[float] = []
+        for value in values:
+            if isinstance(value, bool):
+                continue
+            try:
+                converted.append(float(value))
+            except (TypeError, ValueError):
+                continue
+        if converted:
+            rows[name] = converted
+    return rows
+
+
+def _read_raw_metric_events(path: Path) -> dict[str, list[float]]:
+    rows: dict[str, list[float]] = {}
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return rows
+    for line in lines:
+        try:
+            event = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(event, dict):
+            continue
+        for key, values in _raw_metric_series(event).items():
+            rows.setdefault(key, []).extend(values)
+    return rows
 
 
 def _trainer_result_payload(manifest: dict[str, Any], output_dir: Path, stdout: str, command: list[str]) -> dict[str, Any]:
@@ -1752,6 +2841,7 @@ def _trainer_result_payload(manifest: dict[str, Any], output_dir: Path, stdout: 
 
     metrics = payload.get("metrics") if isinstance(payload.get("metrics"), dict) else _numeric_payload(payload)
     history = payload.get("history") if isinstance(payload.get("history"), dict) else {}
+    history_steps = payload.get("history_steps") if isinstance(payload.get("history_steps"), dict) else {}
 
     metrics_from_file = _read_optional_json_mapping(_trainer_output_file(output_dir, outputs.get("metrics_file"), "metrics.json"))
     if metrics_from_file:
@@ -1761,12 +2851,24 @@ def _trainer_result_payload(manifest: dict[str, Any], output_dir: Path, stdout: 
     if history_from_file:
         history.update(history_from_file)
 
-    event_history = _read_metric_events(_trainer_output_file(output_dir, outputs.get("events_file"), "events.jsonl"))
+    history_steps_from_file = _read_optional_json_mapping(
+        _trainer_output_file(output_dir, outputs.get("history_steps_file"), "history_steps.json")
+    )
+    if history_steps_from_file:
+        history_steps.update(history_steps_from_file)
+
+    event_history, event_steps = _read_metric_events_with_steps(
+        _trainer_output_file(output_dir, outputs.get("events_file"), "events.jsonl")
+    )
     if event_history:
         for key, values in event_history.items():
-            history.setdefault(key, []).extend(values)
+            existing = history.get(key)
+            if not isinstance(existing, (list, tuple)) or not existing:
+                history[key] = list(values)
+            if len(history.get(key, [])) == len(values):
+                history_steps[key] = list(event_steps.get(key, []))
 
-    normalized_history = _normalize_metric_history(history)
+    normalized_history, normalized_steps = _normalize_metric_series(history, history_steps)
     if not normalized_history:
         normalized_history = {key: [value] for key, value in _numeric_metric_items(metrics)}
     for key, values in normalized_history.items():
@@ -1777,6 +2879,7 @@ def _trainer_result_payload(manifest: dict[str, Any], output_dir: Path, stdout: 
 
     payload["metrics"] = dict(metrics)
     payload["history"] = normalized_history
+    payload["history_steps"] = normalized_steps
     return payload
 
 
@@ -1795,6 +2898,13 @@ def _resolve_trainer_output_path(output_dir: Path, value: str | Path) -> Path:
     return (output_dir / path).resolve()
 
 
+def _require_training_artifact(artifact_path: str | Path) -> Path:
+    artifact = Path(artifact_path).resolve()
+    if not artifact.exists():
+        raise FileNotFoundError(f"Trainer declared an artifact that does not exist: {artifact}")
+    return artifact
+
+
 def _read_optional_json_mapping(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
@@ -1806,14 +2916,20 @@ def _read_optional_json_mapping(path: Path) -> dict[str, Any]:
 
 
 def _read_metric_events(path: Path) -> dict[str, list[float]]:
+    history, _ = _read_metric_events_with_steps(path)
+    return history
+
+
+def _read_metric_events_with_steps(path: Path) -> tuple[dict[str, list[float]], dict[str, list[float]]]:
     if not path.exists():
-        return {}
+        return {}, {}
     history: dict[str, list[float]] = {}
+    history_steps: dict[str, list[float]] = {}
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
     except OSError:
-        return {}
-    for line in lines:
+        return {}, {}
+    for event_index, line in enumerate(lines):
         if not line.strip():
             continue
         try:
@@ -1822,9 +2938,19 @@ def _read_metric_events(path: Path) -> dict[str, list[float]]:
             continue
         if not isinstance(event, dict):
             continue
+        event_step = _event_step_value(event, event_index)
         for key, value in _numeric_metric_items(event):
             history.setdefault(key, []).append(value)
-    return history
+            history_steps.setdefault(key, []).append(event_step)
+    return history, history_steps
+
+
+def _event_step_value(event: dict[str, Any], fallback: int) -> float:
+    for key in ("global_step", "step", "iteration", "epoch"):
+        value = _float_or_nan(event.get(key))
+        if math.isfinite(value):
+            return float(value)
+    return float(fallback)
 
 
 def _normalize_metric_history(raw: dict[str, Any]) -> dict[str, list[float]]:
@@ -1839,6 +2965,50 @@ def _normalize_metric_history(raw: dict[str, Any]) -> dict[str, list[float]]:
         if finite_values:
             history[metric_name] = finite_values
     return history
+
+
+def _normalize_metric_series(
+    raw_history: dict[str, Any],
+    raw_steps: dict[str, Any],
+) -> tuple[dict[str, list[float]], dict[str, list[float]]]:
+    """Normalize metric value/step pairs without shifting points after NaN filtering."""
+
+    history: dict[str, list[float]] = {}
+    steps: dict[str, list[float]] = {}
+    for raw_name, raw_values in raw_history.items():
+        name = str(raw_name)
+        values = list(raw_values) if isinstance(raw_values, (list, tuple)) else [raw_values]
+        raw_metric_steps = raw_steps.get(raw_name, raw_steps.get(name))
+        candidates = list(raw_metric_steps) if isinstance(raw_metric_steps, (list, tuple)) else []
+        normalized_values: list[float] = []
+        normalized_steps: list[float] = []
+        for index, raw_value in enumerate(values):
+            value = _float_or_nan(raw_value)
+            if not math.isfinite(value):
+                continue
+            step = _float_or_nan(candidates[index]) if index < len(candidates) else float(index)
+            normalized_values.append(float(value))
+            normalized_steps.append(float(step) if math.isfinite(step) else float(index))
+        if normalized_values:
+            history[name] = normalized_values
+            steps[name] = normalized_steps
+    return history, steps
+
+
+def _normalize_metric_steps(
+    raw_steps: dict[str, Any],
+    history: dict[str, list[float]],
+) -> dict[str, list[float]]:
+    normalized: dict[str, list[float]] = {}
+    for metric, values in history.items():
+        raw = raw_steps.get(metric)
+        candidates = list(raw) if isinstance(raw, (list, tuple)) else []
+        steps: list[float] = []
+        for index in range(len(values)):
+            value = _float_or_nan(candidates[index]) if index < len(candidates) else float(index)
+            steps.append(float(value) if math.isfinite(value) else float(index))
+        normalized[str(metric)] = steps
+    return normalized
 
 
 def _normalize_log_paths(raw: dict[str, Any]) -> dict[str, str]:
@@ -2352,6 +3522,7 @@ def save_script_training_config(
     dataset_root: str,
     adapter: str = "",
     sequence_id: str = "",
+    split_path: str = "",
     output_path: str = "",
     parameters: dict[str, Any] | None = None,
     parameter_schema: dict[str, Any] | None = None,
@@ -2394,6 +3565,7 @@ def save_script_training_config(
         dataset_root=dataset_root,
         adapter=adapter,
         sequence_id=sequence_id,
+        split_path=split_path,
         output_path=output_path,
         parameters=values,
         path=training_config_path,
@@ -6033,12 +7205,20 @@ def _resolve_relative_path(base_dir: Path, value: str) -> Path:
 
 def _trainer_manifest_paths(root: Path) -> list[Path]:
     if root.is_file():
-        return [root] if root.suffix.lower() in {".yaml", ".yml"} else []
+        return [root] if root.suffix.lower() in {".yaml", ".yml"} and root.name not in INFERENCE_MANIFEST_FILENAMES else []
     if not root.exists():
         return []
     paths: list[Path] = []
-    paths.extend(path for path in root.glob("*.yaml") if path.is_file() and ".template." not in path.name)
-    paths.extend(path for path in root.glob("*.yml") if path.is_file() and ".template." not in path.name)
+    paths.extend(
+        path
+        for path in root.glob("*.yaml")
+        if path.is_file() and ".template." not in path.name and path.name not in INFERENCE_MANIFEST_FILENAMES
+    )
+    paths.extend(
+        path
+        for path in root.glob("*.yml")
+        if path.is_file() and ".template." not in path.name and path.name not in INFERENCE_MANIFEST_FILENAMES
+    )
     for name in TRAINER_MANIFEST_FILENAMES:
         direct = root / name
         if direct.is_file():
@@ -6184,6 +7364,10 @@ def _trainer_dataset_compatibility(
             except (OSError, json.JSONDecodeError) as exc:
                 issues.append(f"Dataset split definition is invalid: {exc}")
             if split_payload:
+                try:
+                    validate_dataset_split_payload(split_payload)
+                except ValueError as exc:
+                    issues.append(f"Dataset split definition is invalid: {exc}")
                 split_adapter = str(split_payload.get("adapter") or "")
                 if split_adapter and resolved_adapter_name and split_adapter != resolved_adapter_name:
                     issues.append(
@@ -6250,6 +7434,7 @@ def _inference_command(
     parameters: dict[str, Any],
     adapter: str,
     sequence_id: str,
+    split_path: str = "",
 ) -> list[str]:
     context = {
         "artifact_path": str(Path(artifact_path).resolve()),
@@ -6258,6 +7443,7 @@ def _inference_command(
         "output_dir": str(output_dir.resolve()),
         "adapter": adapter,
         "sequence_id": sequence_id,
+        "split_path": split_path,
         "manifest_dir": str(manifest_dir.resolve()),
         "params": _AttrDict(parameters),
     }
@@ -6340,7 +7526,7 @@ def _numeric_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _timestamp() -> str:
-    return time.strftime("%Y%m%dT%H%M%S")
+    return f"{time.strftime('%Y%m%dT%H%M%S')}_{uuid.uuid4().hex[:6]}"
 
 
 class _AttrDict(dict[str, Any]):
@@ -6470,7 +7656,9 @@ def _load_lidar_points(asset_path: str) -> np.ndarray:
     values = np.frombuffer(raw, dtype=np.float32)
     if values.size < 3:
         return np.empty((0, 3), dtype=np.float32)
-    stride = 4 if values.size % 4 == 0 else 3
+    normalized_path = asset_path.replace("\\", "/").lower()
+    candidates = (5, 4, 3) if "/lidar_data/" in normalized_path else (4, 5, 3)
+    stride = next((candidate for candidate in candidates if values.size % candidate == 0), 3)
     return values[: values.size // stride * stride].reshape(-1, stride)[:, :3]
 
 

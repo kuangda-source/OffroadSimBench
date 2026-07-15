@@ -71,6 +71,30 @@ def test_dataset_analysis_reports_stats_missing_corrupt_and_gaps(tmp_path) -> No
     }
 
 
+def test_dataset_analysis_accepts_orfd_five_float_lidar_rows(tmp_path) -> None:
+    lidar = tmp_path / "orfd.bin"
+    np.asarray([[1.0, 2.0, 3.0, 4.0, 5.0], [6.0, 7.0, 8.0, 9.0, 10.0]], dtype=np.float32).tofile(lidar)
+    sequence = DatasetSequence(
+        dataset_id="orfd_lidar",
+        dataset_type="orfd",
+        sequence_id="clip",
+        root=str(tmp_path),
+        frames=[
+            DatasetFrame(
+                frame_id="000001",
+                timestamp=0.0,
+                vehicle_state=VehicleState(),
+                lidar_path=str(lidar),
+            )
+        ],
+    )
+
+    report = analyze_dataset_sequences([sequence], dataset_root=tmp_path)
+
+    assert report["corrupt_asset_count"] == 0
+    assert report["resolutions"]["lidar_points"] == [[2, 5]]
+
+
 def test_dataset_split_is_deterministic_and_covers_every_frame(tmp_path) -> None:
     sequence = _sequence(tmp_path)
 

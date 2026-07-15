@@ -251,6 +251,64 @@ def build_dataset_split(
     }
 
 
+def validate_dataset_split_payload(payload: dict[str, Any]) -> dict[str, int]:
+    """Validate the split schema and prove that samples are pairwise disjoint."""
+
+    if int(payload.get("schema_version", 0)) != 1:
+        raise ValueError(f"Unsupported dataset split schema: {payload.get('schema_version')}")
+    split_unit = str(payload.get("split_unit") or "").strip()
+    if split_unit not in {"sequence", "frame"}:
+        raise ValueError(f"Unsupported dataset split unit: {split_unit or '<missing>'}")
+    splits = payload.get("splits")
+    if not isinstance(splits, dict):
+        raise ValueError("Dataset split must contain a 'splits' mapping.")
+
+    owners: dict[tuple[str, int | None], str] = {}
+    counts: dict[str, int] = {}
+    for split_name in ("train", "validation", "test"):
+        rows = splits.get(split_name)
+        if not isinstance(rows, list):
+            raise ValueError(f"Dataset split '{split_name}' must be a list.")
+        split_samples: set[tuple[str, int | None]] = set()
+        for row in rows:
+            if not isinstance(row, dict):
+                raise ValueError(f"Dataset split '{split_name}' contains a non-object row.")
+            sequence_id = str(row.get("sequence_id") or "").strip()
+            if not sequence_id:
+                raise ValueError(f"Dataset split '{split_name}' contains a row without sequence_id.")
+            if split_unit == "sequence":
+                samples = [(sequence_id, None)]
+            else:
+                raw_indices = row.get("frame_indices")
+                if not isinstance(raw_indices, list):
+                    raise ValueError(
+                        f"Frame split row '{sequence_id}' in '{split_name}' must contain frame_indices."
+                    )
+                samples = []
+                for raw_index in raw_indices:
+                    if isinstance(raw_index, bool):
+                        raise ValueError(f"Invalid frame index in split '{split_name}': {raw_index}")
+                    try:
+                        index = int(raw_index)
+                    except (TypeError, ValueError) as exc:
+                        raise ValueError(f"Invalid frame index in split '{split_name}': {raw_index}") from exc
+                    if index < 0:
+                        raise ValueError(f"Frame indices must be non-negative: {sequence_id}[{index}]")
+                    samples.append((sequence_id, index))
+            for sample in samples:
+                if sample in split_samples:
+                    raise ValueError(f"Duplicate sample in split '{split_name}': {sample}")
+                previous = owners.get(sample)
+                if previous is not None:
+                    raise ValueError(
+                        f"Dataset split leakage: sample {sample} appears in both '{previous}' and '{split_name}'."
+                    )
+                split_samples.add(sample)
+                owners[sample] = split_name
+        counts[split_name] = len(split_samples)
+    return counts
+
+
 def _expected_modalities(sequence: DatasetSequence) -> set[str]:
     raw_expected = sequence.metadata.get("expected_modalities")
     expected = {str(name) for name in raw_expected} if isinstance(raw_expected, list) else set()
@@ -287,9 +345,14 @@ def _probe_asset(asset_ref: str, modality: str) -> tuple[int, ...] | None:
         return tuple(int(value) for value in array.shape)
     if modality == "lidar_points" and suffix == ".bin":
         size = len(raw) if raw is not None else Path(asset_ref).stat().st_size
-        if size == 0 or size % (4 * np.dtype(np.float32).itemsize) != 0:
-            raise ValueError("LiDAR .bin size is not a non-empty Nx4 float32 array")
-        return (size // (4 * np.dtype(np.float32).itemsize), 4)
+        float_size = np.dtype(np.float32).itemsize
+        value_count = size // float_size if size % float_size == 0 else 0
+        normalized_ref = asset_ref.replace("\\", "/").lower()
+        candidates = (5, 4, 3) if "/lidar_data/" in normalized_ref else (4, 5, 3)
+        stride = next((candidate for candidate in candidates if value_count and value_count % candidate == 0), 0)
+        if stride == 0:
+            raise ValueError("LiDAR .bin size is not a non-empty Nx3/Nx4/Nx5 float32 array")
+        return (value_count // stride, stride)
     if (len(raw) if raw is not None else Path(asset_ref).stat().st_size) <= 0:
         raise ValueError("asset is empty")
     return None

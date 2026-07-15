@@ -551,6 +551,7 @@ def test_gui_saves_and_applies_training_config(monkeypatch, tmp_path) -> None:
     window.dataset_root_edit.setText("D:/datasets/custom_drive")
     window.adapter_edit.setText("manifest_dataset")
     window.sequence_combo.setCurrentText("clip_001")
+    window.dataset_split_path_edit.setText("D:/datasets/custom_drive/split.json")
     window.home_model_combo.setCurrentText("outputs/models/custom_tiny")
     window._select_training_preset("tiny_world_model")
     window.trainer_params_edit.setPlainText('{"epochs": 5}')
@@ -563,6 +564,8 @@ def test_gui_saves_and_applies_training_config(monkeypatch, tmp_path) -> None:
     assert window.dataset_root_edit.text() == "D:/datasets/custom_drive"
     assert window.adapter_edit.text() == "manifest_dataset"
     assert window.sequence_combo.currentText() == "clip_001"
+    assert data["split_path"] == "D:/datasets/custom_drive/split.json"
+    assert window.dataset_split_path_edit.text() == "D:/datasets/custom_drive/split.json"
     assert window.home_model_combo.currentText() == "outputs/models/custom_tiny"
     assert '"epochs": 5' in window.trainer_params_edit.toPlainText()
     window.close()
@@ -580,6 +583,7 @@ def test_gui_can_start_training_from_script_path_without_manifest(monkeypatch, t
     window.dataset_root_edit.setText(str(dataset_root))
     window.adapter_edit.setText("manifest_dataset")
     window.sequence_combo.setCurrentText("clip_001")
+    window.dataset_split_path_edit.setText(str(tmp_path / "split.json"))
     window.training_output_edit.setText(str(output_dir))
     window.trainer_entrypoint_edit.setText(str(script))
     window.trainer_params_edit.setPlainText('{"epochs": 5, "learning_rate": 0.01}')
@@ -624,11 +628,55 @@ def test_gui_can_start_training_from_script_path_without_manifest(monkeypatch, t
     assert save_kwargs["dataset_root"] == str(dataset_root)
     assert save_kwargs["adapter"] == "manifest_dataset"
     assert save_kwargs["sequence_id"] == "clip_001"
+    assert save_kwargs["split_path"] == str(tmp_path / "split.json")
     assert save_kwargs["output_path"] == str(output_dir)
     assert save_kwargs["parameters"] == {"epochs": 5, "learning_rate": 0.01}
     assert save_kwargs["arguments"] is None
     assert captured["run_config"]["training_preset_id"] == "script_config"
     assert captured["run_kwargs"]["trainer_root"] == str((tmp_path / "trainers").resolve())
+    window.close()
+
+
+def test_gui_reruns_selected_experiment_with_same_split_and_new_output(monkeypatch, tmp_path) -> None:
+    _ensure_app()
+    window = MainWindow()
+    manifest = tmp_path / "trainers" / "trainer.yaml"
+    run = {
+        "run_id": "run_001",
+        "preset_id": "tiny_rgb_depth",
+        "preset_label": "Tiny RGB Depth",
+        "status": "completed",
+        "dataset_root": str(tmp_path / "dataset"),
+        "adapter": "orfd",
+        "sequence_id": "training/seq_0001",
+        "split_path": str(tmp_path / "split.json"),
+        "parameters": {"epochs": 4, "ridge": 0.001},
+        "summary": {"trainer_manifest_path": str(manifest)},
+    }
+    window.catalog["training_runs"] = [run]
+    window._fill_training_run_list()
+    window.training_run_list.setCurrentRow(0)
+    window.training_run_list.item(0).setSelected(True)
+    captured: dict[str, object] = {}
+
+    def fake_queue(queue, config, **kwargs):
+        captured["queue"] = queue
+        captured["config"] = config
+        captured["kwargs"] = kwargs
+        return _QueuedJobStub()
+
+    monkeypatch.setattr(services, "queue_training_config_job", fake_queue)
+    monkeypatch.setattr(window, "_refresh_training_jobs", lambda: None)
+
+    window.rerun_selected_training_run()
+
+    config = captured["config"]
+    assert config["training_preset_id"] == "tiny_rgb_depth"
+    assert config["split_path"] == str(tmp_path / "split.json")
+    assert config["parameters"] == {"epochs": 4, "ridge": 0.001}
+    assert config["output_path"] == ""
+    assert captured["kwargs"]["trainer_root"] == str(manifest.parent)
+    assert window._current_training_job_id == "queued_test_job"
     window.close()
 
 

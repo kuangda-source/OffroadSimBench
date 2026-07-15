@@ -1,0 +1,127 @@
+schema_version: 1
+trainer_id: tiny_rgb_depth
+display_name: Tiny RGB 深度基线
+description: 从同步 RGB 与深度帧训练轻量像素回归模型，用于验证真实数据训练工作台闭环。
+launch:
+  kind: python_script
+  entrypoint: ../../scripts/train_tiny_depth.py
+  working_directory: ../..
+input:
+  dataset_format:
+    - orfd
+    - manifest_dataset
+    - offroad_sim_v1
+  required_modalities:
+    - front_rgb
+    - depth
+  split_required: true
+parameters:
+  epochs:
+    type: int
+    default: 20
+    min: 2
+    max: 500
+  learning_rate:
+    type: float
+    default: 0.05
+    min: 0.000001
+    max: 1.0
+  ridge:
+    type: float
+    default: 0.0001
+    min: 0.0
+    max: 1.0
+  max_frames:
+    type: int
+    default: 12
+    min: 2
+    max: 1000
+  max_pixels_per_frame:
+    type: int
+    default: 512
+    min: 32
+    max: 100000
+  max_depth_m:
+    type: float
+    default: 50.0
+    min: 1.0
+    max: 500.0
+  seed:
+    type: int
+    default: 7
+    min: 0
+    max: 2147483647
+arguments:
+  - "{dataset_root}"
+  - --adapter
+  - "{adapter}"
+  - --sequence-id
+  - "{sequence_id}"
+  - --split-path
+  - "{split_path}"
+  - --output
+  - "{output_dir}"
+  - --epochs
+  - "{params.epochs}"
+  - --learning-rate
+  - "{params.learning_rate}"
+  - --ridge
+  - "{params.ridge}"
+  - --max-frames
+  - "{params.max_frames}"
+  - --max-pixels-per-frame
+  - "{params.max_pixels_per_frame}"
+  - --max-depth-m
+  - "{params.max_depth_m}"
+  - --seed
+  - "{params.seed}"
+outputs:
+  artifact_type: depth_model
+  metrics_file: metrics.json
+  history_file: history.json
+  events_file: events.jsonl
+inference:
+  launch:
+    kind: python_script
+    entrypoint: ../../scripts/infer_tiny_depth.py
+    working_directory: ../..
+  input:
+    dataset_format:
+      - orfd
+      - manifest_dataset
+      - offroad_sim_v1
+    required_modalities:
+      - front_rgb
+      - depth
+    split_required: true
+  parameters:
+    max_samples:
+      type: int
+      default: 8
+      min: 1
+      max: 1000
+    split_name:
+      type: str
+      default: test
+      enum:
+        - validation
+        - test
+  arguments:
+    - "{artifact_path}"
+    - "{dataset_root}"
+    - --adapter
+    - "{adapter}"
+    - --sequence-id
+    - "{sequence_id}"
+    - --split-path
+    - "{split_path}"
+    - --split-name
+    - "{params.split_name}"
+    - --output
+    - "{output_dir}"
+    - --max-samples
+    - "{params.max_samples}"
+  outputs:
+    predictions_file: predictions.json
+    metrics_file: metrics.json
+    preview_file: depth_comparison.png
