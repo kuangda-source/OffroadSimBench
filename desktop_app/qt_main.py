@@ -1070,6 +1070,13 @@ class MainWindow(QMainWindow):
         self.trainer_params_edit.setPlaceholderText('{"epochs": 10, "batch_size": 16}')
         self.trainer_params_edit.setFixedHeight(96)
         self._trainer_params_autofill = ""
+        self.trainer_parameter_form = QWidget()
+        self.trainer_parameter_form_layout = QFormLayout(self.trainer_parameter_form)
+        self.trainer_parameter_form_layout.setContentsMargins(0, 0, 0, 0)
+        self.trainer_parameter_form_layout.setHorizontalSpacing(12)
+        self.trainer_parameter_form_layout.setVerticalSpacing(8)
+        self.trainer_parameter_controls: dict[str, QWidget] = {}
+        self.trainer_parameter_specs: dict[str, dict[str, Any]] = {}
         self.trainer_entrypoint_edit = QLineEdit()
         self.trainer_entrypoint_edit.setPlaceholderText(r"D:\models\my_algorithm\train.py")
         self.trainer_arguments_edit = QTextEdit()
@@ -1495,7 +1502,8 @@ class MainWindow(QMainWindow):
                 self._field("训练预设", self.training_preset_combo),
                 self._section_label("配置摘要"),
                 self.training_preset_summary,
-                self._field("训练参数", self.trainer_params_edit),
+                self._field("模型参数", self.trainer_parameter_form),
+                self._field("高级 JSON 覆盖", self.trainer_params_edit),
                 self._field("输出目录", self.training_output_edit),
                 self._action_button("验证配置", self.validate_training_config),
                 self._action_button("保存训练配置", self.save_training_config),
@@ -3197,6 +3205,7 @@ class MainWindow(QMainWindow):
         text = json.dumps(parameters, indent=2, ensure_ascii=False) if parameters else "{}"
         self._trainer_params_autofill = text
         self.trainer_params_edit.setPlainText(text)
+        self._set_trainer_parameter_values(parameters)
         self.model_summary.setText(_compact_json({"training_config": row}))
 
     def _current_training_output_path(self, preset_id: str = "") -> str:
@@ -3322,11 +3331,13 @@ class MainWindow(QMainWindow):
             return
         data = self.training_preset_combo.currentData()
         preset = dict(data) if isinstance(data, dict) else {}
-        defaults = self._trainer_parameter_defaults(preset.get("parameters") if isinstance(preset.get("parameters"), dict) else {})
+        schema = preset.get("parameters") if isinstance(preset.get("parameters"), dict) else {}
+        defaults = self._trainer_parameter_defaults(schema)
         text = json.dumps(defaults, indent=2, ensure_ascii=False) if defaults else "{}"
         current = self.trainer_params_edit.toPlainText().strip()
         if not force and current and current != self._trainer_params_autofill:
             return
+        self._build_trainer_parameter_form(schema, defaults)
         self._trainer_params_autofill = text
         self.trainer_params_edit.setPlainText(text)
 
@@ -3339,15 +3350,154 @@ class MainWindow(QMainWindow):
 
     def _trainer_parameters_from_text(self) -> dict[str, Any]:
         text = self.trainer_params_edit.toPlainText().strip() if hasattr(self, "trainer_params_edit") else ""
-        if not text:
-            return {}
-        try:
-            payload = json.loads(text)
-        except json.JSONDecodeError as exc:
-            raise ValueError(f"Expected JSON object: {exc}") from exc
-        if not isinstance(payload, dict):
-            raise ValueError("Expected JSON object.")
+        payload = self._trainer_parameter_control_values()
+        if text and text != self._trainer_params_autofill:
+            try:
+                overrides = json.loads(text)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"Expected JSON object: {exc}") from exc
+            if not isinstance(overrides, dict):
+                raise ValueError("Expected JSON object.")
+            payload.update(overrides)
         return payload
+
+    def _build_trainer_parameter_form(self, schema: dict[str, Any], values: dict[str, Any]) -> None:
+        while self.trainer_parameter_form_layout.count():
+            item = self.trainer_parameter_form_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        self.trainer_parameter_controls.clear()
+        self.trainer_parameter_specs = {
+            str(name): dict(spec) if isinstance(spec, dict) else {}
+            for name, spec in schema.items()
+        }
+        if not self.trainer_parameter_specs:
+            empty = QLabel("此训练器没有可配置参数")
+            empty.setObjectName("mutedText")
+            self.trainer_parameter_form_layout.addRow(empty)
+            return
+        for name, spec in self.trainer_parameter_specs.items():
+            value_type = str(spec.get("type") or "str").lower()
+            choices = spec.get("enum") if isinstance(spec.get("enum"), list) else []
+            value = values.get(name, spec.get("default"))
+            if choices:
+                control: QWidget = QComboBox()
+                for choice in choices:
+                    control.addItem(str(choice), choice)
+                selected = next(
+                    (index for index in range(control.count()) if control.itemData(index) == value),
+                    0,
+                )
+                control.setCurrentIndex(selected)
+                control.currentIndexChanged.connect(self._trainer_parameter_control_changed)
+            elif value_type in {"bool", "boolean"}:
+                control = QCheckBox()
+                control.setChecked(bool(value))
+                control.toggled.connect(self._trainer_parameter_control_changed)
+            elif value_type in {"int", "integer"}:
+                control = QSpinBox()
+                control.setRange(int(spec.get("min", -1_000_000_000)), int(spec.get("max", 1_000_000_000)))
+                if "step" in spec:
+                    control.setSingleStep(max(1, int(spec["step"])))
+                control.setValue(int(value or 0))
+                control.valueChanged.connect(self._trainer_parameter_control_changed)
+            elif value_type in {"float", "number"}:
+                control = QDoubleSpinBox()
+                control.setRange(float(spec.get("min", -1e12)), float(spec.get("max", 1e12)))
+                control.setDecimals(int(spec.get("decimals", 8)))
+                control.setSingleStep(float(spec.get("step", 0.01)))
+                control.setValue(float(value or 0.0))
+                control.valueChanged.connect(self._trainer_parameter_control_changed)
+            else:
+                control = QLineEdit()
+                control.setText("" if value is None else str(value))
+                control.textChanged.connect(self._trainer_parameter_control_changed)
+            control.setObjectName(f"trainerParameter_{name}")
+            control.setMinimumHeight(CONTROL_HEIGHT)
+            description = str(spec.get("description") or "").strip()
+            if description:
+                control.setToolTip(description)
+            label = str(spec.get("label") or name)
+            if spec.get("required") is True:
+                label += " *"
+            self.trainer_parameter_controls[name] = control
+            self.trainer_parameter_form_layout.addRow(label, control)
+        self._update_trainer_parameter_dependencies()
+
+    def _set_trainer_parameter_values(self, values: dict[str, Any]) -> None:
+        for name, value in values.items():
+            control = self.trainer_parameter_controls.get(str(name))
+            if control is None:
+                continue
+            control.blockSignals(True)
+            if isinstance(control, QComboBox):
+                index = next(
+                    (item for item in range(control.count()) if control.itemData(item) == value),
+                    control.findText(str(value)),
+                )
+                if index >= 0:
+                    control.setCurrentIndex(index)
+            elif isinstance(control, QCheckBox):
+                control.setChecked(bool(value))
+            elif isinstance(control, (QSpinBox, QDoubleSpinBox)):
+                control.setValue(value)
+            elif isinstance(control, QLineEdit):
+                control.setText(str(value))
+            control.blockSignals(False)
+        self._update_trainer_parameter_dependencies()
+
+    def _trainer_parameter_control_values(self) -> dict[str, Any]:
+        values: dict[str, Any] = {}
+        for name, control in self.trainer_parameter_controls.items():
+            if not control.isEnabled():
+                continue
+            if isinstance(control, QComboBox):
+                values[name] = control.currentData()
+            elif isinstance(control, QCheckBox):
+                values[name] = control.isChecked()
+            elif isinstance(control, (QSpinBox, QDoubleSpinBox)):
+                values[name] = control.value()
+            elif isinstance(control, QLineEdit):
+                text = control.text().strip()
+                if text or "default" in self.trainer_parameter_specs.get(name, {}):
+                    values[name] = text
+        return values
+
+    def _trainer_parameter_control_changed(self, *args: Any) -> None:
+        del args
+        self._update_trainer_parameter_dependencies()
+        values = self._trainer_parameter_control_values()
+        text = json.dumps(values, indent=2, ensure_ascii=False)
+        self._trainer_params_autofill = text
+        self.trainer_params_edit.setPlainText(text)
+
+    def _update_trainer_parameter_dependencies(self) -> None:
+        values: dict[str, Any] = {}
+        for name, control in self.trainer_parameter_controls.items():
+            if isinstance(control, QComboBox):
+                values[name] = control.currentData()
+            elif isinstance(control, QCheckBox):
+                values[name] = control.isChecked()
+            elif isinstance(control, (QSpinBox, QDoubleSpinBox)):
+                values[name] = control.value()
+            elif isinstance(control, QLineEdit):
+                values[name] = control.text().strip()
+        for name, control in self.trainer_parameter_controls.items():
+            dependency = self.trainer_parameter_specs.get(name, {}).get("depends_on")
+            enabled = True
+            if isinstance(dependency, str):
+                enabled = bool(values.get(dependency))
+            elif isinstance(dependency, dict):
+                dependency_name = str(dependency.get("parameter") or dependency.get("name") or "")
+                current = values.get(dependency_name)
+                if "equals" in dependency:
+                    enabled = current == dependency.get("equals")
+                elif "not_equals" in dependency:
+                    enabled = current != dependency.get("not_equals")
+                else:
+                    enabled = bool(current)
+            control.setEnabled(enabled)
 
     def _dataset_sequences_from_text(self) -> list[dict[str, Any]]:
         if hasattr(self, "dataset_sequence_table") and self.dataset_sequence_table.rowCount() > 0:

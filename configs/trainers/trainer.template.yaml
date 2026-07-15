@@ -1,0 +1,66 @@
+schema_version: 1
+trainer_id: my_driving_model
+display_name: My Driving Model
+description: Train a local model through the OffroadSimBench trainer protocol.
+
+launch:
+  # python_script, python_module, or executable
+  kind: python_script
+  entrypoint: train.py
+  # Optional Conda environment name or absolute environment prefix.
+  conda_env: ""
+  # Relative paths are resolved from this manifest file.
+  working_directory: .
+  environment:
+    TRAINER_EXAMPLE: "1"
+
+input:
+  # any_registered_adapter, one adapter id, or a list of adapter ids.
+  dataset_format: any_registered_adapter
+  required_modalities:
+    - front_rgb
+  optional_modalities:
+    - depth
+    - lidar_points
+  split_required: false
+
+parameters:
+  epochs:
+    label: Epochs
+    type: int
+    default: 10
+    min: 1
+    max: 1000
+    step: 1
+    required: true
+  optimizer:
+    label: Optimizer
+    type: str
+    default: adam
+    enum: [adam, sgd]
+  use_amp:
+    label: Mixed precision
+    type: bool
+    default: false
+  amp_dtype:
+    label: AMP dtype
+    type: str
+    default: float16
+    enum: [float16, bfloat16]
+    depends_on:
+      parameter: use_amp
+      equals: true
+
+arguments:
+  - "{dataset_root}"
+  - --adapter
+  - "{adapter}"
+  - --output
+  - "{output_dir}"
+  - --epochs
+  - "{params.epochs}"
+  - --optimizer
+  - "{params.optimizer}"
+
+outputs:
+  artifact_type: checkpoint

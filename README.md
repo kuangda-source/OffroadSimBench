@@ -294,6 +294,13 @@ sequences:
 
 External model or algorithm training can be added through `configs/trainers/*/trainer.yaml` or `configs/trainers/*.yaml`, or imported from the GUI with `Import trainer manifest`. A trainer manifest declares the entrypoint, parameter schema, and command template; the GUI exposes it as a training preset and records the parameter JSON, stdout/stderr, metrics/history, and `training_run.json`:
 
+The versioned trainer protocol supports Python scripts, Python modules, native
+executables, Conda environment names or prefixes, custom working directories,
+environment variables, typed/ranged/conditional parameters, adapter and sensor
+modality requirements, and optional split-file requirements. Copy
+`configs/trainers/trainer.template.yaml` to add a model without modifying the
+platform. See `docs/trainer_protocol.md` for the complete schema.
+
 ```yaml
 trainer_id: my_world_model
 display_name: My World Model

@@ -31,6 +31,14 @@ from offroad_sim.evaluation import run_episode
 from offroad_sim.evaluation.runner import DEFAULT_OUTPUT_ROOT
 from offroad_sim.planning import default_planner_registry
 from offroad_sim.tasks import NavigationRegionTask, load_navigation_region_task
+from offroad_sim.training import (
+    TRAINER_SCHEMA_VERSION,
+    build_trainer_command,
+    normalize_trainer_manifest,
+    resolve_trainer_environment,
+    resolve_trainer_working_directory,
+    validate_trainer_parameters,
+)
 from offroad_sim.utils.yaml_io import load_yaml_file
 from offroad_sim.vehicles import load_vehicle_config
 from offroad_sim.world_models import MLPDynamicsWorldModel, TinyLearnedWorldModel, default_world_model_registry
@@ -761,6 +769,8 @@ def training_preset_entries(trainer_root: str | Path | None = None) -> list[dict
                 "status": "available",
                 "description": row.get("description", "Run an external trainer described by trainer.yaml."),
                 "manifest_path": row["manifest_path"],
+                "schema_version": row.get("schema_version", TRAINER_SCHEMA_VERSION),
+                "launch": dict(row.get("launch", {})),
                 "parameters": dict(row.get("parameters", {})),
                 "input": dict(row.get("input", {})),
                 "outputs": dict(row.get("outputs", {})),
@@ -799,24 +809,23 @@ def trainer_manifest_entries(root: str | Path | None = None) -> list[dict[str, A
 
 def load_trainer_manifest(path: str | Path) -> dict[str, Any]:
     manifest_path = Path(path).resolve()
-    data = load_yaml_file(manifest_path)
-    trainer_id = _safe_name(str(data.get("trainer_id") or data.get("id") or manifest_path.parent.name))
-    if not trainer_id:
-        raise ValueError(f"Trainer manifest has no trainer_id: {manifest_path}")
-    entrypoint = str(data.get("entrypoint") or "").strip()
-    if not entrypoint:
-        raise ValueError(f"Trainer manifest has no entrypoint: {manifest_path}")
+    normalized = normalize_trainer_manifest(load_yaml_file(manifest_path), manifest_path=manifest_path)
+    trainer_id = _safe_name(str(normalized["trainer_id"]))
+    launch = dict(normalized["launch"])
     return {
         "id": trainer_id,
-        "label": str(data.get("display_name") or data.get("label") or trainer_id),
+        "label": str(normalized["display_name"]),
         "trainer_id": trainer_id,
-        "runtime": str(data.get("runtime") or "python"),
-        "entrypoint": entrypoint,
-        "description": str(data.get("description") or ""),
-        "arguments": list(data.get("arguments") or []),
-        "parameters": dict(data.get("parameters") or {}),
-        "input": dict(data.get("input") or {}),
-        "outputs": dict(data.get("outputs") or {}),
+        "schema_version": normalized["schema_version"],
+        "runtime": "python" if str(launch["kind"]).startswith("python_") else "executable",
+        "entrypoint": str(launch.get("entrypoint") or ""),
+        "module": str(launch.get("module") or ""),
+        "launch": launch,
+        "description": str(normalized["description"]),
+        "arguments": list(normalized["arguments"]),
+        "parameters": dict(normalized["parameters"]),
+        "input": dict(normalized["input"]),
+        "outputs": dict(normalized["outputs"]),
         "manifest_path": str(manifest_path),
         "manifest_dir": str(manifest_path.parent),
     }
@@ -830,9 +839,19 @@ def import_trainer_manifest(source_path: str | Path, destination_root: str | Pat
         raise FileNotFoundError(f"Trainer manifest not found: {source}")
     source_row = load_trainer_manifest(source)
     data = load_yaml_file(source)
-    entrypoint = Path(str(data.get("entrypoint") or ""))
-    if not entrypoint.is_absolute():
-        data["entrypoint"] = str((source.parent / entrypoint).resolve())
+    launch = data.get("launch") if isinstance(data.get("launch"), dict) else None
+    if launch is not None:
+        entrypoint_value = str(launch.get("entrypoint") or "").strip()
+        entrypoint_is_path = any(separator in entrypoint_value for separator in ("/", "\\")) or entrypoint_value.startswith(".")
+        if entrypoint_value and entrypoint_is_path and not Path(entrypoint_value).is_absolute():
+            launch["entrypoint"] = str((source.parent / entrypoint_value).resolve())
+        working_directory = str(launch.get("working_directory") or "").strip()
+        if working_directory and not Path(working_directory).is_absolute():
+            launch["working_directory"] = str((source.parent / working_directory).resolve())
+    else:
+        entrypoint = Path(str(data.get("entrypoint") or ""))
+        if not entrypoint.is_absolute():
+            data["entrypoint"] = str((source.parent / entrypoint).resolve())
     data["imported_from"] = str(source)
     destination = Path(destination_root or CONFIG_ROOT / "trainers")
     destination.mkdir(parents=True, exist_ok=True)
@@ -851,6 +870,11 @@ def save_trainer_manifest(
     label: str = "",
     entrypoint: str,
     runtime: str = "python",
+    launch_kind: str = "",
+    module: str = "",
+    conda_env: str = "",
+    working_directory: str = "",
+    environment: dict[str, str] | None = None,
     arguments: list[Any] | None = None,
     parameters: dict[str, Any] | None = None,
     input_spec: dict[str, Any] | None = None,
@@ -860,16 +884,27 @@ def save_trainer_manifest(
 ) -> dict[str, Any]:
     """Create a trainer manifest from a local algorithm entrypoint."""
 
-    entrypoint_path = Path(entrypoint).resolve()
-    if not entrypoint_path.exists():
-        raise FileNotFoundError(f"Trainer entrypoint not found: {entrypoint_path}")
-    manifest_id = _safe_name(str(trainer_id or label or entrypoint_path.stem)).lower()
-    display_name = str(label or trainer_id or entrypoint_path.stem)
+    kind = str(launch_kind or ("python_script" if runtime == "python" else "executable")).lower()
+    entrypoint_path = Path(entrypoint).resolve() if entrypoint else None
+    if kind != "python_module" and (entrypoint_path is None or not entrypoint_path.exists()):
+        raise FileNotFoundError(f"Trainer entrypoint not found: {entrypoint_path or entrypoint}")
+    fallback_name = module.rsplit(".", 1)[-1] if kind == "python_module" else str(entrypoint_path.stem)
+    manifest_id = _safe_name(str(trainer_id or label or fallback_name)).lower()
+    display_name = str(label or trainer_id or fallback_name)
     data: dict[str, Any] = {
+        "schema_version": TRAINER_SCHEMA_VERSION,
         "trainer_id": manifest_id,
         "display_name": display_name,
         "runtime": str(runtime or "python"),
-        "entrypoint": str(entrypoint_path),
+        "entrypoint": str(entrypoint_path) if entrypoint_path is not None else "",
+        "launch": {
+            "kind": kind,
+            "entrypoint": str(entrypoint_path) if entrypoint_path is not None else "",
+            "module": module,
+            "conda_env": conda_env,
+            "working_directory": working_directory,
+            "environment": dict(environment or {}),
+        },
         "arguments": list(arguments or ["{dataset_root}", "--output", "{output_dir}"]),
         "parameters": dict(parameters or {}),
         "input": dict(input_spec or {}),
@@ -896,13 +931,32 @@ def run_trainer_manifest_job(
     parameters: dict[str, Any] | None = None,
     adapter: str = "",
     sequence_id: str = "",
+    split_path: str = "",
 ) -> dict[str, Any]:
     manifest = load_trainer_manifest(manifest_path)
     target_dir = Path(output_dir or ROOT / "outputs" / "training_runs" / f"{manifest['id']}_{_timestamp()}")
     target_dir.mkdir(parents=True, exist_ok=True)
     resolved_parameters = _trainer_parameters(manifest.get("parameters", {}), parameters or {})
-    command = _trainer_command(manifest, dataset_root, target_dir, resolved_parameters, adapter, sequence_id)
-    completed = subprocess.run(command, cwd=ROOT, text=True, capture_output=True, check=False)
+    command = _trainer_command(
+        manifest,
+        dataset_root,
+        target_dir,
+        resolved_parameters,
+        adapter,
+        sequence_id,
+        split_path,
+    )
+    manifest_dir = Path(str(manifest["manifest_dir"]))
+    working_directory = resolve_trainer_working_directory(manifest, manifest_dir)
+    environment = resolve_trainer_environment(manifest, manifest_dir)
+    completed = subprocess.run(
+        command,
+        cwd=working_directory,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
     stdout_path = target_dir / "stdout.log"
     stderr_path = target_dir / "stderr.log"
     stdout_path.write_text(completed.stdout or "", encoding="utf-8")
@@ -918,7 +972,11 @@ def run_trainer_manifest_job(
             artifact_path=str(target_dir.resolve()),
             artifact_type=str(manifest.get("outputs", {}).get("artifact_type") or "artifact"),
             parameters=resolved_parameters,
-            summary={"command": command, "stderr": completed.stderr.strip()},
+            summary={
+                "command": command,
+                "working_directory": str(working_directory),
+                "stderr": completed.stderr.strip(),
+            },
             logs={"stdout": str(stdout_path), "stderr": str(stderr_path)},
         )
         raise RuntimeError((completed.stderr or completed.stdout or "trainer command failed").strip())
@@ -949,7 +1007,11 @@ def run_trainer_manifest_job(
         metrics=metrics,
         history=history,
         parameters=resolved_parameters,
-        summary={"trainer_manifest_path": str(Path(manifest_path).resolve()), "command": command},
+        summary={
+            "trainer_manifest_path": str(Path(manifest_path).resolve()),
+            "command": command,
+            "working_directory": str(working_directory),
+        },
         logs={"stdout": str(stdout_path), "stderr": str(stderr_path)},
     )
     payload["output_dir"] = str(target_dir.resolve())
@@ -982,6 +1044,7 @@ def run_training_config_job(
     dataset_root = str(row.get("dataset_root") or "")
     adapter = str(row.get("adapter") or "")
     sequence_id = str(row.get("sequence_id") or "")
+    split_path = str(row.get("split_path") or "")
 
     manifest_path = str(preset.get("manifest_path") or "").strip()
     if manifest_path:
@@ -992,6 +1055,7 @@ def run_training_config_job(
             parameters=parameters,
             adapter=adapter,
             sequence_id=sequence_id,
+            split_path=split_path,
         )
     elif preset_id == "stablewm_hdf5":
         payload = export_lewm_hdf5(
@@ -1066,20 +1130,36 @@ def validate_training_config_setup(
     command_preview: list[str] = []
     manifest: dict[str, Any] = {}
     manifest_path = str(preset.get("manifest_path") or "").strip()
-    if manifest_path and not issues:
+    compatibility: dict[str, Any] = {
+        "compatible": True,
+        "adapter": str(row.get("adapter") or ""),
+        "available_modalities": [],
+        "required_modalities": [],
+        "issues": [],
+    }
+    if manifest_path:
         try:
             manifest = load_trainer_manifest(manifest_path)
-            entrypoint = _resolve_trainer_entrypoint(manifest)
-            if not entrypoint.exists():
-                issues.append(f"Trainer entrypoint not found: {entrypoint}")
-            command_preview = _trainer_command(
-                manifest,
-                dataset_root,
-                Path(output_path),
-                parameters,
-                str(row.get("adapter") or ""),
-                str(row.get("sequence_id") or ""),
-            )
+            _validate_trainer_launch(manifest)
+            if dataset_exists:
+                compatibility = _trainer_dataset_compatibility(
+                    manifest,
+                    dataset_root=dataset_root,
+                    adapter=str(row.get("adapter") or ""),
+                    sequence_id=str(row.get("sequence_id") or ""),
+                    split_path=str(row.get("split_path") or ""),
+                )
+                issues.extend(str(item) for item in compatibility["issues"])
+            if parameters or not schema:
+                command_preview = _trainer_command(
+                    manifest,
+                    dataset_root,
+                    Path(output_path),
+                    parameters,
+                    str(row.get("adapter") or ""),
+                    str(row.get("sequence_id") or ""),
+                    str(row.get("split_path") or ""),
+                )
         except Exception as exc:
             issues.append(f"Trainer manifest is invalid: {exc}")
 
@@ -1098,7 +1178,9 @@ def validate_training_config_setup(
             "exists": dataset_exists,
             "adapter": str(row.get("adapter") or ""),
             "sequence_id": str(row.get("sequence_id") or ""),
+            "split_path": str(row.get("split_path") or ""),
         },
+        "compatibility": compatibility,
         "parameters": parameters,
         "parameter_schema": dict(schema),
         "output_path": output_path,
@@ -1760,6 +1842,7 @@ def save_training_config(
     dataset_root: str = "",
     adapter: str = "",
     sequence_id: str = "",
+    split_path: str = "",
     output_path: str = "",
     parameters: dict[str, Any] | None = None,
     path: str | Path | None = None,
@@ -1772,6 +1855,7 @@ def save_training_config(
             "dataset_root": dataset_root,
             "adapter": adapter,
             "sequence_id": sequence_id,
+            "split_path": split_path,
             "output_path": output_path,
             "parameters": parameters or {},
         }
@@ -5416,6 +5500,7 @@ def _training_config_row(raw: dict[str, Any]) -> dict[str, Any]:
         "dataset_root": str(raw.get("dataset_root") or ""),
         "adapter": str(raw.get("adapter") or ""),
         "sequence_id": str(raw.get("sequence_id") or ""),
+        "split_path": str(raw.get("split_path") or ""),
         "output_path": str(raw.get("output_path") or raw.get("model_path") or raw.get("hdf5_path") or ""),
         "parameters": dict(parameters),
     }
@@ -5475,8 +5560,8 @@ def _trainer_manifest_paths(root: Path) -> list[Path]:
     if not root.exists():
         return []
     paths: list[Path] = []
-    paths.extend(path for path in root.glob("*.yaml") if path.is_file())
-    paths.extend(path for path in root.glob("*.yml") if path.is_file())
+    paths.extend(path for path in root.glob("*.yaml") if path.is_file() and ".template." not in path.name)
+    paths.extend(path for path in root.glob("*.yml") if path.is_file() and ".template." not in path.name)
     for name in TRAINER_MANIFEST_FILENAMES:
         direct = root / name
         if direct.is_file():
@@ -5500,19 +5585,7 @@ def _dataset_manifest_paths(root: Path) -> list[Path]:
 
 
 def _trainer_parameters(schema: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:
-    values: dict[str, Any] = {}
-    normalized_overrides = {str(name): value for name, value in overrides.items()}
-    for name, raw_spec in schema.items():
-        key = str(name)
-        spec = raw_spec if isinstance(raw_spec, dict) else {}
-        if "default" in spec:
-            values[key] = _coerce_trainer_value(spec.get("default"), str(spec.get("type") or "str"))
-        if spec.get("required") is True and key not in values and key not in normalized_overrides:
-            raise ValueError(f"Missing required parameter: {key}")
-    for name, value in normalized_overrides.items():
-        spec = schema.get(name) if isinstance(schema.get(name), dict) else {}
-        values[str(name)] = _coerce_trainer_value(value, str(spec.get("type") or "str"))
-    return values
+    return validate_trainer_parameters(schema, overrides)
 
 
 def _infer_trainer_parameter_schema(parameters: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -5540,17 +5613,125 @@ def _default_trainer_arguments(schema: dict[str, Any]) -> list[str]:
     return arguments
 
 
-def _coerce_trainer_value(value: Any, value_type: str) -> Any:
-    normalized = value_type.lower()
-    if normalized in {"int", "integer"}:
-        return int(value)
-    if normalized in {"float", "number"}:
-        return float(value)
-    if normalized in {"bool", "boolean"}:
-        if isinstance(value, bool):
-            return value
-        return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
-    return value
+def _validate_trainer_launch(manifest: dict[str, Any]) -> None:
+    launch = manifest.get("launch") if isinstance(manifest.get("launch"), dict) else {}
+    kind = str(launch.get("kind") or "python_script")
+    if kind == "python_script":
+        entrypoint = _resolve_trainer_entrypoint(manifest)
+        if not entrypoint.exists():
+            raise FileNotFoundError(f"Trainer entrypoint not found: {entrypoint}")
+    manifest_dir = Path(str(manifest["manifest_dir"]))
+    resolve_trainer_working_directory(manifest, manifest_dir)
+    command = build_trainer_command(manifest, arguments=[], manifest_dir=manifest_dir)
+    if kind == "executable" and not str(launch.get("conda_env") or ""):
+        executable = Path(command[0])
+        if not executable.exists():
+            raise FileNotFoundError(f"Trainer executable not found: {executable}")
+
+
+def _trainer_dataset_compatibility(
+    manifest: dict[str, Any],
+    *,
+    dataset_root: str,
+    adapter: str,
+    sequence_id: str,
+    split_path: str,
+) -> dict[str, Any]:
+    input_spec = manifest.get("input") if isinstance(manifest.get("input"), dict) else {}
+    issues: list[str] = []
+    registry = default_dataset_registry()
+    resolved_adapter = None
+    resolved_adapter_name = adapter
+    if not resolved_adapter_name:
+        try:
+            resolved_adapter = registry.resolve(dataset_root)
+            resolved_adapter_name = resolved_adapter.name
+        except (KeyError, ValueError):
+            resolved_adapter_name = ""
+    expected_format = input_spec.get("dataset_format", "any_registered_adapter")
+    allowed_formats = expected_format if isinstance(expected_format, list) else [expected_format]
+    allowed_formats = [str(value) for value in allowed_formats]
+    if (
+        "any_registered_adapter" not in allowed_formats
+        and resolved_adapter_name
+        and resolved_adapter_name not in allowed_formats
+    ):
+        issues.append(
+            f"Dataset adapter '{resolved_adapter_name}' is incompatible; trainer accepts: "
+            + ", ".join(allowed_formats)
+        )
+
+    available_modalities: set[str] = set()
+    declared_modalities: set[str] = set()
+    required_modalities = {str(value) for value in input_spec.get("required_modalities", [])}
+    selected_ids: list[str] = []
+    if required_modalities:
+        try:
+            if resolved_adapter is None:
+                resolved_adapter = registry.resolve(dataset_root, adapter or None)
+                resolved_adapter_name = resolved_adapter.name
+            sequence_ids = resolved_adapter.list_sequences(dataset_root)
+            if sequence_id:
+                if sequence_id not in sequence_ids:
+                    issues.append(f"Dataset sequence not found: {sequence_id}")
+                else:
+                    selected_ids = [sequence_id]
+            else:
+                selected_ids = sequence_ids[:1]
+            if not selected_ids:
+                issues.append("Dataset has no readable sequences.")
+            for selected_id in selected_ids:
+                sequence = resolved_adapter.load_sequence(dataset_root, selected_id)
+                raw_expected = sequence.metadata.get("expected_modalities")
+                if isinstance(raw_expected, list):
+                    declared_modalities.update(str(value) for value in raw_expected)
+                for frame in sequence.frames:
+                    available_modalities.update(frame.available_assets())
+        except (KeyError, ValueError, FileNotFoundError) as exc:
+            issues.append(f"Dataset cannot satisfy trainer input requirements: {exc}")
+    missing_modalities = sorted(required_modalities - available_modalities)
+    if missing_modalities:
+        issues.append("Dataset is missing required modalities: " + ", ".join(missing_modalities))
+
+    split_required = bool(input_spec.get("split_required", False))
+    split_payload: dict[str, Any] = {}
+    if split_required and not split_path:
+        issues.append("Trainer requires a dataset split definition.")
+    if split_path:
+        target = Path(split_path)
+        if not target.is_file():
+            issues.append(f"Dataset split definition not found: {target}")
+        else:
+            try:
+                split_payload = json.loads(target.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                issues.append(f"Dataset split definition is invalid: {exc}")
+            if split_payload:
+                split_adapter = str(split_payload.get("adapter") or "")
+                if split_adapter and resolved_adapter_name and split_adapter != resolved_adapter_name:
+                    issues.append(
+                        f"Dataset split adapter '{split_adapter}' does not match '{resolved_adapter_name}'."
+                    )
+                split_dataset_root = str(split_payload.get("dataset_root") or "").strip()
+                if split_dataset_root and Path(split_dataset_root).resolve() != Path(dataset_root).resolve():
+                    issues.append(
+                        f"Dataset split root '{Path(split_dataset_root).resolve()}' does not match "
+                        f"'{Path(dataset_root).resolve()}'."
+                    )
+
+    return {
+        "compatible": not issues,
+        "adapter": resolved_adapter_name,
+        "accepted_dataset_formats": allowed_formats,
+        "sequence_ids_checked": selected_ids,
+        "declared_modalities": sorted(declared_modalities),
+        "available_modalities": sorted(available_modalities),
+        "required_modalities": sorted(required_modalities),
+        "missing_modalities": missing_modalities,
+        "split_required": split_required,
+        "split_path": split_path,
+        "issues": issues,
+    }
 
 
 def _trainer_command(
@@ -5560,26 +5741,31 @@ def _trainer_command(
     parameters: dict[str, Any],
     adapter: str,
     sequence_id: str,
+    split_path: str = "",
 ) -> list[str]:
-    entrypoint = _resolve_trainer_entrypoint(manifest)
-    runtime = str(manifest.get("runtime") or "python").lower()
-    command = [sys.executable, str(entrypoint)] if runtime == "python" else [str(entrypoint)]
     context = {
         "dataset_root": dataset_root,
         "output_dir": str(output_dir.resolve()),
         "adapter": adapter,
         "sequence_id": sequence_id,
+        "split_path": split_path,
         "manifest_dir": str(Path(str(manifest["manifest_dir"])).resolve()),
         "params": _AttrDict(parameters),
     }
+    arguments: list[str] = []
     for value in manifest.get("arguments", []):
         rendered = str(value).format_map(_AttrDict(context))
-        command.append(rendered)
-    return command
+        arguments.append(rendered)
+    return build_trainer_command(
+        manifest,
+        arguments=arguments,
+        manifest_dir=Path(str(manifest["manifest_dir"])),
+    )
 
 
 def _resolve_trainer_entrypoint(manifest: dict[str, Any]) -> Path:
-    entrypoint = Path(str(manifest.get("entrypoint") or ""))
+    launch = manifest.get("launch") if isinstance(manifest.get("launch"), dict) else {}
+    entrypoint = Path(str(launch.get("entrypoint") or manifest.get("entrypoint") or ""))
     if entrypoint.is_absolute():
         return entrypoint
     return (Path(str(manifest["manifest_dir"])) / entrypoint).resolve()

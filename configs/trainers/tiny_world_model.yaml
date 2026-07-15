@@ -1,14 +1,25 @@
+schema_version: 1
 trainer_id: tiny_world_model_script
 display_name: Tiny 世界模型训练器
-runtime: python
-entrypoint: ../../scripts/train_world_model.py
+launch:
+  kind: python_script
+  entrypoint: ../../scripts/train_world_model.py
+  working_directory: ../..
 description: 通过通用训练器接口训练内置轻量动力学模型。
 input:
   dataset_format: any_registered_adapter
+  required_modalities: []
+  optional_modalities:
+    - front_rgb
+    - depth
+    - lidar_points
 parameters:
   ridge:
     type: float
     default: 0.0001
+    min: 0.00000001
+    max: 1.0
+    description: Ridge regression regularization strength.
 arguments:
   - "{dataset_root}"
   - "--adapter"
