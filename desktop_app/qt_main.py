@@ -1031,6 +1031,12 @@ class MainWindow(QMainWindow):
         self._navigation_preview_pending: tuple[str, str, float] | None = None
         self._dataset_preview_busy = False
         self._busy_depth = 0
+        self.training_job_queue = services.TrainingJobQueue(max_parallel=1)
+        self._current_training_job_id = ""
+        self._handled_training_job_ids: set[str] = set()
+        self.training_job_timer = QTimer(self)
+        self.training_job_timer.setInterval(250)
+        self.training_job_timer.timeout.connect(self._refresh_training_jobs)
 
         self._init_shared_controls()
 
@@ -1532,6 +1538,25 @@ class MainWindow(QMainWindow):
         self.model_summary.setReadOnly(True)
         self.model_summary.setPlaceholderText("模型训练/推理结果：NaN")
         self.latest_training_curve = TrainingCurveWidget()
+        self.training_job_status_label = QLabel("训练任务：NaN")
+        self.training_job_status_label.setObjectName("mutedText")
+        self.training_job_status_label.setWordWrap(True)
+        self.training_job_progress = QProgressBar()
+        self.training_job_progress.setRange(0, 100)
+        self.training_job_progress.setValue(0)
+        self.training_job_progress.setFormat("等待任务")
+        self.cancel_training_button = QPushButton("取消任务")
+        self._configure_button(self.cancel_training_button)
+        self.cancel_training_button.setEnabled(False)
+        self.cancel_training_button.clicked.connect(self.cancel_current_training_job)
+        job_status_row = QWidget()
+        job_status_layout = QHBoxLayout(job_status_row)
+        job_status_layout.setContentsMargins(0, 0, 0, 0)
+        job_status_layout.setSpacing(8)
+        job_status_layout.addWidget(self.training_job_progress, 1)
+        job_status_layout.addWidget(self.cancel_training_button)
+        output_layout.addWidget(self.training_job_status_label)
+        output_layout.addWidget(job_status_row)
         output_layout.addWidget(self._section_label("最近指标曲线"))
         self.latest_metric_summary = QLabel("指标曲线：NaN")
         self.latest_metric_summary.setObjectName("mutedText")
@@ -1576,6 +1601,17 @@ class MainWindow(QMainWindow):
         runs_root.addWidget(self._tab_header("训练结果", "查看训练记录、指标曲线、产物、日志和已注册模型。"))
         runs_layout = self._row_layout()
         run_list_box, run_list_layout = self._new_group("训练记录")
+        self.training_job_table = QTableWidget(0, 4)
+        self.training_job_table.setHorizontalHeaderLabels(["任务", "状态", "进度", "输出目录"])
+        self.training_job_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.training_job_table.verticalHeader().setVisible(False)
+        self.training_job_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.training_job_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.training_job_table.setMaximumHeight(190)
+        self.training_job_table.cellClicked.connect(self._select_training_job_row)
+        run_list_layout.addWidget(self._section_label("任务队列"))
+        run_list_layout.addWidget(self.training_job_table)
+        run_list_layout.addWidget(self._section_label("训练记录"))
         self.training_run_list = QListWidget()
         self.training_run_list.itemClicked.connect(self._load_selected_training_run)
         run_list_layout.addWidget(self.training_run_list, 1)
@@ -1847,6 +1883,7 @@ class MainWindow(QMainWindow):
         self._fill_training_preset_combo()
         self._fill_training_config_combo()
         self._fill_training_run_list()
+        self._fill_training_job_table(self.catalog.get("training_jobs", []))
         self._fill_episode_list()
         self._refresh_planner_summary()
         beamng = _find_named(self.catalog["backends"], "beamng")
@@ -1943,6 +1980,10 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event: Any) -> None:
         if hasattr(self, "dataset_preview_timer"):
             self.dataset_preview_timer.stop()
+        if hasattr(self, "training_job_timer"):
+            self.training_job_timer.stop()
+        if hasattr(self, "training_job_queue"):
+            self.training_job_queue.close(cancel_running=True)
         if self.region_task_dialog is not None:
             self.region_task_dialog.close()
             self.region_task_dialog = None
@@ -2184,6 +2225,24 @@ class MainWindow(QMainWindow):
         manifest_path = str(preset.get("manifest_path") or "").strip()
         trainer_root = str(Path(manifest_path).parent) if manifest_path else None
         self.log(f"开始训练配置：{row.get('label', row.get('id', services.NAN_TEXT))}")
+        if manifest_path:
+            try:
+                job = services.queue_training_config_job(
+                    self.training_job_queue,
+                    row,
+                    trainer_root=trainer_root,
+                )
+            except Exception as exc:
+                self.model_summary.setText(_compact_json({"status": "queue_failed", "message": str(exc)}))
+                self.log(f"训练任务入队失败: {exc}")
+                return
+            self._current_training_job_id = job.job_id
+            self._handled_training_job_ids.discard(job.job_id)
+            self.training_job_timer.start()
+            self.model_summary.setText(_compact_json(job.snapshot()))
+            self.log(f"训练任务已入队: {job.job_id}")
+            self._refresh_training_jobs()
+            return
         self._run_task(
             lambda: services.run_training_config_job(row, trainer_root=trainer_root),
             self._training_config_finished,
@@ -2366,12 +2425,20 @@ class MainWindow(QMainWindow):
         trainer_root = str(Path(manifest_path).parent.resolve()) if manifest_path else None
         self.model_summary.setText(_compact_json({"status": "queued", **bundle}))
         self.log(f"Starting script training config: {config.get('label', config.get('id', services.NAN_TEXT))}")
-        self._run_task(
-            lambda: services.run_training_config_job(config, trainer_root=trainer_root),
-            self._training_config_finished,
-            "script training config failed",
-            task_label=f"Train {trainer.get('label', trainer.get('id', 'script'))}",
-        )
+        try:
+            job = services.queue_training_config_job(
+                self.training_job_queue,
+                config,
+                trainer_root=trainer_root,
+            )
+        except Exception as exc:
+            self.model_summary.setText(_compact_json({"status": "queue_failed", "message": str(exc)}))
+            self.log(f"Script training config queue failed: {exc}")
+            return
+        self._current_training_job_id = job.job_id
+        self._handled_training_job_ids.discard(job.job_id)
+        self.training_job_timer.start()
+        self._refresh_training_jobs()
 
     def _save_script_training_config_bundle(self) -> dict[str, Any]:
         entrypoint = self.trainer_entrypoint_edit.text().strip()
@@ -3611,6 +3678,111 @@ class MainWindow(QMainWindow):
             item = QListWidgetItem(f"{label} | {status} | {artifact}")
             item.setData(Qt.ItemDataRole.UserRole, dict(run))
             self.training_run_list.addItem(item)
+
+    def _fill_training_job_table(self, jobs: list[dict[str, Any]] | None = None) -> None:
+        if not hasattr(self, "training_job_table"):
+            return
+        rows = list(jobs if jobs is not None else self.training_job_queue.snapshots())
+        self.training_job_table.setRowCount(len(rows))
+        for row_index, job in enumerate(rows):
+            metadata = job.get("metadata") if isinstance(job.get("metadata"), dict) else {}
+            label = str(metadata.get("trainer_label") or metadata.get("trainer_id") or job.get("job_id") or services.NAN_TEXT)
+            progress = job.get("progress")
+            progress_text = f"{float(progress) * 100:.0f}%" if isinstance(progress, (int, float)) else services.NAN_TEXT
+            values = [
+                label,
+                str(job.get("status") or services.NAN_TEXT),
+                progress_text,
+                str(job.get("output_dir") or ""),
+            ]
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                item.setData(Qt.ItemDataRole.UserRole, dict(job))
+                self.training_job_table.setItem(row_index, column, item)
+
+    def _refresh_training_jobs(self) -> None:
+        snapshots = self.training_job_queue.snapshots()
+        self._fill_training_job_table(snapshots)
+        current = next(
+            (row for row in snapshots if str(row.get("job_id") or "") == self._current_training_job_id),
+            snapshots[0] if snapshots else {},
+        )
+        if not current:
+            self.training_job_status_label.setText("训练任务：NaN")
+            self.training_job_progress.setValue(0)
+            self.training_job_progress.setFormat("等待任务")
+            self.cancel_training_button.setEnabled(False)
+            self.training_job_timer.stop()
+            return
+        status = str(current.get("status") or services.NAN_TEXT)
+        message = str(current.get("message") or "")
+        progress = float(current.get("progress") or 0.0)
+        self.training_job_status_label.setText(
+            f"训练任务：{current.get('job_id', services.NAN_TEXT)} | {status} | {message}"
+        )
+        self.training_job_progress.setValue(max(0, min(100, int(round(progress * 100)))))
+        self.training_job_progress.setFormat(f"{status} %p%")
+        active = status in {"queued", "running", "canceling"}
+        self.cancel_training_button.setEnabled(status in {"queued", "running"})
+        log_path = Path(str(current.get("stdout_path") or ""))
+        stderr_path = Path(str(current.get("stderr_path") or ""))
+        log_text = self._training_job_log_tail(log_path, stderr_path)
+        if log_text:
+            self.latest_training_log.setPlainText(log_text)
+            cursor = self.latest_training_log.textCursor()
+            cursor.movePosition(cursor.MoveOperation.End)
+            self.latest_training_log.setTextCursor(cursor)
+        job_id = str(current.get("job_id") or "")
+        if not active and job_id and job_id not in self._handled_training_job_ids:
+            self._handled_training_job_ids.add(job_id)
+            result = current.get("result") if isinstance(current.get("result"), dict) else {}
+            if status == "completed":
+                self._training_config_finished(result)
+            else:
+                payload = {
+                    "status": status,
+                    "message": current.get("error") or message,
+                    "training_job": current,
+                    **result,
+                }
+                self.model_summary.setText(_compact_json(payload))
+                self._set_training_run_views(payload)
+                self.log(f"训练任务{status}: {payload['message']}")
+                self.refresh_catalogs()
+            if log_text:
+                self.latest_training_log.setPlainText(log_text)
+        if not any(str(row.get("status") or "") in {"queued", "running", "canceling"} for row in snapshots):
+            self.training_job_timer.stop()
+
+    def cancel_current_training_job(self) -> None:
+        if not self._current_training_job_id:
+            return
+        if self.training_job_queue.cancel(self._current_training_job_id):
+            self.log(f"正在取消训练任务: {self._current_training_job_id}")
+            self._refresh_training_jobs()
+
+    def _select_training_job_row(self, row: int, column: int) -> None:
+        item = self.training_job_table.item(row, column) or self.training_job_table.item(row, 0)
+        data = item.data(Qt.ItemDataRole.UserRole) if item is not None else None
+        if not isinstance(data, dict):
+            return
+        job_id = str(data.get("job_id") or "")
+        if job_id:
+            self._current_training_job_id = job_id
+            self._refresh_training_jobs()
+
+    def _training_job_log_tail(self, stdout_path: Path, stderr_path: Path, max_chars: int = 12000) -> str:
+        chunks: list[str] = []
+        for label, path in (("stdout", stdout_path), ("stderr", stderr_path)):
+            if not path.is_file():
+                continue
+            try:
+                text = path.read_text(encoding="utf-8", errors="replace")[-max_chars:].strip()
+            except OSError:
+                continue
+            if text:
+                chunks.append(f"[{label}]\n{text}")
+        return "\n\n".join(chunks)
 
     def _load_selected_training_run(self, item: QListWidgetItem | None) -> None:
         if item is None or not hasattr(self, "training_run_summary"):

@@ -30,6 +30,13 @@ def _ensure_app() -> QApplication:
     return app
 
 
+class _QueuedJobStub:
+    job_id = "queued_test_job"
+
+    def snapshot(self) -> dict[str, object]:
+        return {"job_id": self.job_id, "status": "queued", "progress": 0.0}
+
+
 def _margins_tuple(layout) -> tuple[int, int, int, int]:
     margins = layout.contentsMargins()
     return margins.left(), margins.top(), margins.right(), margins.bottom()
@@ -168,12 +175,13 @@ def test_default_smoke_training_config_is_selectable_and_uses_one_primary_start_
     window.training_config_combo.setCurrentIndex(index)
     captured = {}
 
-    def capture_task(fn, on_success, failure_label, *, task_label=""):
-        captured["task_label"] = task_label
-        captured["payload"] = fn()
-        on_success(captured["payload"])
+    def capture_queue(queue, config, **kwargs):
+        captured["queue"] = queue
+        captured["config"] = config
+        captured["kwargs"] = kwargs
+        return _QueuedJobStub()
 
-    monkeypatch.setattr(window, "_run_task", capture_task)
+    monkeypatch.setattr("desktop_app.services.queue_training_config_job", capture_queue)
     window.run_training_preset()
 
     training_page = window.page_stack.widget(1)
@@ -183,8 +191,8 @@ def test_default_smoke_training_config_is_selectable_and_uses_one_primary_start_
         if button.objectName() == "primaryButton"
     ]
     assert window.training_config_combo.currentData()["id"] == "smoke_tiny_world_model"
-    assert captured["task_label"] == "训练 Tiny 世界模型训练器"
-    assert captured["payload"]["artifact_type"] == "world_model"
+    assert captured["config"]["training_preset_id"] == "tiny_world_model_script"
+    assert window._current_training_job_id == "queued_test_job"
     assert primary_actions.count("开始训练 / 导出") == 1
 
     window.close()

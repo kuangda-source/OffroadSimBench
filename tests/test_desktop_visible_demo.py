@@ -35,6 +35,13 @@ def _process_until(predicate, timeout_sec: float = 2.0) -> bool:
     return bool(predicate())
 
 
+class _QueuedJobStub:
+    job_id = "queued_test_job"
+
+    def snapshot(self) -> dict[str, object]:
+        return {"job_id": self.job_id, "status": "queued", "progress": 0.0}
+
+
 def test_visible_demo_request_keeps_dataset_model_and_backend_switchable() -> None:
     request = services.VisibleBeamNGDemoRequest(
         dataset_root="datasets/ORFD_Dataset_ICRA2022_ZIP",
@@ -601,14 +608,14 @@ def test_gui_can_start_training_from_script_path_without_manifest(monkeypatch, t
         captured["save"] = kwargs
         return saved
 
-    def fake_run_training_config_job(config, **kwargs):
+    def fake_queue_training_config_job(queue, config, **kwargs):
+        captured["queue"] = queue
         captured["run_config"] = config
         captured["run_kwargs"] = kwargs
-        return {"output_dir": str(output_dir), "training_run_path": str(output_dir / "training_run.json")}
+        return _QueuedJobStub()
 
     monkeypatch.setattr(services, "save_script_training_config", fake_save_script_training_config)
-    monkeypatch.setattr(services, "run_training_config_job", fake_run_training_config_job)
-    monkeypatch.setattr(window, "_run_task", lambda task, callback, label, **kwargs: callback(task()))
+    monkeypatch.setattr(services, "queue_training_config_job", fake_queue_training_config_job)
 
     window.run_script_training_config()
 
@@ -702,13 +709,13 @@ def test_gui_training_preset_dispatches_manifest_trainer(monkeypatch, tmp_path) 
     window._fill_training_preset_combo()
     captured: dict[str, object] = {}
 
-    def fake_run_training_config_job(config, **kwargs):
+    def fake_queue_training_config_job(queue, config, **kwargs):
+        captured["queue"] = queue
         captured["config"] = config
         captured["kwargs"] = kwargs
-        return {"output_dir": str(tmp_path / "run"), "training_run_path": str(tmp_path / "run" / "training_run.json")}
+        return _QueuedJobStub()
 
-    monkeypatch.setattr(services, "run_training_config_job", fake_run_training_config_job)
-    monkeypatch.setattr(window, "_run_task", lambda task, callback, label, **kwargs: callback(task()))
+    monkeypatch.setattr(services, "queue_training_config_job", fake_queue_training_config_job)
 
     window.run_training_preset()
 
@@ -755,13 +762,13 @@ def test_gui_training_config_dispatches_manifest_trainer_with_saved_output(monke
     window._select_training_config("echo_config")
     captured: dict[str, object] = {}
 
-    def fake_run_training_config_job(config, **kwargs):
+    def fake_queue_training_config_job(queue, config, **kwargs):
+        captured["queue"] = queue
         captured["config"] = config
         captured["kwargs"] = kwargs
-        return {"output_dir": str(output_dir), "training_run_path": str(output_dir / "training_run.json")}
+        return _QueuedJobStub()
 
-    monkeypatch.setattr(services, "run_training_config_job", fake_run_training_config_job)
-    monkeypatch.setattr(window, "_run_task", lambda task, callback, label, **kwargs: callback(task()))
+    monkeypatch.setattr(services, "queue_training_config_job", fake_queue_training_config_job)
 
     window.run_training_preset()
 
@@ -801,13 +808,13 @@ def test_gui_start_training_runs_current_training_config_through_unified_service
     window.trainer_params_edit.setPlainText('{"epochs": 8}')
     captured: dict[str, object] = {}
 
-    def fake_run_training_config_job(config, **kwargs):
+    def fake_queue_training_config_job(queue, config, **kwargs):
+        captured["queue"] = queue
         captured["config"] = config
         captured["kwargs"] = kwargs
-        return {"output_dir": str(output_dir), "training_run_path": str(output_dir / "training_run.json")}
+        return _QueuedJobStub()
 
-    monkeypatch.setattr(services, "run_training_config_job", fake_run_training_config_job)
-    monkeypatch.setattr(window, "_run_task", lambda task, callback, label, **kwargs: callback(task()))
+    monkeypatch.setattr(services, "queue_training_config_job", fake_queue_training_config_job)
 
     window.run_training_preset()
 

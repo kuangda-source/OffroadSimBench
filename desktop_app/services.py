@@ -33,6 +33,9 @@ from offroad_sim.planning import default_planner_registry
 from offroad_sim.tasks import NavigationRegionTask, load_navigation_region_task
 from offroad_sim.training import (
     TRAINER_SCHEMA_VERSION,
+    TRAINING_JOB_FILENAME,
+    ProcessTrainingJob,
+    TrainingJobQueue,
     build_trainer_command,
     normalize_trainer_manifest,
     resolve_trainer_environment,
@@ -424,6 +427,7 @@ def catalog_snapshot() -> dict[str, list[dict[str, Any]]]:
         "training_configs": training_config_entries(),
         "training_presets": training_preset_entries(),
         "training_runs": training_run_entries(),
+        "training_jobs": training_job_entries(),
         "episodes": episode_summaries(),
     }
 
@@ -1024,6 +1028,180 @@ def run_trainer_manifest_job(
     return payload
 
 
+def queue_trainer_manifest_job(
+    queue: TrainingJobQueue,
+    manifest_path: str | Path,
+    *,
+    dataset_root: str,
+    output_dir: str,
+    parameters: dict[str, Any] | None = None,
+    adapter: str = "",
+    sequence_id: str = "",
+    split_path: str = "",
+) -> ProcessTrainingJob:
+    """Queue a trainer manifest and finalize its standard training record."""
+
+    manifest = load_trainer_manifest(manifest_path)
+    target_dir = Path(output_dir or ROOT / "outputs" / "training_runs" / f"{manifest['id']}_{_timestamp()}")
+    target_dir.mkdir(parents=True, exist_ok=True)
+    resolved_parameters = _trainer_parameters(manifest.get("parameters", {}), parameters or {})
+    command = _trainer_command(
+        manifest,
+        dataset_root,
+        target_dir,
+        resolved_parameters,
+        adapter,
+        sequence_id,
+        split_path,
+    )
+    manifest_dir = Path(str(manifest["manifest_dir"]))
+    working_directory = resolve_trainer_working_directory(manifest, manifest_dir)
+    environment = resolve_trainer_environment(manifest, manifest_dir)
+    outputs = manifest.get("outputs", {}) if isinstance(manifest.get("outputs"), dict) else {}
+    stdout_path = target_dir / "stdout.log"
+    stderr_path = target_dir / "stderr.log"
+    write_training_run_record(
+        target_dir,
+        preset_id=manifest["id"],
+        status="queued",
+        dataset_root=dataset_root,
+        adapter=adapter,
+        sequence_id=sequence_id,
+        artifact_path=str(target_dir.resolve()),
+        artifact_type=str(outputs.get("artifact_type") or "artifact"),
+        parameters=resolved_parameters,
+        summary={
+            "trainer_manifest_path": str(Path(manifest_path).resolve()),
+            "command": command,
+            "working_directory": str(working_directory),
+        },
+        logs={"stdout": str(stdout_path), "stderr": str(stderr_path)},
+    )
+
+    def finalize(job: ProcessTrainingJob) -> dict[str, Any]:
+        snapshot = job.snapshot()
+        return_code = snapshot.get("return_code")
+        stdout = stdout_path.read_text(encoding="utf-8", errors="replace") if stdout_path.is_file() else ""
+        stderr = stderr_path.read_text(encoding="utf-8", errors="replace") if stderr_path.is_file() else ""
+        if snapshot.get("status") == "canceling":
+            status = "canceled"
+        elif return_code != 0:
+            status = "failed"
+        else:
+            status = "completed"
+
+        if status != "completed":
+            record = write_training_run_record(
+                target_dir,
+                preset_id=manifest["id"],
+                status=status,
+                dataset_root=dataset_root,
+                adapter=adapter,
+                sequence_id=sequence_id,
+                artifact_path=str(target_dir.resolve()),
+                artifact_type=str(outputs.get("artifact_type") or "artifact"),
+                parameters=resolved_parameters,
+                summary={
+                    "trainer_manifest_path": str(Path(manifest_path).resolve()),
+                    "command": command,
+                    "working_directory": str(working_directory),
+                    "return_code": return_code,
+                    "error": stderr.strip() or stdout[-1000:].strip(),
+                },
+                logs={"stdout": str(stdout_path), "stderr": str(stderr_path)},
+            )
+            return {"status": status, "training_run_path": record["path"]}
+
+        payload = _trainer_result_payload(manifest, target_dir, stdout, command)
+        metrics = payload.get("metrics") if isinstance(payload.get("metrics"), dict) else {}
+        history = payload.get("history") if isinstance(payload.get("history"), dict) else {}
+        artifact_path = str(
+            payload.get("checkpoint_path")
+            or payload.get("model_path")
+            or payload.get("artifact_path")
+            or payload.get("output_dir")
+            or outputs.get("artifact_path")
+            or target_dir
+        )
+        artifact_path = str(_resolve_trainer_output_path(target_dir, artifact_path))
+        artifact_type = str(payload.get("artifact_type") or outputs.get("artifact_type") or "artifact")
+        record = write_training_run_record(
+            target_dir,
+            preset_id=manifest["id"],
+            status="completed",
+            dataset_root=dataset_root,
+            adapter=adapter,
+            sequence_id=sequence_id,
+            artifact_path=artifact_path,
+            artifact_type=artifact_type,
+            metrics=metrics,
+            history=history,
+            parameters=resolved_parameters,
+            summary={
+                "trainer_manifest_path": str(Path(manifest_path).resolve()),
+                "command": command,
+                "working_directory": str(working_directory),
+                "training_job_path": str(job.state_path),
+            },
+            logs={"stdout": str(stdout_path), "stderr": str(stderr_path)},
+        )
+        payload.update(
+            status="completed",
+            output_dir=str(target_dir.resolve()),
+            metrics=metrics,
+            history=history,
+            artifact_path=artifact_path,
+            artifact_type=artifact_type,
+            training_run_path=record["path"],
+            command=command,
+        )
+        return payload
+
+    return queue.submit(
+        command=command,
+        working_directory=working_directory,
+        environment=environment,
+        output_dir=target_dir,
+        metadata={
+            "trainer_id": manifest["id"],
+            "trainer_label": manifest["label"],
+            "dataset_root": dataset_root,
+            "adapter": adapter,
+            "sequence_id": sequence_id,
+        },
+        finalizer=finalize,
+    )
+
+
+def queue_training_config_job(
+    queue: TrainingJobQueue,
+    training_config: str | dict[str, Any],
+    *,
+    config_path: str | Path | None = None,
+    trainer_root: str | Path | None = None,
+) -> ProcessTrainingJob:
+    """Validate and queue a reusable manifest-backed training config."""
+
+    report = validate_training_config_setup(training_config, config_path=config_path, trainer_root=trainer_root)
+    if not report.get("ready"):
+        raise ValueError("; ".join(str(item) for item in report.get("issues", [])) or "Training config is not ready.")
+    row = report["training_config"]
+    preset = report["training_preset"]
+    manifest_path = str(preset.get("manifest_path") or "").strip()
+    if not manifest_path:
+        raise ValueError("Only manifest-backed trainers can be queued as subprocess jobs.")
+    return queue_trainer_manifest_job(
+        queue,
+        manifest_path,
+        dataset_root=str(row.get("dataset_root") or ""),
+        output_dir=str(report.get("output_path") or row.get("output_path") or ""),
+        parameters=report.get("parameters") if isinstance(report.get("parameters"), dict) else {},
+        adapter=str(row.get("adapter") or ""),
+        sequence_id=str(row.get("sequence_id") or ""),
+        split_path=str(row.get("split_path") or ""),
+    )
+
+
 def run_training_config_job(
     training_config: str | dict[str, Any],
     *,
@@ -1251,6 +1429,32 @@ def training_run_entries(root: str | Path | None = None) -> list[dict[str, Any]]
         row["label"] = str(row.get("preset_label") or row.get("preset_id") or path.parent.name)
         rows.append(row)
     return sorted(rows, key=lambda row: (-float(row.get("mtime", 0.0)), str(row.get("label", ""))))
+
+
+def training_job_entries(root: str | Path | None = None) -> list[dict[str, Any]]:
+    """Discover persisted jobs; active states from old app sessions are interrupted."""
+
+    output_root = Path(root or ROOT / "outputs")
+    if not output_root.exists():
+        return []
+    rows: list[dict[str, Any]] = []
+    for path in output_root.glob(f"**/{TRAINING_JOB_FILENAME}"):
+        try:
+            data = _read_json(path)
+            stat = path.stat()
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        row = dict(data)
+        if row.get("status") in {"queued", "running", "canceling"}:
+            row["status"] = "interrupted"
+            row["message"] = "Previous desktop session ended before this job completed."
+        row["path"] = str(path.resolve())
+        row["relative_path"] = _relative_to_root(path)
+        row["mtime"] = stat.st_mtime
+        rows.append(row)
+    return sorted(rows, key=lambda row: -float(row.get("mtime", 0.0)))
 
 
 def training_metric_history(record: dict[str, Any]) -> dict[str, list[float]]:
@@ -5772,10 +5976,23 @@ def _resolve_trainer_entrypoint(manifest: dict[str, Any]) -> Path:
 
 
 def _json_from_command_output(output: str, command: list[str]) -> dict[str, Any]:
-    json_start = output.find("{")
-    if json_start < 0:
+    decoder = json.JSONDecoder()
+    payload: dict[str, Any] | None = None
+    cursor = 0
+    while cursor < len(output):
+        json_start = output.find("{", cursor)
+        if json_start < 0:
+            break
+        try:
+            candidate, consumed = decoder.raw_decode(output[json_start:])
+        except json.JSONDecodeError:
+            cursor = json_start + 1
+            continue
+        if isinstance(candidate, dict):
+            payload = candidate
+        cursor = json_start + max(1, consumed)
+    if payload is None:
         raise RuntimeError(f"Command did not emit JSON: {' '.join(command)}")
-    payload, _ = json.JSONDecoder().raw_decode(output[json_start:])
     if not isinstance(payload, dict):
         raise RuntimeError(f"Command emitted non-object JSON: {' '.join(command)}")
     return payload

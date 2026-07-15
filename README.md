@@ -301,6 +301,11 @@ modality requirements, and optional split-file requirements. Copy
 `configs/trainers/trainer.template.yaml` to add a model without modifying the
 platform. See `docs/trainer_protocol.md` for the complete schema.
 
+Manifest-backed training runs use a persistent FIFO task queue with live
+stdout/stderr, JSON or `Epoch n/N` progress updates, cancellation, and explicit
+completed/failed/canceled records. See `docs/training_jobs.md` for the runtime
+contract.
+
 ```yaml
 trainer_id: my_world_model
 display_name: My World Model
