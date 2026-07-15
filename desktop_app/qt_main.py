@@ -1062,6 +1062,7 @@ class MainWindow(QMainWindow):
         self.demo_config_combo.currentIndexChanged.connect(lambda _: self._refresh_demo_status())
         self.training_config_combo = self._combo()
         self.training_preset_combo = self._combo()
+        self.training_artifact_combo = self._combo()
         self.training_preset_summary = QTextEdit()
         self.training_preset_summary.setReadOnly(True)
         self.training_preset_summary.setFixedHeight(126)
@@ -1623,6 +1624,33 @@ class MainWindow(QMainWindow):
         self.training_run_overview.setPlaceholderText("Training run summary: NaN")
         run_summary_layout.addWidget(self._section_label("运行摘要"))
         run_summary_layout.addWidget(self.training_run_overview)
+        inference_row = QWidget()
+        inference_row_layout = QHBoxLayout(inference_row)
+        inference_row_layout.setContentsMargins(0, 0, 0, 0)
+        inference_row_layout.setSpacing(8)
+        inference_row_layout.addWidget(self.training_artifact_combo, 1)
+        inference_button = QPushButton("运行推理")
+        self._configure_button(inference_button)
+        inference_button.clicked.connect(self.run_selected_artifact_inference)
+        inference_row_layout.addWidget(inference_button)
+        run_summary_layout.addWidget(self._section_label("Checkpoint 推理"))
+        run_summary_layout.addWidget(inference_row)
+        self.inference_metric_summary = QLabel("推理指标：NaN")
+        self.inference_metric_summary.setObjectName("mutedText")
+        self.inference_metric_summary.setWordWrap(True)
+        run_summary_layout.addWidget(self.inference_metric_summary)
+        self.inference_prediction_table = QTableWidget(0, 6)
+        self.inference_prediction_table.setHorizontalHeaderLabels(
+            ["样本", "预测 X", "预测 Y", "真值 X", "真值 Y", "位置误差"]
+        )
+        self.inference_prediction_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.inference_prediction_table.verticalHeader().setVisible(False)
+        self.inference_prediction_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.inference_prediction_table.setMaximumHeight(180)
+        run_summary_layout.addWidget(self.inference_prediction_table)
+        self.inference_preview = self._preview_label("推理预览：NaN")
+        self.inference_preview.setMaximumHeight(240)
+        run_summary_layout.addWidget(self.inference_preview)
         self.training_curve = TrainingCurveWidget()
         run_summary_layout.addWidget(self._section_label("指标曲线"))
         self.training_run_metric_summary = QLabel("指标曲线：NaN")
@@ -1884,6 +1912,7 @@ class MainWindow(QMainWindow):
         self._fill_training_config_combo()
         self._fill_training_run_list()
         self._fill_training_job_table(self.catalog.get("training_jobs", []))
+        self._fill_training_artifact_combo()
         self._fill_episode_list()
         self._refresh_planner_summary()
         beamng = _find_named(self.catalog["backends"], "beamng")
@@ -3679,6 +3708,73 @@ class MainWindow(QMainWindow):
             item.setData(Qt.ItemDataRole.UserRole, dict(run))
             self.training_run_list.addItem(item)
 
+    def _fill_training_artifact_combo(self) -> None:
+        if not hasattr(self, "training_artifact_combo"):
+            return
+        current = self.training_artifact_combo.currentData()
+        current_path = str(current.get("artifact_path") or "") if isinstance(current, dict) else ""
+        self.training_artifact_combo.blockSignals(True)
+        self.training_artifact_combo.clear()
+        selected_index = 0
+        for artifact in self.catalog.get("training_artifacts", []):
+            if not artifact.get("exists") or str(artifact.get("status") or "").lower() != "completed":
+                continue
+            label = str(artifact.get("label") or artifact.get("id") or services.NAN_TEXT)
+            capability = "可推理" if artifact.get("inference_available") else "无推理入口"
+            self.training_artifact_combo.addItem(f"{label} | {capability}", dict(artifact))
+            if str(artifact.get("artifact_path") or "") == current_path:
+                selected_index = self.training_artifact_combo.count() - 1
+        if self.training_artifact_combo.count():
+            self.training_artifact_combo.setCurrentIndex(selected_index)
+        self.training_artifact_combo.blockSignals(False)
+
+    def run_selected_artifact_inference(self) -> None:
+        data = self.training_artifact_combo.currentData()
+        artifact = dict(data) if isinstance(data, dict) else {}
+        if not artifact:
+            self.inference_metric_summary.setText("推理指标：未选择 checkpoint")
+            return
+        if not artifact.get("inference_available"):
+            self.inference_metric_summary.setText("推理指标：该训练器没有声明 inference 入口")
+            return
+        manifest_path = str(artifact.get("trainer_manifest_path") or "")
+        self._run_task(
+            lambda: services.run_inference_manifest_job(
+                manifest_path,
+                artifact_path=str(artifact.get("artifact_path") or ""),
+                dataset_root=self.dataset_root_edit.text().strip(),
+                adapter=self.adapter_edit.text().strip(),
+                sequence_id=self.sequence_combo.currentText().strip(),
+            ),
+            self._inference_finished,
+            "推理运行失败",
+            task_label=f"推理 {artifact.get('label', artifact.get('id', 'checkpoint'))}",
+        )
+
+    def _inference_finished(self, payload: dict[str, Any]) -> None:
+        metrics = payload.get("metrics") if isinstance(payload.get("metrics"), dict) else {}
+        self.inference_metric_summary.setText("推理指标：" + _compact_json(metrics))
+        predictions = payload.get("predictions") if isinstance(payload.get("predictions"), list) else []
+        self.inference_prediction_table.setRowCount(min(100, len(predictions)))
+        for row_index, prediction in enumerate(predictions[:100]):
+            row = prediction if isinstance(prediction, dict) else {}
+            predicted = row.get("predicted") if isinstance(row.get("predicted"), dict) else {}
+            actual = row.get("actual") if isinstance(row.get("actual"), dict) else {}
+            px = _number_or_nan(predicted.get("x"))
+            py = _number_or_nan(predicted.get("y"))
+            ax = _number_or_nan(actual.get("x"))
+            ay = _number_or_nan(actual.get("y"))
+            error = math.hypot(px - ax, py - ay) if all(math.isfinite(value) for value in (px, py, ax, ay)) else math.nan
+            values = [row.get("sample", row_index), px, py, ax, ay, error]
+            for column, value in enumerate(values):
+                self.inference_prediction_table.setItem(row_index, column, QTableWidgetItem(services.display_value(value)))
+        previews = payload.get("previews") if isinstance(payload.get("previews"), dict) else {}
+        preview_path = next(iter(previews.values()), "")
+        self._set_preview(self.inference_preview, preview_path, "推理预览：NaN")
+        self.model_summary.setText(_compact_json(payload))
+        self.log(f"推理完成: {payload.get('path', services.NAN_TEXT)}")
+        self.refresh_catalogs()
+
     def _fill_training_job_table(self, jobs: list[dict[str, Any]] | None = None) -> None:
         if not hasattr(self, "training_job_table"):
             return
@@ -3794,6 +3890,11 @@ class MainWindow(QMainWindow):
         artifact_type = str(run.get("artifact_type") or "")
         if artifact_path and artifact_type in {"checkpoint", "world_model"}:
             self._select_path_combo_value(self.home_model_combo, artifact_path)
+            for index in range(self.training_artifact_combo.count()):
+                artifact = self.training_artifact_combo.itemData(index)
+                if isinstance(artifact, dict) and str(artifact.get("artifact_path") or "") == artifact_path:
+                    self.training_artifact_combo.setCurrentIndex(index)
+                    break
         elif artifact_path and artifact_type == "hdf5":
             self.stablewm_hdf5_edit.setText(artifact_path)
 
@@ -4455,6 +4556,13 @@ def _validation_float(validation: dict[str, Any], key: str, default: float | Non
     except (TypeError, ValueError):
         return default
     return value if math.isfinite(value) else default
+
+
+def _number_or_nan(value: Any) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return math.nan
 
 
 def _validation_int(validation: dict[str, Any], key: str, default: int) -> int:

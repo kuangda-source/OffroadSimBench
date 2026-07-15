@@ -83,6 +83,7 @@ SMOKE_TRAINING_DATASET_ROOT = ROOT / "outputs" / "training_studio_smoke" / "data
 SMOKE_TINY_MODEL_OUTPUT_DIR = ROOT / "outputs" / "training_studio_smoke" / "models" / "tiny_world_model"
 SMOKE_TRAINING_SEQUENCE_ID = "training/seq_0001"
 TRAINING_RUN_FILENAME = "training_run.json"
+INFERENCE_RUN_FILENAME = "inference_run.json"
 DATASET_MANIFEST_FILENAMES = ("dataset_manifest.yaml", "dataset_manifest.yml")
 DATASET_MANIFEST_DIRS = (CONFIG_ROOT / "datasets",)
 TRAINER_MANIFEST_FILENAMES = ("trainer.yaml", "trainer.yml")
@@ -428,6 +429,8 @@ def catalog_snapshot() -> dict[str, list[dict[str, Any]]]:
         "training_presets": training_preset_entries(),
         "training_runs": training_run_entries(),
         "training_jobs": training_job_entries(),
+        "training_artifacts": training_artifact_entries(),
+        "inference_runs": inference_run_entries(),
         "episodes": episode_summaries(),
     }
 
@@ -778,6 +781,7 @@ def training_preset_entries(trainer_root: str | Path | None = None) -> list[dict
                 "parameters": dict(row.get("parameters", {})),
                 "input": dict(row.get("input", {})),
                 "outputs": dict(row.get("outputs", {})),
+                "inference": dict(row.get("inference", {})),
             }
         )
     return rows
@@ -830,6 +834,7 @@ def load_trainer_manifest(path: str | Path) -> dict[str, Any]:
         "parameters": dict(normalized["parameters"]),
         "input": dict(normalized["input"]),
         "outputs": dict(normalized["outputs"]),
+        "inference": dict(normalized["inference"]),
         "manifest_path": str(manifest_path),
         "manifest_dir": str(manifest_path.parent),
     }
@@ -847,7 +852,8 @@ def import_trainer_manifest(source_path: str | Path, destination_root: str | Pat
     if launch is not None:
         entrypoint_value = str(launch.get("entrypoint") or "").strip()
         entrypoint_is_path = any(separator in entrypoint_value for separator in ("/", "\\")) or entrypoint_value.startswith(".")
-        if entrypoint_value and entrypoint_is_path and not Path(entrypoint_value).is_absolute():
+        launch_kind = str(launch.get("kind") or "python_script")
+        if entrypoint_value and (launch_kind == "python_script" or entrypoint_is_path) and not Path(entrypoint_value).is_absolute():
             launch["entrypoint"] = str((source.parent / entrypoint_value).resolve())
         working_directory = str(launch.get("working_directory") or "").strip()
         if working_directory and not Path(working_directory).is_absolute():
@@ -856,6 +862,16 @@ def import_trainer_manifest(source_path: str | Path, destination_root: str | Pat
         entrypoint = Path(str(data.get("entrypoint") or ""))
         if not entrypoint.is_absolute():
             data["entrypoint"] = str((source.parent / entrypoint).resolve())
+    inference = data.get("inference") if isinstance(data.get("inference"), dict) else {}
+    inference_launch = inference.get("launch") if isinstance(inference.get("launch"), dict) else {}
+    inference_entrypoint = str(inference_launch.get("entrypoint") or "").strip()
+    inference_is_path = any(separator in inference_entrypoint for separator in ("/", "\\")) or inference_entrypoint.startswith(".")
+    inference_kind = str(inference_launch.get("kind") or "python_script")
+    if inference_entrypoint and (inference_kind == "python_script" or inference_is_path) and not Path(inference_entrypoint).is_absolute():
+        inference_launch["entrypoint"] = str((source.parent / inference_entrypoint).resolve())
+    inference_working_directory = str(inference_launch.get("working_directory") or "").strip()
+    if inference_working_directory and not Path(inference_working_directory).is_absolute():
+        inference_launch["working_directory"] = str((source.parent / inference_working_directory).resolve())
     data["imported_from"] = str(source)
     destination = Path(destination_root or CONFIG_ROOT / "trainers")
     destination.mkdir(parents=True, exist_ok=True)
@@ -1202,6 +1218,198 @@ def queue_training_config_job(
     )
 
 
+def validate_inference_setup(
+    manifest_path: str | Path,
+    *,
+    artifact_path: str,
+    dataset_root: str,
+    adapter: str = "",
+    sequence_id: str = "",
+    parameters: dict[str, Any] | None = None,
+    output_dir: str = "",
+) -> dict[str, Any]:
+    """Validate a manifest-declared inference run without starting it."""
+
+    issues: list[str] = []
+    manifest = load_trainer_manifest(manifest_path)
+    inference = manifest.get("inference") if isinstance(manifest.get("inference"), dict) else {}
+    if not inference:
+        issues.append("Trainer manifest does not declare an inference entrypoint.")
+    artifact = Path(artifact_path) if artifact_path else None
+    if artifact is None:
+        issues.append("Model artifact path is required.")
+    elif not artifact.exists():
+        issues.append(f"Model artifact not found: {artifact}")
+    dataset = Path(dataset_root) if dataset_root else None
+    if dataset is None:
+        issues.append("Dataset root is required for inference.")
+    elif not dataset.exists():
+        issues.append(f"Dataset root not found: {dataset}")
+
+    schema = inference.get("parameters") if isinstance(inference.get("parameters"), dict) else {}
+    resolved_parameters: dict[str, Any] = {}
+    try:
+        resolved_parameters = _trainer_parameters(schema, parameters or {})
+    except ValueError as exc:
+        issues.append(str(exc))
+    compatibility: dict[str, Any] = {"compatible": True, "issues": []}
+    if inference:
+        try:
+            _validate_trainer_launch({**inference, "manifest_dir": str(manifest["manifest_dir"])})
+        except Exception as exc:
+            issues.append(f"Inference launch is invalid: {exc}")
+    if inference and dataset is not None and dataset.exists():
+        compatibility = _trainer_dataset_compatibility(
+            {"input": dict(inference.get("input") or {})},
+            dataset_root=dataset_root,
+            adapter=adapter,
+            sequence_id=sequence_id,
+            split_path="",
+        )
+        issues.extend(str(item) for item in compatibility.get("issues", []))
+    target_dir = Path(
+        output_dir
+        or ROOT / "outputs" / "inference_runs" / f"{manifest['id']}_{_timestamp()}"
+    )
+    command: list[str] = []
+    working_directory = ""
+    if inference and artifact is not None and not issues:
+        try:
+            command = _inference_command(
+                inference,
+                manifest_dir=Path(str(manifest["manifest_dir"])),
+                artifact_path=str(artifact),
+                dataset_root=dataset_root,
+                output_dir=target_dir,
+                parameters=resolved_parameters,
+                adapter=adapter,
+                sequence_id=sequence_id,
+            )
+            working_directory = str(
+                resolve_trainer_working_directory(inference, Path(str(manifest["manifest_dir"])))
+            )
+        except Exception as exc:
+            issues.append(f"Inference launch is invalid: {exc}")
+    return {
+        "ready": not issues,
+        "status": "ready" if not issues else "invalid",
+        "issues": issues,
+        "manifest": manifest,
+        "inference": inference,
+        "artifact_path": str(artifact.resolve()) if artifact is not None and artifact.exists() else artifact_path,
+        "dataset_root": dataset_root,
+        "adapter": adapter,
+        "sequence_id": sequence_id,
+        "parameters": resolved_parameters,
+        "compatibility": compatibility,
+        "output_dir": str(target_dir.resolve()),
+        "command_preview": command,
+        "working_directory": working_directory,
+    }
+
+
+def run_inference_manifest_job(
+    manifest_path: str | Path,
+    *,
+    artifact_path: str,
+    dataset_root: str,
+    adapter: str = "",
+    sequence_id: str = "",
+    parameters: dict[str, Any] | None = None,
+    output_dir: str = "",
+) -> dict[str, Any]:
+    """Run generic checkpoint inference and persist predictions and metrics."""
+
+    report = validate_inference_setup(
+        manifest_path,
+        artifact_path=artifact_path,
+        dataset_root=dataset_root,
+        adapter=adapter,
+        sequence_id=sequence_id,
+        parameters=parameters,
+        output_dir=output_dir,
+    )
+    if not report["ready"]:
+        raise ValueError("; ".join(str(item) for item in report["issues"]))
+    manifest = report["manifest"]
+    inference = report["inference"]
+    target_dir = Path(report["output_dir"])
+    target_dir.mkdir(parents=True, exist_ok=True)
+    command = list(report["command_preview"])
+    manifest_dir = Path(str(manifest["manifest_dir"]))
+    working_directory = resolve_trainer_working_directory(inference, manifest_dir)
+    environment = resolve_trainer_environment(inference, manifest_dir)
+    completed = subprocess.run(
+        command,
+        cwd=working_directory,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    stdout_path = target_dir / "stdout.log"
+    stderr_path = target_dir / "stderr.log"
+    stdout_path.write_text(completed.stdout or "", encoding="utf-8")
+    stderr_path.write_text(completed.stderr or "", encoding="utf-8")
+    outputs = inference.get("outputs") if isinstance(inference.get("outputs"), dict) else {}
+    if completed.returncode != 0:
+        failed = {
+            "run_id": target_dir.name,
+            "status": "failed",
+            "artifact_path": report["artifact_path"],
+            "dataset_root": dataset_root,
+            "adapter": adapter,
+            "sequence_id": sequence_id,
+            "metrics": {},
+            "history": {},
+            "predictions": [],
+            "previews": {},
+            "error": (completed.stderr or completed.stdout or "Inference command failed").strip(),
+            "command": command,
+            "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        }
+        record_path = target_dir / INFERENCE_RUN_FILENAME
+        record_path.write_text(json.dumps(failed, indent=2, ensure_ascii=False), encoding="utf-8")
+        raise RuntimeError(failed["error"])
+
+    payload = _trainer_result_payload({"outputs": outputs}, target_dir, completed.stdout or "", command)
+    predictions = payload.get("predictions") if isinstance(payload.get("predictions"), list) else []
+    predictions_path = _trainer_output_file(target_dir, outputs.get("predictions_file"), "predictions.json")
+    if not predictions and predictions_path.is_file():
+        raw_predictions = json.loads(predictions_path.read_text(encoding="utf-8"))
+        predictions = raw_predictions if isinstance(raw_predictions, list) else list(raw_predictions.get("predictions", []))
+    previews = _normalize_inference_previews(payload.get("previews"), target_dir)
+    configured_preview = str(outputs.get("preview_file") or "").strip()
+    if configured_preview:
+        preview_path = _resolve_trainer_output_path(target_dir, configured_preview)
+        if preview_path.is_file():
+            previews.setdefault("primary", str(preview_path))
+    record = {
+        "run_id": target_dir.name,
+        "status": "completed",
+        "trainer_id": manifest["id"],
+        "trainer_manifest_path": str(Path(manifest_path).resolve()),
+        "artifact_path": report["artifact_path"],
+        "dataset_root": str(Path(dataset_root).resolve()),
+        "adapter": adapter,
+        "sequence_id": sequence_id,
+        "parameters": report["parameters"],
+        "metrics": dict(payload.get("metrics") or {}),
+        "history": dict(payload.get("history") or {}),
+        "predictions": predictions,
+        "prediction_count": len(predictions),
+        "previews": previews,
+        "command": command,
+        "logs": {"stdout": str(stdout_path.resolve()), "stderr": str(stderr_path.resolve())},
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+    }
+    record_path = target_dir / INFERENCE_RUN_FILENAME
+    record_path.write_text(json.dumps(record, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
+    record["path"] = str(record_path.resolve())
+    record["output_dir"] = str(target_dir.resolve())
+    return record
+
+
 def run_training_config_job(
     training_config: str | dict[str, Any],
     *,
@@ -1453,6 +1661,71 @@ def training_job_entries(root: str | Path | None = None) -> list[dict[str, Any]]
         row["path"] = str(path.resolve())
         row["relative_path"] = _relative_to_root(path)
         row["mtime"] = stat.st_mtime
+        rows.append(row)
+    return sorted(rows, key=lambda row: -float(row.get("mtime", 0.0)))
+
+
+def training_artifact_entries(root: str | Path | None = None) -> list[dict[str, Any]]:
+    """Return training artifacts with source-run and inference capability metadata."""
+
+    rows: list[dict[str, Any]] = []
+    for run in training_run_entries(root):
+        artifact_value = _training_record_artifact_path(run)
+        if not artifact_value:
+            continue
+        artifact = Path(artifact_value)
+        exists = artifact.exists()
+        summary = run.get("summary") if isinstance(run.get("summary"), dict) else {}
+        manifest_path = str(summary.get("trainer_manifest_path") or "").strip()
+        inference_available = False
+        if manifest_path and Path(manifest_path).is_file():
+            try:
+                loaded_manifest = load_trainer_manifest(manifest_path)
+                inference = loaded_manifest.get("inference") if isinstance(loaded_manifest.get("inference"), dict) else {}
+                if inference:
+                    _validate_trainer_launch(
+                        {**inference, "manifest_dir": str(loaded_manifest["manifest_dir"])}
+                    )
+                    inference_available = True
+            except Exception:
+                inference_available = False
+        rows.append(
+            {
+                "id": str(run.get("run_id") or artifact.stem),
+                "label": str(run.get("preset_label") or run.get("preset_id") or artifact.stem),
+                "artifact_path": str(artifact.resolve()),
+                "artifact_type": str(run.get("artifact_type") or "artifact"),
+                "exists": exists,
+                "size_bytes": _artifact_size_bytes(artifact) if exists else 0,
+                "status": str(run.get("status") or ""),
+                "training_run_path": str(run.get("path") or ""),
+                "trainer_manifest_path": manifest_path,
+                "inference_available": inference_available,
+                "metrics": dict(run.get("metrics") if isinstance(run.get("metrics"), dict) else {}),
+                "created_at": run.get("created_at"),
+                "mtime": run.get("mtime", 0.0),
+            }
+        )
+    return sorted(rows, key=lambda row: -float(row.get("mtime", 0.0)))
+
+
+def inference_run_entries(root: str | Path | None = None) -> list[dict[str, Any]]:
+    output_root = Path(root or ROOT / "outputs")
+    if not output_root.exists():
+        return []
+    rows: list[dict[str, Any]] = []
+    for path in output_root.glob(f"**/{INFERENCE_RUN_FILENAME}"):
+        try:
+            payload = _read_json(path)
+            mtime = path.stat().st_mtime
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        row = dict(payload)
+        row["path"] = str(path.resolve())
+        row["relative_path"] = _relative_to_root(path)
+        row["mtime"] = mtime
         rows.append(row)
     return sorted(rows, key=lambda row: -float(row.get("mtime", 0.0)))
 
@@ -5965,6 +6238,66 @@ def _trainer_command(
         arguments=arguments,
         manifest_dir=Path(str(manifest["manifest_dir"])),
     )
+
+
+def _inference_command(
+    inference: dict[str, Any],
+    *,
+    manifest_dir: Path,
+    artifact_path: str,
+    dataset_root: str,
+    output_dir: Path,
+    parameters: dict[str, Any],
+    adapter: str,
+    sequence_id: str,
+) -> list[str]:
+    context = {
+        "artifact_path": str(Path(artifact_path).resolve()),
+        "checkpoint_path": str(Path(artifact_path).resolve()),
+        "dataset_root": dataset_root,
+        "output_dir": str(output_dir.resolve()),
+        "adapter": adapter,
+        "sequence_id": sequence_id,
+        "manifest_dir": str(manifest_dir.resolve()),
+        "params": _AttrDict(parameters),
+    }
+    arguments = [str(value).format_map(_AttrDict(context)) for value in inference.get("arguments", [])]
+    return build_trainer_command(inference, arguments=arguments, manifest_dir=manifest_dir)
+
+
+def _normalize_inference_previews(value: Any, output_dir: Path) -> dict[str, str]:
+    if isinstance(value, dict):
+        raw = {str(key): str(path) for key, path in value.items()}
+    elif isinstance(value, list):
+        raw = {f"preview_{index + 1}": str(path) for index, path in enumerate(value)}
+    elif value:
+        raw = {"primary": str(value)}
+    else:
+        raw = {}
+    previews: dict[str, str] = {}
+    for key, path_value in raw.items():
+        path = _resolve_trainer_output_path(output_dir, path_value)
+        if path.is_file():
+            previews[key] = str(path)
+    return previews
+
+
+def _artifact_size_bytes(path: Path, max_files: int = 10000) -> int:
+    if path.is_file():
+        try:
+            return path.stat().st_size
+        except OSError:
+            return 0
+    total = 0
+    for index, child in enumerate(path.rglob("*")):
+        if index >= max_files:
+            break
+        if child.is_file():
+            try:
+                total += child.stat().st_size
+            except OSError:
+                continue
+    return total
 
 
 def _resolve_trainer_entrypoint(manifest: dict[str, Any]) -> Path:

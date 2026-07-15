@@ -69,6 +69,7 @@ def normalize_trainer_manifest(data: Mapping[str, Any], *, manifest_path: Path) 
     if not isinstance(raw_input, Mapping):
         raise ValueError("input must be a mapping.")
     input_spec = _normalize_input_spec(raw_input)
+    inference = _normalize_inference_spec(data.get("inference"), manifest_path=manifest_path)
 
     launch = {
         "kind": kind,
@@ -90,6 +91,7 @@ def normalize_trainer_manifest(data: Mapping[str, Any], *, manifest_path: Path) 
         "parameters": normalized_parameters,
         "input": input_spec,
         "outputs": dict(data.get("outputs") or {}),
+        "inference": inference,
     }
 
 
@@ -254,6 +256,44 @@ def _normalize_input_spec(raw_input: Mapping[str, Any]) -> dict[str, Any]:
         "required_modalities": [str(value) for value in required_modalities],
         "optional_modalities": [str(value) for value in optional_modalities],
         "split_required": bool(raw_input.get("split_required", False)),
+    }
+
+
+def _normalize_inference_spec(raw: Any, *, manifest_path: Path) -> dict[str, Any]:
+    if raw in (None, {}):
+        return {}
+    if not isinstance(raw, Mapping):
+        raise ValueError("inference must be a mapping.")
+    raw_launch = raw.get("launch") if isinstance(raw.get("launch"), Mapping) else {}
+    kind = str(raw_launch.get("kind") or "python_script").strip().lower()
+    if kind not in LAUNCH_KINDS:
+        raise ValueError(f"Unsupported inference launch kind: {kind}")
+    entrypoint = str(raw_launch.get("entrypoint") or "").strip()
+    module = str(raw_launch.get("module") or "").strip()
+    if kind == "python_module" and not module:
+        raise ValueError(f"Python-module inference has no module: {manifest_path}")
+    if kind != "python_module" and not entrypoint:
+        raise ValueError(f"Inference has no entrypoint: {manifest_path}")
+    raw_environment = raw_launch.get("environment") or {}
+    if not isinstance(raw_environment, Mapping):
+        raise ValueError("inference.launch.environment must be a mapping.")
+    parameters = raw.get("parameters") or {}
+    input_spec = raw.get("input") or {}
+    if not isinstance(parameters, Mapping) or not isinstance(input_spec, Mapping):
+        raise ValueError("inference parameters and input must be mappings.")
+    return {
+        "launch": {
+            "kind": kind,
+            "entrypoint": entrypoint,
+            "module": module,
+            "conda_env": str(raw_launch.get("conda_env") or "").strip(),
+            "working_directory": str(raw_launch.get("working_directory") or "").strip(),
+            "environment": {str(key): str(value) for key, value in raw_environment.items()},
+        },
+        "arguments": [str(value) for value in (raw.get("arguments") or [])],
+        "parameters": _normalize_parameter_schema(parameters),
+        "input": _normalize_input_spec(input_spec),
+        "outputs": dict(raw.get("outputs") or {}),
     }
 
 

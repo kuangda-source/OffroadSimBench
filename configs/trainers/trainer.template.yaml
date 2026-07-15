@@ -64,3 +64,31 @@ arguments:
 
 outputs:
   artifact_type: checkpoint
+
+# Optional generic inference entrypoint for checkpoints produced by this trainer.
+inference:
+  launch:
+    kind: python_script
+    entrypoint: infer.py
+    working_directory: .
+  input:
+    dataset_format: any_registered_adapter
+    required_modalities: [front_rgb]
+  parameters:
+    max_samples:
+      type: int
+      default: 100
+      min: 1
+  arguments:
+    - --checkpoint
+    - "{artifact_path}"
+    - --dataset
+    - "{dataset_root}"
+    - --output
+    - "{output_dir}"
+    - --max-samples
+    - "{params.max_samples}"
+  outputs:
+    predictions_file: predictions.json
+    metrics_file: metrics.json
+    preview_file: preview.png

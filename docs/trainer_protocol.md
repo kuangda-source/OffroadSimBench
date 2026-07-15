@@ -55,6 +55,39 @@ object containing optional `artifact_path`, `artifact_type`, `metrics`, and
 `history` fields. The existing sidecar metrics and JSONL event formats remain
 supported.
 
+## Checkpoint Inference
+
+A trainer can add an optional `inference` section with its own `launch`,
+`input`, `parameters`, `arguments`, and `outputs` fields. It uses the same three
+launch kinds and parameter rules as training. In addition to the common dataset
+placeholders, inference commands receive `{artifact_path}` and
+`{checkpoint_path}`.
+
+The inference process may print `metrics`, `history`, `predictions`, and
+`previews` in its final JSON object. It may instead declare sidecars:
+
+```yaml
+inference:
+  launch:
+    kind: python_script
+    entrypoint: infer.py
+  arguments:
+    - --checkpoint
+    - "{artifact_path}"
+    - --dataset
+    - "{dataset_root}"
+    - --output
+    - "{output_dir}"
+  outputs:
+    predictions_file: predictions.json
+    metrics_file: metrics.json
+    preview_file: preview.png
+```
+
+The workbench catalogs completed training artifacts, reports whether their
+source trainer supports inference, validates the artifact and dataset contract,
+and writes each result to `inference_run.json`.
+
 ## Minimal Module Trainer
 
 ```yaml

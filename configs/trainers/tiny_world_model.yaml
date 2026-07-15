@@ -30,3 +30,31 @@ arguments:
   - "{params.ridge}"
 outputs:
   artifact_type: world_model
+inference:
+  launch:
+    kind: python_script
+    entrypoint: ../../scripts/infer_world_model.py
+    working_directory: ../..
+  input:
+    dataset_format: any_registered_adapter
+  parameters:
+    max_samples:
+      type: int
+      default: 100
+      min: 1
+      max: 10000
+  arguments:
+    - "{artifact_path}"
+    - "{dataset_root}"
+    - --adapter
+    - "{adapter}"
+    - --sequence-id
+    - "{sequence_id}"
+    - --output
+    - "{output_dir}"
+    - --max-samples
+    - "{params.max_samples}"
+  outputs:
+    predictions_file: predictions.json
+    metrics_file: metrics.json
+    preview_file: trajectory_comparison.png

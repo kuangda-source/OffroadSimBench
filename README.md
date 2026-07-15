@@ -306,6 +306,11 @@ stdout/stderr, JSON or `Epoch n/N` progress updates, cancellation, and explicit
 completed/failed/canceled records. See `docs/training_jobs.md` for the runtime
 contract.
 
+Completed artifacts are cataloged with source-run metrics, size, existence, and
+inference capability. A manifest may declare a model-specific inference entry
+without platform code changes; the GUI then runs it on the selected dataset and
+shows predictions, metrics, and preview images in the Training Results tab.
+
 ```yaml
 trainer_id: my_world_model
 display_name: My World Model
