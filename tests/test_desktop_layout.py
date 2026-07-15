@@ -4,7 +4,21 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication, QComboBox, QGroupBox, QLabel, QLineEdit, QPushButton, QScrollArea, QSpinBox, QWidget
+from PySide6.QtWidgets import (
+    QApplication,
+    QComboBox,
+    QDoubleSpinBox,
+    QGroupBox,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QScrollArea,
+    QSlider,
+    QSpinBox,
+    QTableWidget,
+    QTabWidget,
+    QWidget,
+)
 
 from desktop_app.qt_main import MainWindow, _beamng_quality_report_text, _region_world_model_summary_text, _training_run_overview_text
 
@@ -62,8 +76,10 @@ def test_desktop_controls_keep_stable_visual_heights() -> None:
         expected = 42 if button.objectName() == "primaryButton" else 36
         assert button.minimumHeight() >= expected
 
-    for widget_type in (QLineEdit, QComboBox, QSpinBox):
+    for widget_type in (QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox):
         for control in window.findChildren(widget_type):
+            if isinstance(control, QLineEdit) and control.objectName() == "qt_spinbox_lineedit":
+                continue
             assert control.minimumHeight() >= 36
 
     for card in window.metric_cards.values():
@@ -110,12 +126,33 @@ def test_dataset_training_page_separates_dataset_trainer_config_and_results() ->
     assert "训练配置" in group_titles
     assert "最近训练结果" in group_titles
     assert "已训练模型" in group_titles
-    assert "数据集预览" in group_titles
 
     visible_actions = {button.text() for button in window.page_stack.widget(1).findChildren(QPushButton)}
     assert "开始训练 / 导出" in visible_actions
     assert "Run script now" not in visible_actions
     assert "导出 StableWM HDF5" not in visible_actions
+
+    window.close()
+
+
+def test_dataset_workspace_exposes_manifest_table_preview_details_and_quality_tabs() -> None:
+    _ensure_app()
+    window = MainWindow()
+    dataset_page = window.page_stack.widget(1)
+    tab_sets = [
+        {tabs.tabText(index) for index in range(tabs.count())}
+        for tabs in dataset_page.findChildren(QTabWidget)
+    ]
+
+    assert {"同步预览", "数据详情", "质量与划分"} in tab_sets
+    assert isinstance(window.dataset_sequence_table, QTableWidget)
+    assert window.dataset_sequence_table.columnCount() == 5
+    assert isinstance(window.dataset_frame_slider, QSlider)
+    assert window.dataset_play_button.isCheckable()
+    assert hasattr(window, "lidar_preview")
+    assert window.dataset_train_ratio.value() == 0.7
+    assert window.dataset_validation_ratio.value() == 0.15
+    assert window.dataset_test_ratio.value() == 0.15
 
     window.close()
 

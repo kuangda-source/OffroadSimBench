@@ -14,6 +14,7 @@ from PySide6.QtCore import QPointF, QObject, QRectF, QThread, QTimer, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
+    QAbstractItemView,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -24,6 +25,7 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QGridLayout,
     QGroupBox,
+    QHeaderView,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -34,11 +36,14 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QScrollArea,
+    QSlider,
     QSizePolicy,
     QSpinBox,
     QSplitter,
     QStackedWidget,
     QTabWidget,
+    QTableWidget,
+    QTableWidgetItem,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -1024,6 +1029,7 @@ class MainWindow(QMainWindow):
         self.region_task_dialog: NavigationTaskDialog | None = None
         self._navigation_preview_busy = False
         self._navigation_preview_pending: tuple[str, str, float] | None = None
+        self._dataset_preview_busy = False
         self._busy_depth = 0
 
         self._init_shared_controls()
@@ -1087,6 +1093,15 @@ class MainWindow(QMainWindow):
             '[{"id": "clip_001", "root": ".", "assets": {"front_rgb": "images/*.png"}}]'
         )
         self.dataset_manifest_sequences_edit.setFixedHeight(92)
+        self.dataset_manifest_sequences_edit.setVisible(False)
+        self.dataset_sequence_table = QTableWidget(0, 5)
+        self.dataset_sequence_table.setHorizontalHeaderLabels(
+            ["序列 ID", "相对目录", "位姿 CSV", "动作 CSV", "资产映射 JSON"]
+        )
+        self.dataset_sequence_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.dataset_sequence_table.verticalHeader().setVisible(False)
+        self.dataset_sequence_table.setMinimumHeight(150)
+        self.dataset_sequence_table.setAlternatingRowColors(True)
         self.dataset_root_edit = QLineEdit()
         self.dataset_root_edit.setPlaceholderText(r"datasets\ORFD_Dataset_ICRA2022_ZIP")
         self.sequence_combo = self._combo(editable=True)
@@ -1286,6 +1301,16 @@ class MainWindow(QMainWindow):
         dataset_suggest = QPushButton("自动检测序列")
         self._configure_button(dataset_suggest)
         dataset_suggest.clicked.connect(self.suggest_dataset_manifest_sequences_from_gui)
+        dataset_sequence_add = QPushButton("添加序列")
+        self._configure_button(dataset_sequence_add)
+        dataset_sequence_add.clicked.connect(self._add_dataset_sequence_row)
+        dataset_sequence_remove = QPushButton("删除所选序列")
+        self._configure_button(dataset_sequence_remove)
+        dataset_sequence_remove.clicked.connect(self._remove_dataset_sequence_rows)
+        manifest_toolbar = self._action_toolbar(
+            [dataset_suggest, dataset_sequence_add, dataset_sequence_remove, dataset_save],
+            object_name="datasetManifestToolbar",
+        )
         controls = self._group(
             "数据源",
             [
@@ -1293,9 +1318,8 @@ class MainWindow(QMainWindow):
                 dataset_import,
                 self._field("数据集根目录", self._with_button(self.dataset_root_edit, dataset_browse)),
                 self._field("数据集名称", self.dataset_manifest_name_edit),
-                self._field("序列定义", self.dataset_manifest_sequences_edit),
-                dataset_suggest,
-                dataset_save,
+                self._field("序列定义", self.dataset_sequence_table),
+                manifest_toolbar,
                 self._field("序列", self.sequence_combo),
                 self._field("适配器", self.adapter_edit),
                 self._action_button("检查数据集", self.inspect_dataset),
@@ -1303,19 +1327,132 @@ class MainWindow(QMainWindow):
             ],
         )
         data_layout.addWidget(controls, 1)
-        preview_box, preview_layout = self._new_group("数据集预览")
-        image_row = self._row_layout(spacing=CARD_SPACING)
+        dataset_workspace = QTabWidget()
+        preview_page = QWidget()
+        preview_layout = QVBoxLayout(preview_page)
+        preview_layout.setContentsMargins(0, 0, 0, 0)
+        preview_layout.setSpacing(CARD_SPACING)
+        preview_controls = QWidget()
+        preview_controls.setObjectName("datasetPreviewToolbar")
+        preview_controls_layout = QHBoxLayout(preview_controls)
+        preview_controls_layout.setContentsMargins(0, 0, 0, 0)
+        preview_controls_layout.setSpacing(8)
+        self.dataset_previous_button = QPushButton("上一帧")
+        self._configure_button(self.dataset_previous_button)
+        self.dataset_previous_button.clicked.connect(lambda: self._step_dataset_preview(-1))
+        self.dataset_play_button = QPushButton("播放")
+        self.dataset_play_button.setCheckable(True)
+        self._configure_button(self.dataset_play_button)
+        self.dataset_play_button.toggled.connect(self._toggle_dataset_playback)
+        self.dataset_next_button = QPushButton("下一帧")
+        self._configure_button(self.dataset_next_button)
+        self.dataset_next_button.clicked.connect(lambda: self._step_dataset_preview(1))
+        self.dataset_frame_slider = QSlider(Qt.Orientation.Horizontal)
+        self.dataset_frame_slider.setRange(0, 0)
+        self.dataset_frame_slider.sliderReleased.connect(self.preview_dataset)
+        self.dataset_frame_label = QLabel("帧 0 / 0")
+        self.dataset_frame_label.setObjectName("mutedText")
+        preview_controls_layout.addWidget(self.dataset_previous_button)
+        preview_controls_layout.addWidget(self.dataset_play_button)
+        preview_controls_layout.addWidget(self.dataset_next_button)
+        preview_controls_layout.addWidget(self.dataset_frame_slider, 1)
+        preview_controls_layout.addWidget(self.dataset_frame_label)
+        self.dataset_preview_timer = QTimer(self)
+        self.dataset_preview_timer.setInterval(500)
+        self.dataset_preview_timer.timeout.connect(self._advance_dataset_preview)
+        preview_layout.addWidget(preview_controls)
+        image_grid = QGridLayout()
+        image_grid.setContentsMargins(0, 0, 0, 0)
+        image_grid.setHorizontalSpacing(CARD_SPACING)
+        image_grid.setVerticalSpacing(CARD_SPACING)
         self.rgb_preview = self._preview_label("RGB: NaN")
         self.depth_preview = self._preview_label("Depth/Label: NaN")
-        image_row.addWidget(self._preview_panel("RGB 预览", self.rgb_preview), 1)
-        image_row.addWidget(self._preview_panel("深度 / 标签预览", self.depth_preview), 1)
-        preview_layout.addLayout(image_row, 2)
+        self.lidar_preview = self._preview_label("LiDAR: NaN")
+        image_grid.addWidget(self._preview_panel("RGB 预览", self.rgb_preview), 0, 0)
+        image_grid.addWidget(self._preview_panel("深度 / 标签预览", self.depth_preview), 0, 1)
+        image_grid.addWidget(self._preview_panel("LiDAR 预览", self.lidar_preview), 1, 0, 1, 2)
+        preview_layout.addLayout(image_grid, 2)
         self.dataset_summary = QTextEdit()
         self.dataset_summary.setReadOnly(True)
         self.dataset_summary.setPlaceholderText("数据集检查结果：NaN")
         preview_layout.addWidget(self._section_label("帧元数据"))
         preview_layout.addWidget(self.dataset_summary, 1)
-        data_layout.addWidget(preview_box, 2)
+        dataset_workspace.addTab(preview_page, "同步预览")
+
+        detail_page = QWidget()
+        detail_layout = QVBoxLayout(detail_page)
+        detail_layout.setContentsMargins(0, 0, 0, 0)
+        detail_layout.setSpacing(CARD_SPACING)
+        self.dataset_detail_summary = QTextEdit()
+        self.dataset_detail_summary.setReadOnly(True)
+        self.dataset_detail_summary.setMaximumHeight(180)
+        self.dataset_detail_summary.setPlaceholderText("数据集详情：NaN")
+        self.dataset_sequence_detail_table = QTableWidget(0, 6)
+        self.dataset_sequence_detail_table.setHorizontalHeaderLabels(
+            ["序列", "样本数", "模态", "开始时间", "结束时间", "间隔问题"]
+        )
+        self.dataset_sequence_detail_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.dataset_sequence_detail_table.verticalHeader().setVisible(False)
+        self.dataset_sequence_detail_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        detail_layout.addWidget(self.dataset_detail_summary)
+        detail_layout.addWidget(self.dataset_sequence_detail_table, 1)
+        dataset_workspace.addTab(detail_page, "数据详情")
+
+        quality_page = QWidget()
+        quality_layout = QVBoxLayout(quality_page)
+        quality_layout.setContentsMargins(0, 0, 0, 0)
+        quality_layout.setSpacing(CARD_SPACING)
+        self.dataset_train_ratio = QDoubleSpinBox()
+        self.dataset_validation_ratio = QDoubleSpinBox()
+        self.dataset_test_ratio = QDoubleSpinBox()
+        for control, value in (
+            (self.dataset_train_ratio, 0.7),
+            (self.dataset_validation_ratio, 0.15),
+            (self.dataset_test_ratio, 0.15),
+        ):
+            control.setRange(0.0, 1.0)
+            control.setDecimals(2)
+            control.setSingleStep(0.05)
+            control.setValue(value)
+            self._configure_control(control)
+        split_fields = self._action_toolbar(
+            [
+                self._compact_field("训练", self.dataset_train_ratio),
+                self._compact_field("验证", self.dataset_validation_ratio),
+                self._compact_field("测试", self.dataset_test_ratio),
+            ],
+            object_name="datasetSplitToolbar",
+        )
+        quality_layout.addWidget(split_fields)
+        quality_layout.addWidget(
+            self._action_toolbar(
+                [
+                    self._action_button("生成质量报告", self.run_dataset_quality_analysis, primary=True),
+                    self._action_button("生成数据划分", self.create_dataset_split),
+                ],
+                object_name="datasetQualityToolbar",
+            )
+        )
+        self.dataset_quality_summary = QTextEdit()
+        self.dataset_quality_summary.setReadOnly(True)
+        self.dataset_quality_summary.setMaximumHeight(190)
+        self.dataset_quality_summary.setPlaceholderText("质量报告：NaN")
+        self.dataset_issue_table = QTableWidget(0, 5)
+        self.dataset_issue_table.setHorizontalHeaderLabels(["级别", "类型", "序列", "帧", "说明"])
+        self.dataset_issue_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.dataset_issue_table.verticalHeader().setVisible(False)
+        self.dataset_issue_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.dataset_split_summary = QTextEdit()
+        self.dataset_split_summary.setReadOnly(True)
+        self.dataset_split_summary.setMaximumHeight(160)
+        self.dataset_split_summary.setPlaceholderText("数据划分：NaN")
+        quality_layout.addWidget(self._section_label("质量检查"))
+        quality_layout.addWidget(self.dataset_quality_summary)
+        quality_layout.addWidget(self.dataset_issue_table, 2)
+        quality_layout.addWidget(self._section_label("训练 / 验证 / 测试划分"))
+        quality_layout.addWidget(self.dataset_split_summary, 1)
+        dataset_workspace.addTab(quality_page, "质量与划分")
+        data_layout.addWidget(dataset_workspace, 2)
         data_root.addLayout(data_layout, 1)
         tabs.addTab(data_tab, "数据集")
 
@@ -1796,6 +1933,8 @@ class MainWindow(QMainWindow):
         return self.navigation_preview_session.consume_picker_pick()
 
     def closeEvent(self, event: Any) -> None:
+        if hasattr(self, "dataset_preview_timer"):
+            self.dataset_preview_timer.stop()
         if self.region_task_dialog is not None:
             self.region_task_dialog.close()
             self.region_task_dialog = None
@@ -1937,23 +2076,84 @@ class MainWindow(QMainWindow):
                 sequence_id=self.sequence_combo.currentText().strip(),
             ),
             self._dataset_inspected,
-            "dataset inspect failed",
+            "数据集检查失败",
             task_label="检查数据集",
         )
 
     def preview_dataset(self) -> None:
-        self.log("生成数据集帧预览...")
+        if self._dataset_preview_busy:
+            return
+        self._dataset_preview_busy = True
+        frame_index = self.dataset_frame_slider.value() if hasattr(self, "dataset_frame_slider") else self.settings.preview_frame_index
+        self.settings.preview_frame_index = frame_index
+        self.log(f"生成数据集帧预览：{frame_index}")
         self._run_task(
             lambda: services.preview_dataset_frame(
                 self.dataset_root_edit.text().strip(),
                 adapter=self.adapter_edit.text().strip(),
                 sequence_id=self.sequence_combo.currentText().strip(),
-                frame_index=self.settings.preview_frame_index,
+                frame_index=frame_index,
             ),
             self._preview_ready,
-            "dataset preview failed",
+            "数据集预览失败",
             task_label="预览数据集",
         )
+
+    def run_dataset_quality_analysis(self) -> None:
+        self.log("开始数据集质量检查...")
+        self._run_task(
+            lambda: services.analyze_dataset_quality(
+                self.dataset_root_edit.text().strip(),
+                adapter=self.adapter_edit.text().strip(),
+            ),
+            self._dataset_quality_ready,
+            "数据集质量检查失败",
+            task_label="生成数据质量报告",
+        )
+
+    def create_dataset_split(self) -> None:
+        ratios = (
+            self.dataset_train_ratio.value(),
+            self.dataset_validation_ratio.value(),
+            self.dataset_test_ratio.value(),
+        )
+        self.log(f"生成数据划分：train={ratios[0]:.2f}, validation={ratios[1]:.2f}, test={ratios[2]:.2f}")
+        self._run_task(
+            lambda: services.create_dataset_split_definition(
+                self.dataset_root_edit.text().strip(),
+                adapter=self.adapter_edit.text().strip(),
+                train_ratio=ratios[0],
+                validation_ratio=ratios[1],
+                test_ratio=ratios[2],
+                seed=self.settings.seed,
+            ),
+            self._dataset_split_ready,
+            "数据划分失败",
+            task_label="生成数据划分",
+        )
+
+    def _toggle_dataset_playback(self, active: bool) -> None:
+        self.dataset_play_button.setText("暂停" if active else "播放")
+        if active:
+            self.dataset_preview_timer.start()
+            self.preview_dataset()
+        else:
+            self.dataset_preview_timer.stop()
+
+    def _step_dataset_preview(self, offset: int) -> None:
+        maximum = self.dataset_frame_slider.maximum()
+        value = min(max(0, self.dataset_frame_slider.value() + int(offset)), maximum)
+        self.dataset_frame_slider.setValue(value)
+        self.preview_dataset()
+
+    def _advance_dataset_preview(self) -> None:
+        if self._dataset_preview_busy:
+            return
+        if self.dataset_frame_slider.value() >= self.dataset_frame_slider.maximum():
+            self.dataset_play_button.setChecked(False)
+            return
+        self.dataset_frame_slider.setValue(self.dataset_frame_slider.value() + 1)
+        self.preview_dataset()
 
     def run_training_preset(self) -> None:
         data = self.training_preset_combo.currentData()
@@ -2068,7 +2268,7 @@ class MainWindow(QMainWindow):
             self.dataset_summary.setText(_compact_json({"status": "suggest_failed", "message": str(exc)}))
             self.log(f"Dataset sequence auto-detect failed: {exc}")
             return
-        self.dataset_manifest_sequences_edit.setPlainText(json.dumps(sequences, indent=2, ensure_ascii=False))
+        self._set_dataset_sequence_rows(sequences)
         if not self.dataset_manifest_name_edit.text().strip():
             self.dataset_manifest_name_edit.setText(Path(dataset_root).name or "Custom Dataset")
         self.adapter_edit.setText("manifest_dataset")
@@ -2790,6 +2990,10 @@ class MainWindow(QMainWindow):
     def _dataset_inspected(self, payload: dict[str, Any]) -> None:
         self.dataset_info = payload
         self.dataset_summary.setText(_compact_json(payload))
+        self.dataset_detail_summary.setText(_dataset_detail_text(payload))
+        quality = payload.get("quality") if isinstance(payload.get("quality"), dict) else {}
+        self.dataset_quality_summary.setText(_dataset_quality_text(quality))
+        self._populate_dataset_analysis_tables(quality)
         self.sequence_combo.clear()
         for sequence_id in payload.get("sequences", []):
             self.sequence_combo.addItem(str(sequence_id))
@@ -2797,14 +3001,74 @@ class MainWindow(QMainWindow):
         index = self.sequence_combo.findText(selected)
         if index >= 0:
             self.sequence_combo.setCurrentIndex(index)
-        self.log(f"数据集 OK: {payload.get('dataset_id')} / frames={payload.get('frame_count')}")
+        frame_count = int(payload.get("frame_count") or 0)
+        self.dataset_frame_slider.setRange(0, max(0, frame_count - 1))
+        self.dataset_frame_slider.setValue(min(self.settings.preview_frame_index, max(0, frame_count - 1)))
+        self.dataset_frame_label.setText(f"帧 {self.dataset_frame_slider.value() + 1 if frame_count else 0} / {frame_count}")
+        self.log(f"数据集 OK: {payload.get('dataset_id')} / frames={frame_count}")
 
     def _preview_ready(self, payload: dict[str, Any]) -> None:
+        self._dataset_preview_busy = False
         previews = payload.get("previews", {}) if isinstance(payload.get("previews"), dict) else {}
         self._set_preview(self.rgb_preview, previews.get("front_rgb"), "RGB: NaN")
         self._set_preview(self.depth_preview, previews.get("depth") or previews.get("label"), "Depth/Label: NaN")
+        self._set_preview(self.lidar_preview, previews.get("lidar_points"), "LiDAR: NaN")
+        frame_count = int(payload.get("frame_count") or 0)
+        frame_index = int(payload.get("frame_index") or 0)
+        self.dataset_frame_slider.setRange(0, max(0, frame_count - 1))
+        self.dataset_frame_slider.setValue(frame_index)
+        self.dataset_frame_label.setText(f"帧 {frame_index + 1 if frame_count else 0} / {frame_count}")
         self.dataset_summary.setText(_compact_json(payload))
         self.log(f"预览完成: frame={payload.get('frame_id', services.NAN_TEXT)}")
+
+    def _dataset_quality_ready(self, payload: dict[str, Any]) -> None:
+        analysis = payload.get("analysis") if isinstance(payload.get("analysis"), dict) else {}
+        self.dataset_quality_summary.setText(
+            _dataset_quality_text(
+                analysis,
+                report_json=str(payload.get("report_json_path") or ""),
+                report_markdown=str(payload.get("report_markdown_path") or ""),
+            )
+        )
+        self.dataset_detail_summary.setText(_dataset_detail_text({"details": analysis, "quality": analysis}))
+        self._populate_dataset_analysis_tables(analysis)
+        self.log(f"质量报告完成：status={payload.get('status', services.NAN_TEXT)}")
+
+    def _dataset_split_ready(self, payload: dict[str, Any]) -> None:
+        self.dataset_split_summary.setText(_dataset_split_text(payload))
+        self.log(f"数据划分完成：{payload.get('path', services.NAN_TEXT)}")
+
+    def _populate_dataset_analysis_tables(self, analysis: dict[str, Any]) -> None:
+        self.dataset_sequence_detail_table.setRowCount(0)
+        sequences = analysis.get("sequences") if isinstance(analysis.get("sequences"), list) else []
+        for sequence in sequences:
+            row = self.dataset_sequence_detail_table.rowCount()
+            self.dataset_sequence_detail_table.insertRow(row)
+            values = [
+                sequence.get("sequence_id", ""),
+                sequence.get("frame_count", 0),
+                ", ".join(sequence.get("modalities", [])),
+                sequence.get("time_start", services.NAN_TEXT),
+                sequence.get("time_end", services.NAN_TEXT),
+                int(sequence.get("frame_id_gap_count", 0)) + int(sequence.get("timestamp_issue_count", 0)),
+            ]
+            for column, value in enumerate(values):
+                self.dataset_sequence_detail_table.setItem(row, column, QTableWidgetItem(str(value)))
+
+        self.dataset_issue_table.setRowCount(0)
+        issues = analysis.get("issues") if isinstance(analysis.get("issues"), list) else []
+        for issue in issues:
+            row = self.dataset_issue_table.rowCount()
+            self.dataset_issue_table.insertRow(row)
+            values = [
+                issue.get("severity", ""),
+                issue.get("code", ""),
+                issue.get("sequence_id", ""),
+                issue.get("frame_id", ""),
+                issue.get("message", ""),
+            ]
+            for column, value in enumerate(values):
+                self.dataset_issue_table.setItem(row, column, QTableWidgetItem(str(value)))
 
     def _terrain_exported(self, payload: dict[str, Any]) -> None:
         self._set_preview(self.terrain_preview, payload.get("preview"), "Terrain: NaN")
@@ -2983,8 +3247,12 @@ class MainWindow(QMainWindow):
             self.dataset_root_edit.setText(dataset_root)
         self.adapter_edit.setText(str(row.get("adapter") or "manifest_dataset"))
         sequences = row.get("sequences") if isinstance(row.get("sequences"), list) else []
+        self._set_dataset_sequence_rows(
+            [item if isinstance(item, dict) else {"id": str(item), "root": "."} for item in sequences]
+        )
         self.sequence_combo.clear()
-        for sequence_id in sequences:
+        for sequence in sequences:
+            sequence_id = sequence.get("id") if isinstance(sequence, dict) else sequence
             self.sequence_combo.addItem(str(sequence_id))
         if sequences:
             self.sequence_combo.setCurrentIndex(0)
@@ -3082,6 +3350,34 @@ class MainWindow(QMainWindow):
         return payload
 
     def _dataset_sequences_from_text(self) -> list[dict[str, Any]]:
+        if hasattr(self, "dataset_sequence_table") and self.dataset_sequence_table.rowCount() > 0:
+            rows: list[dict[str, Any]] = []
+            for row_index in range(self.dataset_sequence_table.rowCount()):
+                values = [
+                    self.dataset_sequence_table.item(row_index, column).text().strip()
+                    if self.dataset_sequence_table.item(row_index, column) is not None
+                    else ""
+                    for column in range(self.dataset_sequence_table.columnCount())
+                ]
+                if not values[0]:
+                    continue
+                row: dict[str, Any] = {"id": values[0], "root": values[1] or "."}
+                if values[2]:
+                    row["pose_csv"] = values[2]
+                if values[3]:
+                    row["actions_csv"] = values[3]
+                if values[4]:
+                    try:
+                        assets = json.loads(values[4])
+                    except json.JSONDecodeError as exc:
+                        raise ValueError(f"序列 {values[0]} 的资产映射不是有效 JSON：{exc}") from exc
+                    if not isinstance(assets, dict):
+                        raise ValueError(f"序列 {values[0]} 的资产映射必须是 JSON 对象。")
+                    row["assets"] = assets
+                rows.append(row)
+            if rows:
+                self.dataset_manifest_sequences_edit.setPlainText(json.dumps(rows, indent=2, ensure_ascii=False))
+                return rows
         text = self.dataset_manifest_sequences_edit.toPlainText().strip() if hasattr(self, "dataset_manifest_sequences_edit") else ""
         if not text:
             sequence_id = self.sequence_combo.currentText().strip() or "sequence_001"
@@ -3095,6 +3391,35 @@ class MainWindow(QMainWindow):
         if not isinstance(payload, list) or not all(isinstance(item, dict) for item in payload):
             raise ValueError("Expected dataset sequences to be a JSON list of objects.")
         return [dict(item) for item in payload]
+
+    def _set_dataset_sequence_rows(self, sequences: list[dict[str, Any]]) -> None:
+        self.dataset_sequence_table.setRowCount(0)
+        for sequence in sequences:
+            row_index = self.dataset_sequence_table.rowCount()
+            self.dataset_sequence_table.insertRow(row_index)
+            values = [
+                str(sequence.get("id") or sequence.get("sequence_id") or ""),
+                str(sequence.get("root") or "."),
+                str(sequence.get("pose_csv") or ""),
+                str(sequence.get("actions_csv") or ""),
+                json.dumps(sequence.get("assets") or {}, ensure_ascii=False),
+            ]
+            for column, value in enumerate(values):
+                self.dataset_sequence_table.setItem(row_index, column, QTableWidgetItem(value))
+        self.dataset_manifest_sequences_edit.setPlainText(json.dumps(sequences, indent=2, ensure_ascii=False))
+
+    def _add_dataset_sequence_row(self) -> None:
+        row = self.dataset_sequence_table.rowCount()
+        self.dataset_sequence_table.insertRow(row)
+        defaults = [f"sequence_{row + 1:03d}", ".", "poses.csv", "", "{}"]
+        for column, value in enumerate(defaults):
+            self.dataset_sequence_table.setItem(row, column, QTableWidgetItem(value))
+        self.dataset_sequence_table.setCurrentCell(row, 0)
+
+    def _remove_dataset_sequence_rows(self) -> None:
+        rows = sorted({index.row() for index in self.dataset_sequence_table.selectedIndexes()}, reverse=True)
+        for row in rows:
+            self.dataset_sequence_table.removeRow(row)
 
     def _trainer_arguments_from_text(self) -> list[str]:
         text = self.trainer_arguments_edit.toPlainText().strip() if hasattr(self, "trainer_arguments_edit") else ""
@@ -3291,6 +3616,9 @@ class MainWindow(QMainWindow):
 
     def _task_failed(self, failure_label: str, message: str) -> None:
         self.log(f"{failure_label}: {message}")
+        if failure_label == "数据集预览失败":
+            self._dataset_preview_busy = False
+            self.dataset_play_button.setChecked(False)
         if failure_label == "navigation realtime preview failed":
             self.beamng_summary.setText(_compact_json({"status": "preview_failed", "message": message}))
             self._finish_navigation_preview_task()
@@ -3660,6 +3988,111 @@ def _find_named(rows: list[dict[str, Any]], name: str) -> dict[str, Any] | None:
         if row.get("name") == name:
             return row
     return None
+
+
+def _dataset_detail_text(payload: dict[str, Any]) -> str:
+    details = payload.get("details") if isinstance(payload.get("details"), dict) else payload
+    quality = payload.get("quality") if isinstance(payload.get("quality"), dict) else {}
+    selected_scope = details.get("analysis_scope") == "selected_sequence"
+    sample_count = details.get(
+        "selected_sequence_frame_count" if selected_scope else "sample_count",
+        payload.get("frame_count", services.NAN_TEXT),
+    )
+    sequence_count = details.get(
+        "dataset_sequence_count" if selected_scope else "sequence_count",
+        len(payload.get("sequences", [])),
+    )
+    lines = [
+        f"数据集：{payload.get('dataset_id', details.get('dataset_root', services.NAN_TEXT))}",
+        f"适配器：{payload.get('adapter', services.NAN_TEXT)}",
+        f"统计范围：{'当前序列 ' + str(details.get('selected_sequence_id', '')) if selected_scope else '完整数据集'}",
+        f"序列数：{services.display_value(sequence_count)}",
+        f"{'当前序列样本数' if selected_scope else '样本总数'}：{services.display_value(sample_count)}",
+        f"模态：{', '.join(details.get('modalities', [])) or services.NAN_TEXT}",
+        f"分辨率：{json.dumps(details.get('resolutions', {}), ensure_ascii=False)}",
+        f"时间范围：{services.display_value(details.get('time_start'))} - {services.display_value(details.get('time_end'))}",
+        f"时长：{services.display_value(details.get('duration_sec'))} s",
+        f"数据集大小：{_format_bytes(details.get('dataset_disk_usage_bytes'))}",
+        f"文件数：{services.display_value(details.get('dataset_file_count'))}{'（扫描未完成）' if details.get('disk_usage_truncated') else ''}",
+        f"已引用资产大小：{_format_bytes(details.get('referenced_disk_usage_bytes'))}",
+    ]
+    if quality:
+        lines.extend(
+            [
+                "",
+                f"快速检查：{quality.get('status', services.NAN_TEXT)}",
+                f"可用于训练：{services.display_value(quality.get('training_ready'))}",
+                f"错误 / 警告：{quality.get('error_count', 0)} / {quality.get('warning_count', 0)}",
+            ]
+        )
+    return "\n".join(lines)
+
+
+def _dataset_quality_text(
+    analysis: dict[str, Any],
+    *,
+    report_json: str = "",
+    report_markdown: str = "",
+) -> str:
+    if not analysis:
+        return "质量报告：NaN"
+    lines = [
+        f"状态：{analysis.get('status', services.NAN_TEXT)}",
+        f"可用于训练：{services.display_value(analysis.get('training_ready'))}",
+        f"序列 / 样本：{analysis.get('sequence_count', 0)} / {analysis.get('sample_count', 0)}",
+        f"模态：{', '.join(analysis.get('modalities', [])) or services.NAN_TEXT}",
+        f"检查资产：{analysis.get('checked_asset_count', 0)} / {analysis.get('available_asset_count', 0)}",
+        f"检查方式：{'全量' if analysis.get('asset_check_mode') == 'full' else '抽样'}",
+        f"未检查资产：{analysis.get('unchecked_asset_count', 0)}",
+        f"损坏资产：{analysis.get('corrupt_asset_count', 0)}",
+        f"缺失资产：{json.dumps(analysis.get('missing_asset_counts', {}), ensure_ascii=False)}",
+        f"错误 / 警告：{analysis.get('error_count', 0)} / {analysis.get('warning_count', 0)}",
+    ]
+    if report_json:
+        lines.append(f"JSON 报告：{report_json}")
+    if report_markdown:
+        lines.append(f"Markdown 报告：{report_markdown}")
+    issues = analysis.get("issues") if isinstance(analysis.get("issues"), list) else []
+    if issues:
+        lines.append("")
+        lines.append("问题：")
+        for issue in issues[:30]:
+            lines.append(
+                f"- [{str(issue.get('severity', 'warning')).upper()}] {issue.get('code', '')}: {issue.get('message', '')}"
+            )
+        if len(issues) > 30 or analysis.get("issues_truncated"):
+            lines.append("- 其余问题请查看报告文件。")
+    return "\n".join(lines)
+
+
+def _dataset_split_text(payload: dict[str, Any]) -> str:
+    if not payload:
+        return "数据划分：NaN"
+    ratios = payload.get("ratios") if isinstance(payload.get("ratios"), dict) else {}
+    counts = payload.get("counts") if isinstance(payload.get("counts"), dict) else {}
+    return "\n".join(
+        [
+            f"划分单位：{payload.get('split_unit', services.NAN_TEXT)}",
+            f"策略：{payload.get('strategy', services.NAN_TEXT)}",
+            f"比例：train={ratios.get('train', services.NAN_TEXT)}, validation={ratios.get('validation', services.NAN_TEXT)}, test={ratios.get('test', services.NAN_TEXT)}",
+            f"样本数：train={counts.get('train', 0)}, validation={counts.get('validation', 0)}, test={counts.get('test', 0)}",
+            f"随机种子：{payload.get('seed', services.NAN_TEXT)}（{'已应用' if payload.get('seed_applied') else '连续帧划分，不参与'}）",
+            f"文件：{payload.get('path', services.NAN_TEXT)}",
+        ]
+    )
+
+
+def _format_bytes(value: Any) -> str:
+    try:
+        size = float(value)
+    except (TypeError, ValueError):
+        return services.NAN_TEXT
+    units = ("B", "KB", "MB", "GB", "TB")
+    for unit in units:
+        if abs(size) < 1024.0 or unit == units[-1]:
+            return f"{size:.2f} {unit}"
+        size /= 1024.0
+    return services.NAN_TEXT
 
 
 def _same_path_text(left: str | Path, right: str | Path) -> bool:

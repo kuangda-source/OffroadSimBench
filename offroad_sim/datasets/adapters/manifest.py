@@ -66,7 +66,22 @@ class ManifestDatasetAdapter(DatasetAdapter):
         metadata = dict(manifest.get("metadata") if isinstance(manifest.get("metadata"), dict) else {})
         if isinstance(row.get("metadata"), dict):
             metadata.update(row["metadata"])
-        metadata.update({"adapter": self.name, "manifest_path": str(self._manifest_path(root).resolve())})
+        assets = row.get("assets") if isinstance(row.get("assets"), dict) else {}
+        expected_modalities = sorted(
+            {
+                normalized
+                for asset_name in assets
+                if (field_name := ASSET_FIELDS.get(str(asset_name))) is not None
+                for normalized in (_asset_name_for_field(field_name),)
+            }
+        )
+        metadata.update(
+            {
+                "adapter": self.name,
+                "manifest_path": str(self._manifest_path(root).resolve()),
+                "expected_modalities": expected_modalities,
+            }
+        )
 
         return DatasetSequence(
             dataset_id=str(manifest.get("dataset_id") or root.name),
@@ -184,3 +199,14 @@ class ManifestDatasetAdapter(DatasetAdapter):
 class _SafeFormatDict(dict[str, Any]):
     def __missing__(self, key: str) -> str:
         return "{" + key + "}"
+
+
+def _asset_name_for_field(field_name: str) -> str:
+    return {
+        "front_rgb_path": "front_rgb",
+        "depth_path": "depth",
+        "lidar_path": "lidar_points",
+        "local_bev_path": "local_bev",
+        "terrain_map_path": "terrain_map",
+        "label_path": "label",
+    }[field_name]

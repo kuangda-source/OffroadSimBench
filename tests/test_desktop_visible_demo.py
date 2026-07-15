@@ -444,9 +444,95 @@ def test_gui_auto_detects_dataset_sequences(monkeypatch, tmp_path) -> None:
     window.suggest_dataset_manifest_sequences_from_gui()
 
     assert '"id": "clip_001"' in window.dataset_manifest_sequences_edit.toPlainText()
+    assert window.dataset_sequence_table.rowCount() == 1
+    assert window.dataset_sequence_table.item(0, 0).text() == "clip_001"
+    assert '"front_rgb"' in window.dataset_sequence_table.item(0, 4).text()
     assert window.dataset_manifest_name_edit.text() == "drive_dataset"
     assert window.adapter_edit.text() == "manifest_dataset"
     assert "suggested_sequences" in window.dataset_summary.toPlainText()
+    window.close()
+
+
+def test_gui_dataset_inspection_updates_details_quality_and_frame_controls() -> None:
+    _ensure_app()
+    window = MainWindow()
+    payload = {
+        "dataset_id": "tiny_drive",
+        "adapter": "manifest_dataset",
+        "sequences": ["clip_001"],
+        "selected_sequence": "clip_001",
+        "frame_count": 4,
+        "details": {
+            "sequence_count": 1,
+            "modalities": ["front_rgb", "lidar_points"],
+            "resolutions": {"front_rgb": [[8, 12, 3]]},
+            "time_start": 0.0,
+            "time_end": 0.3,
+            "duration_sec": 0.3,
+            "referenced_disk_usage_bytes": 1024,
+        },
+        "quality": {
+            "status": "ready",
+            "training_ready": True,
+            "error_count": 0,
+            "warning_count": 0,
+            "sequence_count": 1,
+            "sample_count": 4,
+            "modalities": ["front_rgb", "lidar_points"],
+            "sequences": [
+                {
+                    "sequence_id": "clip_001",
+                    "frame_count": 4,
+                    "modalities": ["front_rgb", "lidar_points"],
+                    "time_start": 0.0,
+                    "time_end": 0.3,
+                    "frame_id_gap_count": 0,
+                    "timestamp_issue_count": 0,
+                }
+            ],
+            "issues": [
+                {
+                    "severity": "warning",
+                    "code": "sample_warning",
+                    "sequence_id": "clip_001",
+                    "frame_id": "000003",
+                    "message": "example",
+                }
+            ],
+        },
+    }
+
+    window._dataset_inspected(payload)
+
+    assert window.dataset_frame_slider.maximum() == 3
+    assert window.dataset_frame_label.text() == "帧 1 / 4"
+    assert "序列数：1" in window.dataset_detail_summary.toPlainText()
+    assert "lidar_points" in window.dataset_detail_summary.toPlainText()
+    assert "状态：ready" in window.dataset_quality_summary.toPlainText()
+    assert window.dataset_sequence_detail_table.rowCount() == 1
+    assert window.dataset_sequence_detail_table.item(0, 0).text() == "clip_001"
+    assert window.dataset_issue_table.rowCount() == 1
+    assert window.dataset_issue_table.item(0, 1).text() == "sample_warning"
+    window.close()
+
+
+def test_gui_dataset_playback_uses_one_timer_and_stops_at_last_frame(monkeypatch) -> None:
+    _ensure_app()
+    window = MainWindow()
+    window.dataset_frame_slider.setRange(0, 2)
+    calls: list[int] = []
+    monkeypatch.setattr(window, "preview_dataset", lambda: calls.append(window.dataset_frame_slider.value()))
+
+    window.dataset_play_button.setChecked(True)
+    assert window.dataset_preview_timer.isActive()
+    assert window.dataset_play_button.text() == "暂停"
+    window._advance_dataset_preview()
+    window._advance_dataset_preview()
+    window._advance_dataset_preview()
+
+    assert calls == [0, 1, 2]
+    assert window.dataset_play_button.isChecked() is False
+    assert window.dataset_preview_timer.isActive() is False
     window.close()
 
 

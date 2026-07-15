@@ -19,7 +19,13 @@ from offroad_sim.agents import default_agent_registry
 from offroad_sim.algorithms import DataPrepRequest, TrainRequest, default_algorithm_registry
 from offroad_sim.backends import BeamNGBackend, BeamNGConnectionConfig, default_backend_registry
 from offroad_sim.core import Action, VehicleState
-from offroad_sim.datasets import create_mock_orfd_dataset, default_dataset_registry
+from offroad_sim.datasets import (
+    DatasetAnalysisOptions,
+    analyze_dataset_sequences,
+    build_dataset_split,
+    create_mock_orfd_dataset,
+    default_dataset_registry,
+)
 from offroad_sim.datasets import DatasetFrame, DatasetSequence
 from offroad_sim.evaluation import run_episode
 from offroad_sim.evaluation.runner import DEFAULT_OUTPUT_ROOT
@@ -1922,6 +1928,11 @@ def inspect_dataset(dataset_root: str, adapter: str = "", sequence_id: str = "")
         raise ValueError("No dataset sequences found.")
     selected = sequence_id or sequences[0]
     sequence = resolved_adapter.load_sequence(dataset_root, selected)
+    analysis = analyze_dataset_sequences(
+        [sequence],
+        dataset_root=dataset_root,
+        options=DatasetAnalysisOptions(max_asset_checks=100),
+    )
     asset_counts: dict[str, int] = {}
     for frame in sequence.frames:
         for name in frame.available_assets():
@@ -1936,7 +1947,103 @@ def inspect_dataset(dataset_root: str, adapter: str = "", sequence_id: str = "")
         "frame_count": len(sequence.frames),
         "asset_counts": asset_counts,
         "metadata": sequence.metadata,
+        "details": {
+            "analysis_scope": "selected_sequence",
+            "dataset_sequence_count": len(sequences),
+            "selected_sequence_id": selected,
+            "selected_sequence_frame_count": len(sequence.frames),
+            "modalities": analysis["modalities"],
+            "resolutions": analysis["resolutions"],
+            "time_start": analysis["time_start"],
+            "time_end": analysis["time_end"],
+            "duration_sec": analysis["duration_sec"],
+            "referenced_disk_usage_bytes": analysis["referenced_disk_usage_bytes"],
+            "dataset_disk_usage_bytes": analysis["dataset_disk_usage_bytes"],
+            "dataset_file_count": analysis["dataset_file_count"],
+            "disk_usage_truncated": analysis["disk_usage_truncated"],
+        },
+        "quality": analysis,
     }
+
+
+def analyze_dataset_quality(
+    dataset_root: str,
+    adapter: str = "",
+    sequence_ids: list[str] | None = None,
+    *,
+    output_dir: str | Path | None = None,
+    max_asset_checks: int = 0,
+) -> dict[str, Any]:
+    """Run a full dataset quality scan and persist JSON/Markdown reports."""
+
+    if not dataset_root:
+        raise ValueError("Dataset root is required.")
+    registry = default_dataset_registry()
+    resolved_adapter = registry.resolve(dataset_root, adapter or None)
+    available = resolved_adapter.list_sequences(dataset_root)
+    selected = sequence_ids or available
+    unknown = [sequence_id for sequence_id in selected if sequence_id not in available]
+    if unknown:
+        raise ValueError(f"Unknown dataset sequences: {', '.join(unknown)}")
+    sequences = [resolved_adapter.load_sequence(dataset_root, sequence_id) for sequence_id in selected]
+    analysis = analyze_dataset_sequences(
+        sequences,
+        dataset_root=dataset_root,
+        options=DatasetAnalysisOptions(max_asset_checks=max_asset_checks),
+    )
+    report_dir = Path(
+        output_dir
+        or ROOT / "outputs" / "dataset_reports" / f"{_safe_name(Path(dataset_root).name)}_{_timestamp()}"
+    )
+    report_dir.mkdir(parents=True, exist_ok=True)
+    json_path = report_dir / "dataset_quality_report.json"
+    markdown_path = report_dir / "dataset_quality_report.md"
+    json_path.write_text(json.dumps(analysis, indent=2, ensure_ascii=False), encoding="utf-8")
+    markdown_path.write_text(_dataset_quality_markdown(analysis), encoding="utf-8")
+    return {
+        "status": analysis["status"],
+        "training_ready": analysis["training_ready"],
+        "analysis": analysis,
+        "report_json_path": str(json_path.resolve()),
+        "report_markdown_path": str(markdown_path.resolve()),
+    }
+
+
+def create_dataset_split_definition(
+    dataset_root: str,
+    adapter: str = "",
+    *,
+    train_ratio: float = 0.7,
+    validation_ratio: float = 0.15,
+    test_ratio: float = 0.15,
+    seed: int = 7,
+    output_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """Create and save a deterministic train/validation/test split."""
+
+    if not dataset_root:
+        raise ValueError("Dataset root is required.")
+    registry = default_dataset_registry()
+    resolved_adapter = registry.resolve(dataset_root, adapter or None)
+    sequence_ids = resolved_adapter.list_sequences(dataset_root)
+    sequences = [resolved_adapter.load_sequence(dataset_root, sequence_id) for sequence_id in sequence_ids]
+    payload = build_dataset_split(
+        sequences,
+        dataset_root=dataset_root,
+        adapter=resolved_adapter.name,
+        train_ratio=train_ratio,
+        validation_ratio=validation_ratio,
+        test_ratio=test_ratio,
+        seed=seed,
+    )
+    target = Path(
+        output_path
+        or ROOT / "outputs" / "dataset_splits" / f"{_safe_name(Path(dataset_root).name)}_split.json"
+    )
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    payload["path"] = str(target.resolve())
+    return payload
 
 
 def preview_dataset_frame(
@@ -1965,9 +2072,9 @@ def preview_dataset_frame(
 
     previews: dict[str, str] = {}
     for name, asset_path in frame.available_assets().items():
-        if name not in {"front_rgb", "depth", "label", "local_bev", "terrain_map"}:
+        if name not in {"front_rgb", "depth", "label", "lidar_points", "local_bev", "terrain_map"}:
             continue
-        preview_path = _write_preview_image(asset_path, out / f"{index:06d}_{name}.png")
+        preview_path = _write_preview_image(asset_path, out / f"{index:06d}_{name}.png", modality=name)
         if preview_path is not None:
             previews[name] = str(preview_path.resolve())
 
@@ -1982,6 +2089,49 @@ def preview_dataset_frame(
         "previews": previews,
         "metadata": frame.metadata,
     }
+
+
+def _dataset_quality_markdown(analysis: dict[str, Any]) -> str:
+    lines = [
+        "# Dataset Quality Report",
+        "",
+        f"- Status: {analysis.get('status', NAN_TEXT)}",
+        f"- Training ready: {analysis.get('training_ready', False)}",
+        f"- Sequences: {analysis.get('sequence_count', 0)}",
+        f"- Samples: {analysis.get('sample_count', 0)}",
+        f"- Modalities: {', '.join(analysis.get('modalities', [])) or NAN_TEXT}",
+        f"- Available modalities: {', '.join(analysis.get('available_modalities', [])) or NAN_TEXT}",
+        f"- Asset check mode: {analysis.get('asset_check_mode', NAN_TEXT)} ({analysis.get('checked_asset_count', 0)}/{analysis.get('available_asset_count', 0)})",
+        f"- Referenced disk usage: {analysis.get('referenced_disk_usage_bytes', 0)} bytes",
+        f"- Dataset disk usage: {analysis.get('dataset_disk_usage_bytes', 0)} bytes",
+        f"- Errors: {analysis.get('error_count', 0)}",
+        f"- Warnings: {analysis.get('warning_count', 0)}",
+        "",
+        "## Sequences",
+        "",
+        "| Sequence | Frames | Modalities | Frame gaps | Timestamp issues |",
+        "|---|---:|---|---:|---:|",
+    ]
+    for row in analysis.get("sequences", []):
+        lines.append(
+            "| {sequence_id} | {frame_count} | {modalities} | {frame_id_gap_count} | {timestamp_issue_count} |".format(
+                sequence_id=row.get("sequence_id", ""),
+                frame_count=row.get("frame_count", 0),
+                modalities=", ".join(row.get("modalities", [])),
+                frame_id_gap_count=row.get("frame_id_gap_count", 0),
+                timestamp_issue_count=row.get("timestamp_issue_count", 0),
+            )
+        )
+    lines.extend(["", "## Issues", ""])
+    issues = analysis.get("issues", [])
+    if not issues:
+        lines.append("No issues found.")
+    else:
+        for issue in issues:
+            lines.append(
+                f"- [{str(issue.get('severity', 'warning')).upper()}] {issue.get('code', '')}: {issue.get('message', '')}"
+            )
+    return "\n".join(lines) + "\n"
 
 
 def run_episode_from_request(request: RunRequest) -> dict[str, Any]:
@@ -5525,9 +5675,9 @@ def _coerce_point3(value: Any, label: str) -> tuple[float, float, float]:
         raise ValueError(f"Invalid {label}: expected [x, y, z].") from exc
 
 
-def _write_preview_image(asset_path: str, output_path: Path) -> Path | None:
+def _write_preview_image(asset_path: str, output_path: Path, *, modality: str = "") -> Path | None:
     try:
-        image = _load_asset_image(asset_path)
+        image = _lidar_preview(_load_lidar_points(asset_path)) if modality == "lidar_points" else _load_asset_image(asset_path)
     except (OSError, ValueError):
         return None
     _write_preview_array(image, output_path)
@@ -5538,7 +5688,7 @@ def _load_asset_image(asset_path: str) -> np.ndarray:
     from scripts.export_lewm_hdf5 import _load_image
 
     suffix = Path(asset_path.rsplit("!", 1)[-1]).suffix.lower()
-    if suffix == ".bin":
+    if suffix in {".bin", ".pcd"}:
         points = _load_lidar_points(asset_path)
         return _lidar_preview(points)
     image = _load_image(asset_path)
@@ -5571,11 +5721,38 @@ def _height_grid_from_asset(asset_path: str, *, grid_size: int) -> np.ndarray:
 
 def _load_lidar_points(asset_path: str) -> np.ndarray:
     raw = _read_asset_bytes(asset_path)
+    suffix = Path(asset_path.rsplit("!", 1)[-1]).suffix.lower()
+    if suffix == ".npy":
+        from io import BytesIO
+
+        points = np.asarray(np.load(BytesIO(raw), allow_pickle=False), dtype=np.float32)
+        if points.ndim != 2 or points.shape[1] < 3:
+            raise ValueError("LiDAR .npy must be an Nx3 or Nx4 array.")
+        return points[:, :3]
+    if suffix == ".pcd":
+        return _load_ascii_pcd_points(raw)
     values = np.frombuffer(raw, dtype=np.float32)
     if values.size < 3:
         return np.empty((0, 3), dtype=np.float32)
     stride = 4 if values.size % 4 == 0 else 3
     return values[: values.size // stride * stride].reshape(-1, stride)[:, :3]
+
+
+def _load_ascii_pcd_points(raw: bytes) -> np.ndarray:
+    marker = b"DATA ascii"
+    index = raw.find(marker)
+    if index < 0:
+        raise ValueError("Only ASCII PCD previews are currently supported.")
+    start = raw.find(b"\n", index)
+    if start < 0:
+        return np.empty((0, 3), dtype=np.float32)
+    rows: list[list[float]] = []
+    for line in raw[start + 1 :].decode("utf-8", errors="replace").splitlines():
+        values = line.strip().split()
+        if len(values) < 3:
+            continue
+        rows.append([float(values[0]), float(values[1]), float(values[2])])
+    return np.asarray(rows, dtype=np.float32).reshape(-1, 3)
 
 
 def _read_asset_bytes(asset_path: str) -> bytes:
