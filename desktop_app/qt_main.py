@@ -64,6 +64,9 @@ PRIMARY_BUTTON_HEIGHT = 42
 NAV_BUTTON_HEIGHT = 40
 METRIC_CARD_HEIGHT = 82
 PREVIEW_MIN_HEIGHT = 280
+INITIAL_WINDOW_WIDTH = 1600
+INITIAL_WINDOW_HEIGHT = 840
+DATASET_SOURCE_MIN_WIDTH = 520
 
 
 @dataclass
@@ -1385,11 +1388,15 @@ class MainWindow(QMainWindow):
         self.dataset_sequence_table.verticalHeader().setVisible(False)
         self.dataset_sequence_table.setMinimumHeight(150)
         self.dataset_sequence_table.setAlternatingRowColors(True)
+        self.dataset_sequence_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.dataset_sequence_table.itemSelectionChanged.connect(self._sync_sequence_from_table_selection)
+        self._dataset_sequence_view_mode = "mapping"
         self.dataset_root_edit = QLineEdit()
         self.dataset_root_edit.setPlaceholderText(r"datasets\ORFD_Dataset_ICRA2022_ZIP")
         self.dataset_split_path_edit = QLineEdit()
         self.dataset_split_path_edit.setPlaceholderText(r"outputs\dataset_splits\dataset_split.json")
         self.sequence_combo = self._combo(editable=True)
+        self.sequence_combo.currentTextChanged.connect(self._sync_sequence_table_selection)
         self.adapter_edit = QLineEdit("orfd")
         self.stablewm_hdf5_edit = QLineEdit()
         self.stablewm_hdf5_edit.setPlaceholderText(r"outputs\stablewm\orfd_gui.h5")
@@ -1515,8 +1522,8 @@ class MainWindow(QMainWindow):
         return scroll
 
     def _resize_to_available_screen(self) -> None:
-        target_width = 1380
-        target_height = 840
+        target_width = INITIAL_WINDOW_WIDTH
+        target_height = INITIAL_WINDOW_HEIGHT
         screen = QApplication.primaryScreen()
         if screen is not None:
             available = screen.availableGeometry()
@@ -1613,6 +1620,7 @@ class MainWindow(QMainWindow):
         self.dataset_catalog_combo.setToolTip("选择之前保存或导入的数据源配置；临时浏览文件夹可保持“临时数据集”。")
         self.dataset_sequence_table.setToolTip("仅在自定义数据集没有内置适配器时编辑序列目录和资产映射。")
         self.adapter_edit.setToolTip("识别后自动填写；也可手动指定已注册的适配器名称。")
+        self._set_custom_dataset_controls(True)
         controls = self._group(
             "数据源",
             [
@@ -1620,7 +1628,7 @@ class MainWindow(QMainWindow):
                 self._field("数据集根目录", self._with_button(self.dataset_root_edit, dataset_browse)),
                 source_toolbar,
                 self._field("保存名称（自定义数据源）", self.dataset_manifest_name_edit),
-                self._field("自定义序列映射", self.dataset_sequence_table),
+                self._field("序列列表 / 自定义映射", self.dataset_sequence_table),
                 manifest_toolbar,
                 self._field("当前序列", self.sequence_combo),
                 self._field("识别到的适配器", self.adapter_edit),
@@ -1628,6 +1636,8 @@ class MainWindow(QMainWindow):
                 self._action_button("预览数据帧", self.preview_dataset, primary=True),
             ],
         )
+        controls.setMinimumWidth(DATASET_SOURCE_MIN_WIDTH)
+        self.dataset_source_panel = controls
         data_layout.addWidget(controls, 1)
         dataset_workspace = QTabWidget()
         preview_page = QWidget()
@@ -2661,6 +2671,7 @@ class MainWindow(QMainWindow):
         self.adapter_edit.clear()
         if hasattr(self, "dataset_save_button"):
             self._set_custom_dataset_controls(True)
+            self._set_dataset_sequence_rows([])
 
     def preview_dataset(self) -> None:
         if self._dataset_preview_busy:
@@ -2870,15 +2881,19 @@ class MainWindow(QMainWindow):
             self.log(f"Dataset format detection failed: {exc}")
             return
         definitions = result.get("sequence_definitions") if isinstance(result.get("sequence_definitions"), list) else []
-        sequence_ids = result.get("sequences") if isinstance(result.get("sequences"), list) else []
-        self._set_dataset_sequence_rows([dict(row) for row in definitions if isinstance(row, dict)])
+        sequence_ids = [str(item) for item in result.get("sequences", [])] if isinstance(result.get("sequences"), list) else []
         if not self.dataset_manifest_name_edit.text().strip():
             self.dataset_manifest_name_edit.setText(Path(dataset_root).name or "Custom Dataset")
-        self.adapter_edit.setText(str(result.get("adapter") or ""))
-        self._set_custom_dataset_controls(str(result.get("adapter") or "") == "manifest_dataset")
+        adapter = str(result.get("adapter") or "")
+        self.adapter_edit.setText(adapter)
         self.sequence_combo.clear()
         for sequence_id in sequence_ids:
-            self.sequence_combo.addItem(str(sequence_id))
+            self.sequence_combo.addItem(sequence_id)
+        if adapter == "manifest_dataset":
+            self._set_custom_dataset_controls(True)
+            self._set_dataset_sequence_rows([dict(row) for row in definitions if isinstance(row, dict)])
+        else:
+            self._set_detected_dataset_sequence_rows(sequence_ids, adapter)
         self.dataset_summary.setText(_compact_json(result))
         self.log(
             f"Dataset detected: adapter={result.get('adapter', services.NAN_TEXT)}, "
@@ -3600,16 +3615,21 @@ class MainWindow(QMainWindow):
 
     def _dataset_inspected(self, payload: dict[str, Any]) -> None:
         self.dataset_info = payload
-        self.adapter_edit.setText(str(payload.get("adapter") or ""))
-        self._set_custom_dataset_controls(str(payload.get("adapter") or "") == "manifest_dataset")
+        adapter = str(payload.get("adapter") or "")
+        self.adapter_edit.setText(adapter)
         self.dataset_summary.setText(_compact_json(payload))
         self.dataset_detail_summary.setText(_dataset_detail_text(payload))
         quality = payload.get("quality") if isinstance(payload.get("quality"), dict) else {}
         self.dataset_quality_summary.setText(_dataset_quality_text(quality))
         self._populate_dataset_analysis_tables(quality)
         self.sequence_combo.clear()
-        for sequence_id in payload.get("sequences", []):
-            self.sequence_combo.addItem(str(sequence_id))
+        sequence_ids = [str(item) for item in payload.get("sequences", [])]
+        for sequence_id in sequence_ids:
+            self.sequence_combo.addItem(sequence_id)
+        if adapter == "manifest_dataset":
+            self._set_custom_dataset_controls(True)
+        else:
+            self._set_detected_dataset_sequence_rows(sequence_ids, adapter)
         selected = str(payload.get("selected_sequence", ""))
         index = self.sequence_combo.findText(selected)
         if index >= 0:
@@ -3799,6 +3819,8 @@ class MainWindow(QMainWindow):
         sequence_id = str(row.get("sequence_id") or "")
         if sequence_id:
             self.sequence_combo.setCurrentText(sequence_id)
+        if adapter and adapter != "manifest_dataset":
+            self._set_detected_dataset_sequence_rows([sequence_id] if sequence_id else [], adapter)
         self.dataset_split_path_edit.setText(str(row.get("split_path") or ""))
         preset_id = str(row.get("training_preset_id") or "")
         if preset_id:
@@ -3879,11 +3901,71 @@ class MainWindow(QMainWindow):
         self.dataset_summary.setText(_compact_json({"dataset": row}))
 
     def _set_custom_dataset_controls(self, enabled: bool) -> None:
+        self._dataset_sequence_view_mode = "mapping" if enabled else "detected"
         self.dataset_manifest_name_edit.setEnabled(enabled)
-        self.dataset_sequence_table.setEnabled(enabled)
         self.dataset_sequence_add_button.setEnabled(enabled)
         self.dataset_sequence_remove_button.setEnabled(enabled)
         self.dataset_save_button.setEnabled(enabled)
+        self.dataset_sequence_table.setEnabled(True)
+        header = self.dataset_sequence_table.horizontalHeader()
+        if enabled:
+            self.dataset_sequence_table.setColumnCount(5)
+            self.dataset_sequence_table.setHorizontalHeaderLabels(
+                ["序列 ID", "相对目录", "位姿 CSV", "动作 CSV", "资产映射 JSON"]
+            )
+            self.dataset_sequence_table.setEditTriggers(QAbstractItemView.EditTrigger.AllEditTriggers)
+            self.dataset_sequence_table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+            for column in range(4):
+                header.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
+            header.setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+            self.dataset_sequence_table.setToolTip("编辑没有内置适配器的数据集序列目录、CSV 和资产映射。")
+        else:
+            self.dataset_sequence_table.setColumnCount(2)
+            self.dataset_sequence_table.setHorizontalHeaderLabels(["已识别序列", "适配器"])
+            self.dataset_sequence_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+            self.dataset_sequence_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+            header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+            header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+            self.dataset_sequence_table.setToolTip("只读显示适配器识别到的序列；选择一行可切换当前序列。")
+
+    def _set_detected_dataset_sequence_rows(self, sequence_ids: list[str], adapter: str) -> None:
+        self._set_custom_dataset_controls(False)
+        self.dataset_sequence_table.blockSignals(True)
+        self.dataset_sequence_table.setRowCount(0)
+        for sequence_id in sequence_ids:
+            row = self.dataset_sequence_table.rowCount()
+            self.dataset_sequence_table.insertRow(row)
+            self.dataset_sequence_table.setItem(row, 0, QTableWidgetItem(sequence_id))
+            self.dataset_sequence_table.setItem(row, 1, QTableWidgetItem(adapter))
+        self.dataset_sequence_table.blockSignals(False)
+        self._sync_sequence_table_selection(self.sequence_combo.currentText())
+
+    def _sync_sequence_from_table_selection(self) -> None:
+        if self._dataset_sequence_view_mode != "detected":
+            return
+        row = self.dataset_sequence_table.currentRow()
+        item = self.dataset_sequence_table.item(row, 0) if row >= 0 else None
+        if item is None:
+            return
+        index = self.sequence_combo.findText(item.text())
+        if index >= 0 and index != self.sequence_combo.currentIndex():
+            self.sequence_combo.setCurrentIndex(index)
+
+    def _sync_sequence_table_selection(self, sequence_id: str) -> None:
+        if self._dataset_sequence_view_mode != "detected":
+            return
+        target_row = -1
+        for row in range(self.dataset_sequence_table.rowCount()):
+            item = self.dataset_sequence_table.item(row, 0)
+            if item is not None and item.text() == sequence_id:
+                target_row = row
+                break
+        self.dataset_sequence_table.blockSignals(True)
+        if target_row >= 0:
+            self.dataset_sequence_table.selectRow(target_row)
+        else:
+            self.dataset_sequence_table.clearSelection()
+        self.dataset_sequence_table.blockSignals(False)
 
     def _fill_training_preset_combo(self) -> None:
         current = self.training_preset_combo.currentData()

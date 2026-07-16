@@ -11,10 +11,18 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QPointF, Qt
 from PySide6.QtGui import QColor, QPixmap
-from PySide6.QtWidgets import QApplication, QDialog, QLabel, QPushButton
+from PySide6.QtWidgets import QApplication, QAbstractItemView, QDialog, QLabel, QPushButton
 
 from desktop_app import services
-from desktop_app.qt_main import MainWindow, NavigationTaskCanvas, NavigationTaskDialog, STYLESHEET, TrainingCurveWidget
+from desktop_app.qt_main import (
+    DATASET_SOURCE_MIN_WIDTH,
+    INITIAL_WINDOW_WIDTH,
+    MainWindow,
+    NavigationTaskCanvas,
+    NavigationTaskDialog,
+    STYLESHEET,
+    TrainingCurveWidget,
+)
 
 
 def _ensure_app() -> QApplication:
@@ -268,7 +276,7 @@ def test_gui_dataset_training_page_exposes_training_studio_controls() -> None:
     assert "最近指标曲线" in labels
     assert "保存名称（自定义数据源）" in labels
     assert "已保存的数据源" in labels
-    assert "自定义序列映射" in labels
+    assert "序列列表 / 自定义映射" in labels
     assert "识别格式与序列" in buttons
     assert "保存为通用数据源" in buttons
     assert "预览数据帧" in buttons
@@ -458,6 +466,8 @@ def test_gui_auto_detects_dataset_sequences(monkeypatch, tmp_path) -> None:
     assert '"front_rgb"' in window.dataset_sequence_table.item(0, 4).text()
     assert window.dataset_manifest_name_edit.text() == "drive_dataset"
     assert window.adapter_edit.text() == "manifest_dataset"
+    assert window.dataset_sequence_table.columnCount() == 5
+    assert window.dataset_sequence_table.editTriggers() != QAbstractItemView.EditTrigger.NoEditTriggers
     assert '"status": "detected"' in window.dataset_summary.toPlainText()
     window.close()
 
@@ -485,8 +495,39 @@ def test_gui_orfd_detection_uses_same_adapter_sequences_as_inspection(tmp_path) 
     detected_sequences = [window.sequence_combo.itemText(index) for index in range(window.sequence_combo.count())]
     assert window.adapter_edit.text() == "orfd"
     assert detected_sequences == inspected["sequences"]
-    assert window.dataset_sequence_table.rowCount() == 0
-    assert window.dataset_sequence_table.isEnabled() is False
+    assert window.dataset_sequence_table.rowCount() == len(inspected["sequences"])
+    assert window.dataset_sequence_table.columnCount() == 2
+    assert window.dataset_sequence_table.item(0, 0).text() == inspected["sequences"][0]
+    assert window.dataset_sequence_table.item(0, 1).text() == "orfd"
+    assert window.dataset_sequence_table.editTriggers() == QAbstractItemView.EditTrigger.NoEditTriggers
+    assert window.dataset_sequence_table.isEnabled() is True
+    window.close()
+
+
+def test_gui_detected_sequence_table_and_combo_stay_in_sync() -> None:
+    _ensure_app()
+    window = MainWindow()
+    window.sequence_combo.clear()
+    window.sequence_combo.addItems(["training/clip_a", "training/clip_b"])
+    window._set_detected_dataset_sequence_rows(["training/clip_a", "training/clip_b"], "orfd")
+
+    window.dataset_sequence_table.selectRow(1)
+    assert window.sequence_combo.currentText() == "training/clip_b"
+    window.sequence_combo.setCurrentText("training/clip_a")
+    assert window.dataset_sequence_table.currentRow() == 0
+    window.close()
+
+
+def test_gui_initial_width_and_dataset_source_panel_allow_sequence_headers() -> None:
+    app = _ensure_app()
+    window = MainWindow()
+    screen = app.primaryScreen()
+    assert screen is not None
+    available = screen.availableGeometry()
+    expected_width = min(INITIAL_WINDOW_WIDTH, max(480, available.width() - 40), available.width())
+
+    assert window.width() == expected_width
+    assert window.dataset_source_panel.minimumWidth() == DATASET_SOURCE_MIN_WIDTH
     window.close()
 
 
