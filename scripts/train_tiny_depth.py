@@ -82,8 +82,8 @@ def main() -> int:
         weights = np.zeros(train_x.shape[1], dtype=np.float64)
         weights[0] = float(np.mean(train_y))
     history = {"train_loss": [], "validation_loss": [], "learning_rate": [], "throughput": []}
-    events_path = output_dir / "events.jsonl"
-    with events_path.open("w", encoding="utf-8") as events:
+    metrics_jsonl_path = output_dir / "metrics.jsonl"
+    with metrics_jsonl_path.open("w", encoding="utf-8") as events:
         for local_epoch in range(1, args.epochs + 1):
             epoch = start_epoch + local_epoch
             with np.errstate(over="ignore", invalid="ignore"):

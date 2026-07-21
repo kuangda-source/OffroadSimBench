@@ -79,7 +79,7 @@ outputs:
   artifact_type: depth_model
   metrics_file: metrics.json
   history_file: history.json
-  events_file: events.jsonl
+  events_file: metrics.jsonl
 resume:
   supported: true
   arguments:

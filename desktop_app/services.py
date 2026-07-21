@@ -1539,7 +1539,7 @@ def queue_trainer_manifest_job(
                     "status": status,
                     "history": normalized_resources,
                     "summary": {
-                        "events_path": str(_trainer_output_file(target_dir, outputs.get("events_file"), "events.jsonl"))
+                        "events_path": str(_trainer_metric_events_file(target_dir, outputs.get("events_file")))
                     },
                 }
             )
@@ -1563,7 +1563,7 @@ def queue_trainer_manifest_job(
                     "return_code": return_code,
                     "error": stderr.strip() or stdout[-1000:].strip(),
                     "resource_sampling_available": bool(normalized_resources),
-                    "events_path": str(_trainer_output_file(target_dir, outputs.get("events_file"), "events.jsonl")),
+                    "events_path": str(_trainer_metric_events_file(target_dir, outputs.get("events_file"))),
                     "metric_diagnostics": metric_diagnostics,
                     "resume_checkpoint": resume_checkpoint,
                 },
@@ -1581,7 +1581,7 @@ def queue_trainer_manifest_job(
         for key, values in normalized_resources.items():
             if values:
                 metrics.setdefault(key, values[-1])
-        events_path = str(_trainer_output_file(target_dir, outputs.get("events_file"), "events.jsonl"))
+        events_path = str(_trainer_metric_events_file(target_dir, outputs.get("events_file")))
         metric_diagnostics = training_metric_diagnostics(
             {
                 "status": "completed",
@@ -1684,7 +1684,7 @@ def queue_trainer_manifest_job(
             "sequence_id": sequence_id,
             "split_path": split_path,
             "trainer_manifest_path": str(Path(manifest_path).resolve()),
-            "events_path": str(_trainer_output_file(target_dir, outputs.get("events_file"), "events.jsonl")),
+            "events_path": str(_trainer_metric_events_file(target_dir, outputs.get("events_file"))),
             "tensorboard_dir": str(
                 _trainer_output_file(
                     target_dir,
@@ -2844,8 +2844,9 @@ def live_training_metric_record(job: dict[str, Any]) -> dict[str, Any]:
 
     metadata = job.get("metadata") if isinstance(job.get("metadata"), dict) else {}
     output_dir = Path(str(job.get("output_dir") or ROOT / "outputs"))
-    events_value = str(metadata.get("events_path") or output_dir / "events.jsonl")
-    history, history_steps = _read_metric_events_with_steps(Path(events_value))
+    events_path = _trainer_metric_events_file(output_dir, metadata.get("events_path"))
+    events_value = str(events_path)
+    history, history_steps = _read_metric_events_with_steps(events_path)
     jsonl_available = bool(history)
     tensorboard_value = str(
         metadata.get("tensorboard_path")
@@ -3503,7 +3504,7 @@ def _trainer_result_payload(manifest: dict[str, Any], output_dir: Path, stdout: 
         history_steps.update(history_steps_from_file)
 
     event_history, event_steps = _read_metric_events_with_steps(
-        _trainer_output_file(output_dir, outputs.get("events_file"), "events.jsonl")
+        _trainer_metric_events_file(output_dir, outputs.get("events_file"))
     )
     if event_history:
         for key, values in event_history.items():
@@ -3546,6 +3547,14 @@ def _trainer_output_file(output_dir: Path, configured: Any, default_name: str) -
     if path.is_absolute():
         return path
     return output_dir / path
+
+
+def _trainer_metric_events_file(output_dir: Path, configured: Any = None) -> Path:
+    path = _trainer_output_file(output_dir, configured, "metrics.jsonl")
+    if path.exists() or path.name.lower() != "metrics.jsonl":
+        return path
+    legacy = output_dir / "events.jsonl"
+    return legacy if legacy.exists() else path
 
 
 def _resolve_trainer_output_path(output_dir: Path, value: str | Path) -> Path:

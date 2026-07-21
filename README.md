@@ -193,7 +193,7 @@ support-subgoal 评估和 route-guided 对比；2026-07-07 独立对比中 route
 
 数据工作区会缓存检查结果，并以数据集/序列/模态树显示当前扫描范围、模态数量、缺失状态、帧范围、标定状态和质量结论。`配置通用映射` 向导可以为没有内置 adapter 的目录映射 RGB、深度、标签、LiDAR、BEV 和 terrain 数据，支持按排序、Frame ID 或时间戳加容差对齐；文件名正则既可匹配完整文件名，也可匹配不含扩展名的 stem。保存前会实际读取前五帧并列出匹配和缺失模态。数据详情页会结合当前训练器的 `required_modalities`、数据划分要求和质量检查，明确显示可训练、带警告可训练或不可训练及原因。
 
-`新建训练配置` 使用四步向导选择数据集/划分、模型或外部训练器、schema 参数并执行入口脚本、模态、split、输出目录和恢复 checkpoint 预检。实时监控同时支持统一 `events.jsonl` 和可选 TensorBoard scalar event，训练期间持续显示指标曲线和 CPU/RAM/GPU/VRAM；暂停日志刷新不会暂停训练或指标采集。训练器可用 `resume.arguments` 声明通用恢复命令，支持的 checkpoint 会显示“恢复训练”，Tiny RGB 深度基线已经完成从 epoch 2 恢复到 epoch 4 的协议验收。
+`新建训练配置` 使用四步向导选择数据集/划分、模型或外部训练器、schema 参数并执行入口脚本、模态、split、输出目录和恢复 checkpoint 预检。实时监控同时支持统一 `metrics.jsonl`、旧版 `events.jsonl` 和可选 TensorBoard scalar event，训练期间持续显示指标曲线和 CPU/RAM/GPU/VRAM；暂停日志刷新不会暂停训练或指标采集。训练器可用 `resume.arguments` 声明通用恢复命令，支持的 checkpoint 会显示“恢复训练”，Tiny RGB 深度基线已经完成从 epoch 2 恢复到 epoch 4 的协议验收。
 
 训练记录支持 `history` 字段保存 loss、RMSE、学习率、吞吐率和模型自定义指标。GUI 可切换主指标，自动叠加 train/validation loss，支持滚轮缩放、悬停数值、异常点标记，并诊断 NaN、loss 爆炸、指标长期不更新；指标原始 JSON/CSV 和当前曲线 PNG 可从训练结果页一起导出。异步训练任务还会采样 CPU、内存以及可用时的 NVIDIA GPU/显存数据。
 
@@ -278,7 +278,7 @@ Dataset inspections are cached and exposed as a dataset/sequence/modality tree w
 
 Training configs combine a dataset root, adapter, sequence, training preset, output path, and JSON parameters into one reusable GUI selection. Built-in configs include `ORFD StableWM HDF5 export`, `ORFD tiny world model`, and `Smoke tiny world model`. The smoke config creates a tiny ORFD-style dataset under `outputs/training_studio_smoke/datasets/mock_orfd`, trains a local tiny model, writes a `training_run.json`, and provides metric history for the GUI curves. Users can edit the current fields and click `Save training config` to persist a new entry in `configs/training_configs.json`. `Start training/export` now runs the current training config through a single service boundary, whether the preset is built in or backed by an imported trainer manifest. The `Validate config` action performs a dry run before training: it checks dataset availability, resolves the selected trainer manifest, coerces parameter types, reports missing required parameters, and shows the external command preview when the preset is backed by a local script.
 
-The four-step training-config wizard selects the dataset/split, trainer, schema-generated parameters, and a final preflight covering the environment, entrypoint, modalities, output, and optional resume checkpoint. Live monitoring merges `events.jsonl` with optional TensorBoard scalar events and keeps CPU/RAM/GPU/VRAM collection active when log text refresh is paused. Trainer manifests can declare generic `resume.arguments`; supported artifacts expose Resume Training, and the bundled Tiny RGB Depth trainer has a verified resumed-training path.
+The four-step training-config wizard selects the dataset/split, trainer, schema-generated parameters, and a final preflight covering the environment, entrypoint, modalities, output, and optional resume checkpoint. Live monitoring merges the unified `metrics.jsonl` stream, legacy `events.jsonl`, and optional TensorBoard scalar events, and keeps CPU/RAM/GPU/VRAM collection active when log text refresh is paused. Trainer manifests can declare generic `resume.arguments`; supported artifacts expose Resume Training, and the bundled Tiny RGB Depth trainer has a verified resumed-training path.
 
 Training records support a `history` field for loss, RMSE, learning rate, throughput, resource usage, or custom metrics. The GUI can switch the primary metric, overlays train/validation loss, supports wheel zoom and point hover, marks anomalies, and diagnoses non-finite values, exploding loss, stalled metrics, and inactive event streams. Raw JSON/CSV data and the visible PNG curve can be exported together. Managed jobs sample CPU and memory plus NVIDIA GPU/VRAM when available.
 
@@ -292,7 +292,7 @@ Processing and Annotation provides reusable non-destructive pipelines for RGB re
 
 The 2026-07-21 local acceptance used the complete ORFD tree: 30 sequences were detected, the selected 449-frame sequence exposed RGB/depth/label/LiDAR, and deterministic train/validation/test counts were 7872/2639/1687. A lightweight 6-frame, 2-epoch Tiny RGB Depth run produced completed training and inference records; three test samples measured 5.21 m depth RMSE. A second dataset with unrelated directory names and filename prefixes completed the same training/inference path through manifest regex mapping only, without core adapter changes. See [`docs/reports/dataset_training_workbench_acceptance_2026-07-21.md`](docs/reports/dataset_training_workbench_acceptance_2026-07-21.md).
 
-External trainers can report metrics through a JSON object on stdout or through sidecar files in the selected output directory. Supported sidecars are `metrics.json` for final scalar metrics, `history.json` for metric arrays, and `events.jsonl` for per-step JSON events such as `{"step": 1, "loss": 0.9}`.
+External trainers can report metrics through a JSON object on stdout or through sidecar files in the selected output directory. Supported sidecars are `metrics.json` for final scalar metrics, `history.json` for metric arrays, and `metrics.jsonl` for per-step JSON events such as `{"step": 1, "loss": 0.9}`; legacy `events.jsonl` remains supported.
 
 BeamNG region self-supervised runs also write a `training_run.json` with the trained model path plus acceptance metrics such as `goal_success`, `min_goal_distance`, `final_goal_distance`, and `collision_count`, so the Training Results tab can index the simulator-trained model instead of leaving it as an opaque folder. These records now include a `trajectory_plot_path` SVG containing collection and route-free evaluation traces. The GUI BeamNG training workflow defaults to `mlp_dynamics` and can still switch to `tiny_learned`; when a self-supervised workflow reaches a validated `world_model_direct` goal success, it saves the source `training_run.json`, validation metrics, and whether the run used strict direct control, model support subgoals, model support graph subgoals, or an experience corridor. Strict direct success remains the stronger gate; support-subgoal, support-graph, or experience-corridor success is allowed as an explicitly labeled intermediate demo config when it is route-free, model-controlled, collision-free, and uses zero route waypoints.
 
@@ -374,7 +374,7 @@ outputs:
   artifact_path: model.ckpt
   metrics_file: metrics.json
   history_file: history.json
-  events_file: events.jsonl
+  events_file: metrics.jsonl
 ```
 
 If an external algorithm does not already ship a `trainer.yaml`, the GUI can

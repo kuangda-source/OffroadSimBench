@@ -56,6 +56,7 @@ def test_tiny_depth_manifest_trains_and_runs_inference(tmp_path: Path) -> None:
     assert len(record["split_sha256"]) == 64
     assert len(record["trainer_manifest_sha256"]) == 64
     assert Path(record["trainer_entrypoint_path"]).is_file()
+    assert (model_dir / "metrics.jsonl").is_file()
     assert len(record["trainer_entrypoint_sha256"]) == 64
     assert defaults == {"max_samples": 8, "split_name": "test"}
 
