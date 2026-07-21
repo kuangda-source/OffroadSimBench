@@ -117,7 +117,7 @@ def test_dataset_training_tabs_have_visible_section_titles() -> None:
         if label.objectName() == "tabTitle"
     }
 
-    assert titles == {"数据集", "模型训练", "训练结果", "处理与标注"}
+    assert titles == {"数据集", "模型训练", "训练结果", "推理评估", "处理与标注"}
 
     window.close()
 

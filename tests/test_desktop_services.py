@@ -248,6 +248,39 @@ def test_dataset_workspace_session_caches_inspection(tmp_path) -> None:
     assert second["selected_sequence"] == "training/seq_0001"
 
 
+def test_processing_pipeline_saves_versioned_non_destructive_outputs(tmp_path) -> None:
+    dataset_root = create_mock_orfd_dataset(tmp_path / "dataset", frame_count=3)
+    pipeline = services.save_processing_pipeline(
+        pipeline_id="preview_pipeline",
+        label="Preview pipeline",
+        dataset_root=str(dataset_root),
+        adapter="orfd",
+        sequence_id="training/seq_0001",
+        steps=[
+            {"operation": "resize_rgb", "parameters": {"width": 32, "height": 20}},
+            {"operation": "clip_depth", "parameters": {"min_m": 0.0, "max_m": 10.0}},
+        ],
+        output_root=str(tmp_path / "processed"),
+        path=tmp_path / "pipelines.json",
+    )
+
+    report = services.validate_processing_pipeline(pipeline)
+    result = services.run_processing_pipeline(pipeline)
+
+    assert report["ready"] is True
+    assert result["status"] == "completed"
+    assert result["asset_count"] == 6
+    assert len(result["version"]) == 12
+    assert Path(result["path"]).is_file()
+    assert Path(result["asset_manifest_path"]).is_file()
+    assert all(Path(row["output"]).is_file() for row in result["assets"])
+
+    unsafe = {**pipeline, "output_root": str(Path(dataset_root) / "derived")}
+    unsafe_report = services.validate_processing_pipeline(unsafe)
+    assert unsafe_report["ready"] is False
+    assert "outside the source dataset" in " ".join(unsafe_report["issues"])
+
+
 def test_dataset_trainability_report_applies_trainer_modalities_and_split(tmp_path) -> None:
     dataset_root = create_mock_orfd_dataset(tmp_path / "orfd", frame_count=6)
 

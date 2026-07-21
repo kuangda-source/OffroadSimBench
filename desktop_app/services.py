@@ -34,6 +34,7 @@ from offroad_sim.datasets import (
     validate_dataset_split_payload,
 )
 from offroad_sim.datasets import DatasetFrame, DatasetSequence
+from offroad_sim.datasets.assets import load_asset_array
 from offroad_sim.evaluation import run_episode
 from offroad_sim.evaluation.runner import DEFAULT_OUTPUT_ROOT
 from offroad_sim.planning import default_planner_registry
@@ -86,11 +87,13 @@ DEFAULT_WORLD_MODEL_CONFIG_ID = "johnson_valley_mlp_model_support_20260704"
 DEFAULT_LEWM_WORLD_MODEL_CONFIG_ID = "johnson_valley_lewm_validated"
 DEFAULT_DEMO_CONFIG_ID = "johnson_valley_standard_demo"
 TRAINING_CONFIGS_PATH = CONFIG_ROOT / "training_configs.json"
+PROCESSING_PIPELINES_PATH = CONFIG_ROOT / "processing_pipelines.json"
 SMOKE_TRAINING_DATASET_ROOT = ROOT / "outputs" / "training_studio_smoke" / "datasets" / "mock_orfd"
 SMOKE_TINY_MODEL_OUTPUT_DIR = ROOT / "outputs" / "training_studio_smoke" / "models" / "tiny_world_model"
 SMOKE_TRAINING_SEQUENCE_ID = "training/seq_0001"
 TRAINING_RUN_FILENAME = "training_run.json"
 INFERENCE_RUN_FILENAME = "inference_run.json"
+PROCESSING_RUN_FILENAME = "processing_run.json"
 DATASET_MANIFEST_FILENAMES = ("dataset_manifest.yaml", "dataset_manifest.yml")
 DATASET_MANIFEST_DIRS = (CONFIG_ROOT / "datasets",)
 TRAINER_MANIFEST_FILENAMES = ("trainer.yaml", "trainer.yml")
@@ -444,6 +447,7 @@ def catalog_snapshot() -> dict[str, list[dict[str, Any]]]:
         "training_jobs": training_job_entries(),
         "training_artifacts": training_artifact_entries(),
         "inference_runs": inference_run_entries(),
+        "processing_pipelines": processing_pipeline_entries(),
         "episodes": episode_summaries(),
     }
 
@@ -1917,6 +1921,10 @@ def run_inference_manifest_job(
                 if isinstance(raw_predictions, list)
                 else list(raw_predictions.get("predictions", []))
             )
+        for prediction in predictions:
+            if not isinstance(prediction, dict) or not isinstance(prediction.get("previews"), (dict, list)):
+                continue
+            prediction["previews"] = _normalize_inference_previews(prediction.get("previews"), target_dir)
         previews = _normalize_inference_previews(payload.get("previews"), target_dir)
         configured_preview = str(outputs.get("preview_file") or "").strip()
         if configured_preview:
@@ -2409,6 +2417,403 @@ def inference_run_entries(root: str | Path | None = None) -> list[dict[str, Any]
         row["mtime"] = mtime
         rows.append(row)
     return sorted(rows, key=lambda row: -float(row.get("mtime", 0.0)))
+
+
+def processing_operation_entries() -> list[dict[str, Any]]:
+    """Return built-in non-destructive dataset processing operations."""
+
+    return [
+        {
+            "id": "resize_rgb",
+            "label": "RGB 缩放",
+            "source_modality": "front_rgb",
+            "parameters": {"width": 640, "height": 384},
+        },
+        {
+            "id": "binary_label",
+            "label": "标签二值化",
+            "source_modality": "label",
+            "parameters": {"threshold": 0.0},
+        },
+        {
+            "id": "clip_depth",
+            "label": "深度裁剪",
+            "source_modality": "depth",
+            "parameters": {"min_m": 0.0, "max_m": 80.0},
+        },
+        {
+            "id": "copy_modality",
+            "label": "复制模态",
+            "source_modality": "front_rgb",
+            "parameters": {"modality": "front_rgb"},
+        },
+    ]
+
+
+def processing_pipeline_entries(path: str | Path | None = None) -> list[dict[str, Any]]:
+    source = Path(path or PROCESSING_PIPELINES_PATH)
+    payload = _read_json(source) if source.is_file() else []
+    rows = payload if isinstance(payload, list) else payload.get("pipelines", []) if isinstance(payload, dict) else []
+    return [dict(row) for row in rows if isinstance(row, dict)]
+
+
+def save_processing_pipeline(
+    *,
+    pipeline_id: str,
+    label: str,
+    dataset_root: str,
+    adapter: str,
+    sequence_id: str,
+    steps: list[dict[str, Any]],
+    output_root: str = "",
+    path: str | Path | None = None,
+) -> dict[str, Any]:
+    target = Path(path or PROCESSING_PIPELINES_PATH)
+    normalized_steps = _normalize_processing_steps(steps)
+    row = {
+        "id": _safe_name(pipeline_id).lower(),
+        "label": str(label or pipeline_id).strip(),
+        "dataset_root": str(dataset_root).strip(),
+        "adapter": str(adapter).strip(),
+        "sequence_id": str(sequence_id).strip(),
+        "steps": normalized_steps,
+        "output_root": str(output_root).strip(),
+        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+    }
+    if not row["dataset_root"]:
+        raise ValueError("Dataset root is required.")
+    rows = [item for item in processing_pipeline_entries(target) if str(item.get("id") or "") != row["id"]]
+    rows.append(row)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(rows, indent=2, ensure_ascii=False), encoding="utf-8")
+    row["path"] = str(target.resolve())
+    return row
+
+
+def validate_processing_pipeline(pipeline: dict[str, Any]) -> dict[str, Any]:
+    issues: list[str] = []
+    dataset_root = str(pipeline.get("dataset_root") or "").strip()
+    adapter_name = str(pipeline.get("adapter") or "").strip()
+    sequence_id = str(pipeline.get("sequence_id") or "").strip()
+    output_root = Path(
+        str(pipeline.get("output_root") or ROOT / "outputs" / "processed_datasets")
+    ).resolve()
+    steps: list[dict[str, Any]] = []
+    try:
+        steps = _normalize_processing_steps(
+            pipeline.get("steps") if isinstance(pipeline.get("steps"), list) else []
+        )
+    except ValueError as exc:
+        issues.append(str(exc))
+    adapter = None
+    sequences: list[str] = []
+    if not dataset_root or not Path(dataset_root).exists():
+        issues.append(f"Dataset root not found: {dataset_root or NAN_TEXT}")
+    else:
+        try:
+            output_root.relative_to(Path(dataset_root).resolve())
+            issues.append("Processing output must be outside the source dataset root.")
+        except ValueError:
+            pass
+        try:
+            adapter = default_dataset_registry().resolve(dataset_root, adapter_name or None)
+            sequences = [str(item) for item in adapter.list_sequences(dataset_root)]
+        except Exception as exc:
+            issues.append(f"Dataset adapter failed: {exc}")
+    if sequence_id and sequences and sequence_id not in sequences:
+        issues.append(f"Sequence not found: {sequence_id}")
+    selected_sequence = sequence_id or (sequences[0] if sequences else "")
+    return {
+        "ready": not issues,
+        "status": "ready" if not issues else "invalid",
+        "issues": issues,
+        "dataset_root": dataset_root,
+        "adapter": str(getattr(adapter, "name", adapter_name)),
+        "sequence_id": selected_sequence,
+        "steps": steps,
+        "sequence_count": len(sequences),
+        "output_root": str(output_root),
+    }
+
+
+def run_processing_pipeline(pipeline: dict[str, Any]) -> dict[str, Any]:
+    """Run a versioned, non-destructive processing pipeline on one sequence."""
+
+    report = validate_processing_pipeline(pipeline)
+    if not report["ready"]:
+        raise ValueError("; ".join(str(item) for item in report["issues"]))
+    dataset_root = str(report["dataset_root"])
+    adapter_name = str(report["adapter"])
+    sequence_id = str(report["sequence_id"])
+    steps = list(report["steps"])
+    adapter = default_dataset_registry().resolve(dataset_root, adapter_name)
+    sequence = adapter.load_sequence(dataset_root, sequence_id)
+    fingerprint_source = {
+        "dataset_root": str(Path(dataset_root).resolve()),
+        "adapter": adapter_name,
+        "sequence_id": sequence_id,
+        "steps": steps,
+    }
+    version = hashlib.sha256(
+        json.dumps(fingerprint_source, sort_keys=True, ensure_ascii=False).encode("utf-8")
+    ).hexdigest()[:12]
+    pipeline_id = _safe_name(str(pipeline.get("id") or pipeline.get("label") or "pipeline")).lower()
+    output_root = Path(str(report["output_root"]))
+    output_dir = output_root / pipeline_id / f"v{version}_{_timestamp()}_{uuid.uuid4().hex[:6]}"
+    output_dir.mkdir(parents=True, exist_ok=False)
+    assets_path = output_dir / "assets.jsonl"
+    skipped_path = output_dir / "skipped.jsonl"
+    assets: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    asset_count = 0
+    skipped_count = 0
+    with assets_path.open("w", encoding="utf-8") as asset_file, skipped_path.open(
+        "w", encoding="utf-8"
+    ) as skipped_file:
+        for frame_index, frame in enumerate(sequence.frames):
+            available = frame.available_assets()
+            for step_index, step in enumerate(steps):
+                operation = str(step["operation"])
+                parameters = dict(step.get("parameters") or {})
+                source_modality = _processing_source_modality(operation, parameters)
+                source = str(available.get(source_modality) or "")
+                if not source:
+                    skipped_row = {
+                        "frame_id": frame.frame_id,
+                        "step": step_index,
+                        "operation": operation,
+                        "reason": f"missing modality: {source_modality}",
+                    }
+                    skipped_file.write(json.dumps(skipped_row, ensure_ascii=False) + "\n")
+                    skipped_count += 1
+                    if len(skipped) < 500:
+                        skipped.append(skipped_row)
+                    continue
+                destination = _run_processing_operation(
+                    operation,
+                    source,
+                    output_dir=output_dir / f"{step_index:02d}_{operation}",
+                    frame_id=frame.frame_id,
+                    parameters=parameters,
+                )
+                asset_row = {
+                    "frame_index": frame_index,
+                    "frame_id": frame.frame_id,
+                    "step": step_index,
+                    "operation": operation,
+                    "source_modality": source_modality,
+                    "source": source,
+                    "output": str(destination.resolve()),
+                }
+                asset_file.write(json.dumps(asset_row, ensure_ascii=False) + "\n")
+                asset_count += 1
+                if len(assets) < 500:
+                    assets.append(asset_row)
+    record = {
+        "run_id": output_dir.name,
+        "status": "completed",
+        "pipeline_id": pipeline_id,
+        "version": version,
+        "dataset_root": str(Path(dataset_root).resolve()),
+        "adapter": adapter_name,
+        "sequence_id": sequence_id,
+        "frame_count": len(sequence.frames),
+        "steps": steps,
+        "asset_count": asset_count,
+        "skipped_count": skipped_count,
+        "asset_manifest_path": str(assets_path.resolve()),
+        "skipped_manifest_path": str(skipped_path.resolve()),
+        "assets": assets,
+        "assets_truncated": asset_count > len(assets),
+        "skipped": skipped,
+        "skipped_truncated": skipped_count > len(skipped),
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+    }
+    record_path = output_dir / PROCESSING_RUN_FILENAME
+    record_path.write_text(json.dumps(record, indent=2, ensure_ascii=False), encoding="utf-8")
+    record["path"] = str(record_path.resolve())
+    record["output_dir"] = str(output_dir.resolve())
+    return record
+
+
+def _normalize_processing_steps(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    known = {row["id"] for row in processing_operation_entries()}
+    normalized = []
+    for index, raw in enumerate(steps):
+        if not isinstance(raw, dict):
+            raise ValueError(f"Processing step {index + 1} must be an object.")
+        operation = str(raw.get("operation") or raw.get("id") or "").strip()
+        if operation not in known:
+            raise ValueError(f"Unknown processing operation: {operation or NAN_TEXT}")
+        parameters = raw.get("parameters") if isinstance(raw.get("parameters"), dict) else {}
+        normalized.append({"operation": operation, "parameters": dict(parameters)})
+    if not normalized:
+        raise ValueError("At least one processing step is required.")
+    return normalized
+
+
+def _processing_source_modality(operation: str, parameters: dict[str, Any]) -> str:
+    if operation == "resize_rgb":
+        return "front_rgb"
+    if operation == "binary_label":
+        return "label"
+    if operation == "clip_depth":
+        return "depth"
+    return str(parameters.get("modality") or "front_rgb")
+
+
+def _run_processing_operation(
+    operation: str,
+    source: str,
+    *,
+    output_dir: Path,
+    frame_id: str,
+    parameters: dict[str, Any],
+) -> Path:
+    from PIL import Image
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    stem = _safe_name(str(frame_id))
+    if operation == "resize_rgb":
+        array = np.asarray(load_asset_array(source))
+        image = Image.fromarray(_processing_uint8_image(array))
+        width = max(1, min(16384, int(parameters.get("width", 640))))
+        height = max(1, min(16384, int(parameters.get("height", 384))))
+        destination = output_dir / f"{stem}.png"
+        image.resize((width, height), Image.Resampling.BILINEAR).save(destination)
+        return destination
+    if operation == "binary_label":
+        array = np.asarray(load_asset_array(source))
+        if array.ndim == 3:
+            array = array[..., 0]
+        threshold = float(parameters.get("threshold", 0.0))
+        destination = output_dir / f"{stem}.png"
+        Image.fromarray(np.where(array > threshold, 255, 0).astype(np.uint8)).save(destination)
+        return destination
+    if operation == "clip_depth":
+        array = np.asarray(load_asset_array(source), dtype=np.float32)
+        minimum = float(parameters.get("min_m", 0.0))
+        maximum = float(parameters.get("max_m", 80.0))
+        if maximum <= minimum:
+            raise ValueError("clip_depth max_m must be greater than min_m.")
+        destination = output_dir / f"{stem}.npy"
+        np.save(destination, np.clip(array, minimum, maximum))
+        return destination
+    source_path = Path(source)
+    if source_path.is_file():
+        destination = output_dir / f"{stem}{source_path.suffix or '.bin'}"
+        shutil.copy2(source_path, destination)
+        return destination
+    array = np.asarray(load_asset_array(source))
+    destination = output_dir / f"{stem}.npy"
+    np.save(destination, array)
+    return destination
+
+
+def _processing_uint8_image(array: np.ndarray) -> np.ndarray:
+    image = np.asarray(array)
+    if image.ndim == 2:
+        image = np.repeat(image[..., None], 3, axis=2)
+    if image.ndim != 3:
+        raise ValueError(f"Unsupported image shape: {image.shape}")
+    image = image[..., :3]
+    if image.dtype == np.uint8:
+        return image
+    finite = image[np.isfinite(image)]
+    if finite.size == 0:
+        return np.zeros(image.shape, dtype=np.uint8)
+    low = float(np.min(finite))
+    high = float(np.max(finite))
+    if high <= low:
+        return np.zeros(image.shape, dtype=np.uint8)
+    return np.clip((image.astype(np.float32) - low) / (high - low) * 255.0, 0, 255).astype(np.uint8)
+
+
+def inference_evaluation_summary(
+    record: dict[str, Any] | str | Path,
+    *,
+    worst_limit: int = 20,
+) -> dict[str, Any]:
+    """Normalize generic inference output for aggregate and sample-level review."""
+
+    if isinstance(record, (str, Path)):
+        loaded = _read_json(Path(record))
+        if not isinstance(loaded, dict):
+            raise ValueError(f"Inference run is invalid: {record}")
+        payload = loaded
+    else:
+        payload = dict(record)
+    predictions = payload.get("predictions") if isinstance(payload.get("predictions"), list) else []
+    default_sequence = str(payload.get("sequence_id") or "selected_sequence")
+    samples: list[dict[str, Any]] = []
+    grouped: dict[str, list[float]] = {}
+    for index, raw in enumerate(predictions):
+        prediction = dict(raw) if isinstance(raw, dict) else {"value": raw}
+        sequence_id = str(prediction.get("sequence_id") or default_sequence)
+        error_name, error_value = _inference_sample_error(prediction)
+        previews = prediction.get("previews") if isinstance(prediction.get("previews"), dict) else {}
+        sample = {
+            "sample": prediction.get("sample", index),
+            "sequence_id": sequence_id,
+            "frame_id": str(prediction.get("frame_id") or prediction.get("target_frame_id") or index),
+            "frame_index": _optional_int(prediction.get("frame_index")),
+            "error_metric": error_name,
+            "error": error_value,
+            "previews": {str(key): str(value) for key, value in previews.items() if value},
+            "prediction": prediction,
+        }
+        samples.append(sample)
+        grouped.setdefault(sequence_id, []).append(error_value)
+    per_sequence = []
+    for sequence_id, values in sorted(grouped.items()):
+        finite_values = [value for value in values if math.isfinite(value)]
+        per_sequence.append(
+            {
+                "sequence_id": sequence_id,
+                "sample_count": len(values),
+                "mean_error": float(sum(finite_values) / len(finite_values)) if finite_values else math.nan,
+                "max_error": float(max(finite_values)) if finite_values else math.nan,
+            }
+        )
+    worst = sorted(
+        samples,
+        key=lambda row: (
+            math.isfinite(float(row.get("error", math.nan))),
+            float(row.get("error", -math.inf)) if math.isfinite(float(row.get("error", math.nan))) else -math.inf,
+        ),
+        reverse=True,
+    )[: max(0, int(worst_limit))]
+    return {
+        "metrics": dict(payload.get("metrics") if isinstance(payload.get("metrics"), dict) else {}),
+        "sample_count": len(samples),
+        "sequence_count": len({row["sequence_id"] for row in samples}),
+        "per_sequence": per_sequence,
+        "samples": samples,
+        "worst_samples": worst,
+    }
+
+
+def _inference_sample_error(prediction: dict[str, Any]) -> tuple[str, float]:
+    for name in ("error", "position_error", "rmse_m", "mae_m", "loss"):
+        value = _float_or_nan(prediction.get(name))
+        if math.isfinite(value):
+            return name, float(value)
+    predicted = prediction.get("predicted") if isinstance(prediction.get("predicted"), dict) else {}
+    actual = prediction.get("actual") if isinstance(prediction.get("actual"), dict) else {}
+    px = _float_or_nan(predicted.get("x"))
+    py = _float_or_nan(predicted.get("y"))
+    ax = _float_or_nan(actual.get("x"))
+    ay = _float_or_nan(actual.get("y"))
+    if all(math.isfinite(value) for value in (px, py, ax, ay)):
+        return "position_error", float(math.hypot(px - ax, py - ay))
+    return "unavailable", math.nan
+
+
+def _optional_int(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def training_metric_history(record: dict[str, Any]) -> dict[str, list[float]]:
@@ -4007,6 +4412,8 @@ def inspect_dataset(dataset_root: str, adapter: str = "", sequence_id: str = "")
         "dataset_type": sequence.dataset_type,
         "frame_count": len(sequence.frames),
         "asset_counts": asset_counts,
+        "calibration": dict(sequence.calibration),
+        "calibration_status": "available" if sequence.calibration else "not_provided",
         "metadata": sequence.metadata,
         "details": {
             "analysis_scope": "selected_sequence",

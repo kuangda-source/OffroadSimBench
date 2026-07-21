@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import json
 import os
 from pathlib import Path
@@ -7,6 +8,7 @@ from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
+import numpy as np
 
 from desktop_app import services
 from desktop_app.qt_main import MainWindow
@@ -132,7 +134,85 @@ def test_training_workbench_dataset_to_report_closed_loop(tmp_path: Path, monkey
     window.export_experiment_comparison_report()
 
     assert window.experiment_comparison_table.rowCount() == 2
-    assert window.inference_prediction_table.horizontalHeaderItem(0).text() == "frame_id"
+    assert window.inference_prediction_table.horizontalHeaderItem(0).text() == "序列"
     assert window.inference_preview.pixmap().isNull() is False
     assert (gui_report_dir / "experiment_curves.png").is_file()
     window.close()
+
+
+def test_custom_manifest_dataset_trains_without_core_adapter_changes(tmp_path: Path) -> None:
+    source_root = tmp_path / "unconventional_dataset"
+    sequence_root = source_root / "sessions" / "run-z"
+    rgb_root = sequence_root / "camera_left"
+    depth_root = sequence_root / "range_groundtruth"
+    rgb_root.mkdir(parents=True)
+    depth_root.mkdir()
+    with (sequence_root / "vehicle_poses.csv").open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["frame_id", "timestamp", "x", "y", "yaw", "speed"])
+        writer.writeheader()
+        for index in range(8):
+            frame_id = f"{index:04d}"
+            np.save(rgb_root / f"rgb_{frame_id}.npy", np.full((12, 16, 3), 20 + index, dtype=np.uint8))
+            np.save(depth_root / f"depth_{frame_id}.npy", np.full((12, 16), 2.0 + index * 0.1, dtype=np.float32))
+            writer.writerow(
+                {
+                    "frame_id": frame_id,
+                    "timestamp": index * 0.1,
+                    "x": index * 0.2,
+                    "y": 0.0,
+                    "yaw": 0.0,
+                    "speed": 2.0,
+                }
+            )
+    mapped = services.save_dataset_manifest(
+        dataset_id="unconventional_depth",
+        dataset_root=str(source_root),
+        sequences=[
+            {
+                "id": "run-z",
+                "root": "sessions/run-z",
+                "pose_csv": "vehicle_poses.csv",
+                "assets": {
+                    "front_rgb": "camera_left/rgb_*.npy",
+                    "depth": "range_groundtruth/depth_*.npy",
+                },
+                "alignment": {
+                    "mode": "frame_id",
+                    "filename_regex": "_(?P<frame_id>\\d+)$",
+                },
+            }
+        ],
+        destination_root=tmp_path / "dataset_catalog",
+    )
+    mapped_root = mapped["dataset_root"]
+    inspected = services.inspect_dataset(mapped_root, "manifest_dataset", "run-z")
+    split = services.create_dataset_split_definition(
+        mapped_root,
+        "manifest_dataset",
+        output_path=tmp_path / "custom_split.json",
+    )
+    trained = services.run_trainer_manifest_job(
+        services.CONFIG_ROOT / "trainers" / "tiny_depth.yaml",
+        dataset_root=mapped_root,
+        output_dir=str(tmp_path / "custom_model"),
+        adapter="manifest_dataset",
+        sequence_id="run-z",
+        split_path=split["path"],
+        parameters={"epochs": 2, "max_frames": 6, "max_pixels_per_frame": 32, "max_depth_m": 20.0},
+    )
+    inferred = services.run_inference_manifest_job(
+        services.CONFIG_ROOT / "trainers" / "tiny_depth.yaml",
+        artifact_path=trained["artifact_path"],
+        dataset_root=mapped_root,
+        adapter="manifest_dataset",
+        sequence_id="run-z",
+        split_path=split["path"],
+        parameters={"max_samples": 2, "split_name": "test"},
+        output_dir=str(tmp_path / "custom_inference"),
+    )
+
+    assert inspected["frame_count"] == 8
+    assert inspected["quality"]["available_modalities"] == ["depth", "front_rgb"]
+    assert Path(trained["artifact_path"]).is_file()
+    assert inferred["status"] == "completed"
+    assert inferred["prediction_count"] == 1

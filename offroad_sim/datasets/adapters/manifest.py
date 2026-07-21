@@ -225,6 +225,8 @@ class ManifestDatasetAdapter(DatasetAdapter):
             return path.stem
         match = re.search(pattern, path.name)
         if match is None:
+            match = re.search(pattern, path.stem)
+        if match is None:
             return ""
         groups = match.groupdict()
         if preferred_group in groups:

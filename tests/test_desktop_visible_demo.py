@@ -697,6 +697,9 @@ def test_gui_dataset_inspection_updates_details_quality_and_frame_controls() -> 
         "front_rgb",
         "lidar_points",
     ]
+    assert root_item.child(0).child(2).text(0) == "帧范围"
+    assert root_item.child(0).child(3).text(0) == "标定"
+    assert root_item.child(0).child(4).text(0) == "质量"
     window.close()
 
 
@@ -2273,6 +2276,27 @@ def test_navigation_task_canvas_preserves_world_aspect_ratio() -> None:
     north_distance = abs(north.y() - origin.y())
     assert abs(east_distance - north_distance) < 1e-6
     assert roundtrip == (25.0, 75.0)
+
+
+def test_processing_workbench_runs_versioned_pipeline(monkeypatch, tmp_path) -> None:
+    _ensure_app()
+    dataset_root = services.create_mock_orfd_dataset(tmp_path / "dataset", frame_count=2)
+    window = MainWindow()
+    window.processing_dataset_root_edit.setText(str(dataset_root))
+    window.processing_adapter_edit.setText("orfd")
+    window.processing_sequence_edit.setText("training/seq_0001")
+    window.processing_output_root_edit.setText(str(tmp_path / "processed"))
+    window._set_processing_steps(
+        [{"operation": "resize_rgb", "parameters": {"width": 24, "height": 16}}]
+    )
+    monkeypatch.setattr(window, "_run_task", lambda fn, callback, failure_label, **kwargs: callback(fn()))
+
+    window.run_processing_pipeline_from_gui()
+
+    assert "运行完成" in window.processing_preflight_summary.text()
+    assert window.processing_result_table.rowCount() == 2
+    assert list((tmp_path / "processed").rglob(services.PROCESSING_RUN_FILENAME))
+    window.close()
 
 
 def test_navigation_task_dialog_delays_invalid_region_warning_until_save(tmp_path, monkeypatch) -> None:

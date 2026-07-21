@@ -85,6 +85,12 @@ def test_tiny_depth_manifest_trains_and_runs_inference(tmp_path: Path) -> None:
     assert inference["metrics"]["split_name"] == "test"
     assert len(inference["predictions"]) == 2
     assert Path(inference["previews"]["primary"]).is_file()
+    sample = inference["predictions"][0]
+    assert sample["sequence_id"] == "training/seq_0001"
+    split_payload = json.loads(Path(split["path"]).read_text(encoding="utf-8"))
+    assert sample["frame_index"] == split_payload["splits"]["test"][0]["frame_indices"][0]
+    assert set(sample["previews"]) == {"input", "target", "prediction", "error"}
+    assert all(Path(path).is_file() for path in sample["previews"].values())
 
 
 def test_tiny_depth_divergence_fails_without_publishing_checkpoint(tmp_path: Path) -> None:

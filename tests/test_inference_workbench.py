@@ -60,6 +60,28 @@ def test_tiny_manifest_train_checkpoint_infer_and_preview(tmp_path) -> None:
     assert len(predictions) == 4
 
 
+def test_inference_evaluation_summary_ranks_errors_and_groups_sequences() -> None:
+    summary = services.inference_evaluation_summary(
+        {
+            "metrics": {"rmse": 0.4},
+            "predictions": [
+                {"sequence_id": "b", "frame_id": "2", "rmse_m": 0.2},
+                {"sequence_id": "a", "frame_id": "1", "rmse_m": 0.7},
+                {"sequence_id": "a", "frame_id": "3", "rmse_m": 0.3},
+            ],
+        }
+    )
+
+    assert summary["sample_count"] == 3
+    assert summary["sequence_count"] == 2
+    assert summary["worst_samples"][0]["frame_id"] == "1"
+    assert summary["worst_samples"][0]["error"] == pytest.approx(0.7)
+    assert summary["per_sequence"] == [
+        {"sequence_id": "a", "sample_count": 2, "mean_error": 0.5, "max_error": 0.7},
+        {"sequence_id": "b", "sample_count": 1, "mean_error": 0.2, "max_error": 0.2},
+    ]
+
+
 def test_training_artifact_catalog_reports_inference_capability(tmp_path) -> None:
     artifact = tmp_path / "run" / "model.json"
     artifact.parent.mkdir(parents=True)
@@ -246,14 +268,16 @@ def test_gui_runs_selected_checkpoint_inference_and_renders_results(monkeypatch,
     window.adapter_edit.setText("orfd")
     window.sequence_combo.setCurrentText("training/seq_0001")
     monkeypatch.setattr(window, "_run_task", lambda fn, callback, failure_label, **kwargs: callback(fn()))
+    assert window.inference_artifact_combo.count() == 1
 
     window.run_selected_artifact_inference()
 
-    assert json.loads(window.model_summary.toPlainText())["artifact_path"] == trained["artifact_path"]
+    assert json.loads(window.inference_run_summary.toPlainText())["artifact_path"] == trained["artifact_path"]
     assert "position_rmse" in window.inference_metric_summary.text()
     assert window.inference_prediction_table.rowCount() == 6
+    assert window.inference_sequence_table.rowCount() == 1
     assert window.inference_preview.pixmap().isNull() is False
-    assert "inference_run.json" in window.model_summary.toPlainText()
+    assert "inference_run.json" in window.inference_run_summary.toPlainText()
     window.close()
 
 
@@ -453,3 +477,35 @@ inference:
     assert record["status"] == "failed"
     assert record["parameters"] == {"limit": 7}
     assert record["logs"]["stdout"].endswith("stdout.log")
+
+
+def test_inference_normalizes_relative_sample_preview_paths(tmp_path) -> None:
+    artifact = tmp_path / "model.ckpt"
+    artifact.write_text("checkpoint", encoding="utf-8")
+    dataset = tmp_path / "dataset"
+    dataset.mkdir()
+    script = tmp_path / "infer.py"
+    script.write_text(
+        "from pathlib import Path\n"
+        "import argparse, json\n"
+        "p=argparse.ArgumentParser(); p.add_argument('--output'); a=p.parse_args()\n"
+        "o=Path(a.output); o.mkdir(parents=True, exist_ok=True); (o/'sample.png').write_bytes(b'png')\n"
+        "print(json.dumps({'predictions':[{'frame_id':'1','error':0.5,'previews':{'input':'sample.png'}}]}))\n",
+        encoding="utf-8",
+    )
+    manifest = tmp_path / "trainer.yaml"
+    manifest.write_text(
+        "schema_version: 1\ntrainer_id: relative_preview\nlaunch:\n  kind: python_script\n  entrypoint: infer.py\n"
+        "inference:\n  launch:\n    kind: python_script\n    entrypoint: infer.py\n"
+        "  arguments: [--output, \"{output_dir}\"]\n",
+        encoding="utf-8",
+    )
+
+    result = services.run_inference_manifest_job(
+        manifest,
+        artifact_path=str(artifact),
+        dataset_root=str(dataset),
+        output_dir=str(tmp_path / "result"),
+    )
+
+    assert result["predictions"][0]["previews"]["input"] == str((tmp_path / "result" / "sample.png").resolve())

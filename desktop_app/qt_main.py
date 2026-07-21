@@ -1897,6 +1897,8 @@ class MainWindow(QMainWindow):
         self.training_preset_combo = self._combo()
         self.training_artifact_combo = self._combo()
         self.training_artifact_combo.currentIndexChanged.connect(lambda _: self._update_training_artifact_details())
+        self.inference_artifact_combo = self._combo()
+        self.inference_artifact_combo.currentIndexChanged.connect(lambda _: self._update_inference_artifact_details())
         self.inference_params_edit = QTextEdit()
         self.inference_params_edit.setFixedHeight(68)
         self.inference_params_edit.setPlaceholderText('{"max_samples": 8, "split_name": "test"}')
@@ -1973,6 +1975,13 @@ class MainWindow(QMainWindow):
         self.sequence_combo = self._combo(editable=True)
         self.sequence_combo.currentTextChanged.connect(self._sync_sequence_table_selection)
         self.adapter_edit = QLineEdit("orfd")
+        self.inference_dataset_root_edit = QLineEdit()
+        self.inference_dataset_root_edit.setPlaceholderText(r"datasets\ORFD_Dataset_ICRA2022_ZIP")
+        self.inference_adapter_edit = QLineEdit()
+        self.inference_sequence_edit = QLineEdit()
+        self.inference_split_path_edit = QLineEdit()
+        self.inference_split_path_edit.setPlaceholderText(r"outputs\dataset_splits\dataset_split.json")
+        self._inference_evaluation: dict[str, Any] = {}
         self.stablewm_hdf5_edit = QLineEdit()
         self.stablewm_hdf5_edit.setPlaceholderText(r"outputs\stablewm\orfd_gui.h5")
         self.model_path_edit = QLineEdit()
@@ -2220,6 +2229,7 @@ class MainWindow(QMainWindow):
         self.dataset_source_panel = controls
         data_layout.addWidget(controls, 1)
         dataset_workspace = QTabWidget()
+        self.dataset_workspace = dataset_workspace
         preview_page = QWidget()
         preview_layout = QVBoxLayout(preview_page)
         preview_layout.setContentsMargins(0, 0, 0, 0)
@@ -2614,50 +2624,29 @@ class MainWindow(QMainWindow):
         self.training_run_overview.setPlaceholderText("Training run summary: NaN")
         run_summary_layout.addWidget(self._section_label("运行摘要"))
         run_summary_layout.addWidget(self.training_run_overview)
-        inference_row = QWidget()
-        inference_row_layout = QHBoxLayout(inference_row)
-        inference_row_layout.setContentsMargins(0, 0, 0, 0)
-        inference_row_layout.setSpacing(8)
-        inference_row_layout.addWidget(self.training_artifact_combo, 1)
-        inference_button = QPushButton("运行推理")
-        self._configure_button(inference_button)
-        inference_button.clicked.connect(self.run_selected_artifact_inference)
-        inference_row_layout.addWidget(inference_button)
+        artifact_row = QWidget()
+        artifact_row_layout = QHBoxLayout(artifact_row)
+        artifact_row_layout.setContentsMargins(0, 0, 0, 0)
+        artifact_row_layout.setSpacing(8)
+        artifact_row_layout.addWidget(self.training_artifact_combo, 1)
         self.favorite_artifact_button = QPushButton("收藏")
         self._configure_button(self.favorite_artifact_button)
         self.favorite_artifact_button.clicked.connect(self.toggle_selected_artifact_favorite)
-        inference_row_layout.addWidget(self.favorite_artifact_button)
+        artifact_row_layout.addWidget(self.favorite_artifact_button)
         self.resume_artifact_button = QPushButton("恢复训练")
         self._configure_button(self.resume_artifact_button)
         self.resume_artifact_button.clicked.connect(self.resume_selected_training_artifact)
-        inference_row_layout.addWidget(self.resume_artifact_button)
+        artifact_row_layout.addWidget(self.resume_artifact_button)
         delete_artifact_button = QPushButton("删除产物")
         self._configure_button(delete_artifact_button)
         delete_artifact_button.clicked.connect(self.delete_selected_training_artifact)
-        inference_row_layout.addWidget(delete_artifact_button)
-        run_summary_layout.addWidget(self._section_label("Checkpoint 推理"))
-        run_summary_layout.addWidget(inference_row)
-        run_summary_layout.addWidget(self._field("推理参数", self.inference_params_edit))
+        artifact_row_layout.addWidget(delete_artifact_button)
+        run_summary_layout.addWidget(self._section_label("Checkpoint 管理"))
+        run_summary_layout.addWidget(artifact_row)
         self.training_artifact_detail_label = QLabel("Checkpoint：NaN")
         self.training_artifact_detail_label.setObjectName("mutedText")
         self.training_artifact_detail_label.setWordWrap(True)
         run_summary_layout.addWidget(self.training_artifact_detail_label)
-        self.inference_metric_summary = QLabel("推理指标：NaN")
-        self.inference_metric_summary.setObjectName("mutedText")
-        self.inference_metric_summary.setWordWrap(True)
-        run_summary_layout.addWidget(self.inference_metric_summary)
-        self.inference_prediction_table = QTableWidget(0, 6)
-        self.inference_prediction_table.setHorizontalHeaderLabels(
-            ["样本", "预测 X", "预测 Y", "真值 X", "真值 Y", "位置误差"]
-        )
-        self.inference_prediction_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        self.inference_prediction_table.verticalHeader().setVisible(False)
-        self.inference_prediction_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.inference_prediction_table.setMaximumHeight(180)
-        run_summary_layout.addWidget(self.inference_prediction_table)
-        self.inference_preview = self._preview_label("推理预览：NaN")
-        self.inference_preview.setMaximumHeight(240)
-        run_summary_layout.addWidget(self.inference_preview)
         self.training_curve = TrainingCurveWidget()
         run_summary_layout.addWidget(self._section_label("指标曲线"))
         run_metric_toolbar = QWidget()
@@ -2750,18 +2739,209 @@ class MainWindow(QMainWindow):
         runs_root.addLayout(runs_layout, 1)
         tabs.addTab(runs_tab, "训练结果")
 
+        inference_tab = QWidget()
+        inference_root = QVBoxLayout(inference_tab)
+        inference_root.setContentsMargins(0, 0, 0, 0)
+        inference_root.setSpacing(CARD_SPACING)
+        inference_root.addWidget(
+            self._tab_header("推理评估", "选择 checkpoint 和数据划分，独立运行推理并检查最差样本。")
+        )
+        inference_splitter = QSplitter(Qt.Orientation.Horizontal)
+        inference_config_box, inference_config_layout = self._new_group("评估配置")
+        inference_dataset_browse = QPushButton("选择")
+        self._configure_button(inference_dataset_browse)
+        inference_dataset_browse.clicked.connect(lambda: self._browse_dir(self.inference_dataset_root_edit))
+        inference_split_browse = QPushButton("选择")
+        self._configure_button(inference_split_browse)
+        inference_split_browse.clicked.connect(
+            lambda: self._browse_file(self.inference_split_path_edit, "选择数据划分文件")
+        )
+        inference_config_layout.addWidget(self._field("Checkpoint", self.inference_artifact_combo))
+        self.inference_artifact_detail_label = QLabel("Checkpoint：NaN")
+        self.inference_artifact_detail_label.setObjectName("mutedText")
+        self.inference_artifact_detail_label.setWordWrap(True)
+        inference_config_layout.addWidget(self.inference_artifact_detail_label)
+        inference_config_layout.addWidget(
+            self._field("数据集", self._with_button(self.inference_dataset_root_edit, inference_dataset_browse))
+        )
+        inference_config_layout.addWidget(self._field("适配器", self.inference_adapter_edit))
+        inference_config_layout.addWidget(self._field("序列", self.inference_sequence_edit))
+        inference_config_layout.addWidget(
+            self._field("验证 / 测试划分", self._with_button(self.inference_split_path_edit, inference_split_browse))
+        )
+        inference_config_layout.addWidget(self._field("推理参数", self.inference_params_edit))
+        inference_actions = self._action_toolbar(
+            [
+                self._action_button("预检", self.validate_selected_artifact_inference),
+                self._action_button("开始推理评估", self.run_selected_artifact_inference, primary=True),
+            ],
+            object_name="inferenceActionToolbar",
+        )
+        inference_config_layout.addWidget(inference_actions)
+        self.inference_preflight_summary = QLabel("预检：NaN")
+        self.inference_preflight_summary.setObjectName("mutedText")
+        self.inference_preflight_summary.setWordWrap(True)
+        inference_config_layout.addWidget(self.inference_preflight_summary)
+        inference_config_layout.addStretch(1)
+        inference_config_box.setMinimumWidth(360)
+        inference_config_box.setMaximumWidth(520)
+        inference_splitter.addWidget(inference_config_box)
+
+        inference_results_box, inference_results_layout = self._new_group("评估结果")
+        self.inference_metric_summary = QLabel("推理指标：NaN")
+        self.inference_metric_summary.setObjectName("mutedText")
+        self.inference_metric_summary.setWordWrap(True)
+        inference_results_layout.addWidget(self.inference_metric_summary)
+        inference_result_tabs = QTabWidget()
+        sample_page = QWidget()
+        sample_layout = QVBoxLayout(sample_page)
+        sample_layout.setContentsMargins(0, 0, 0, 0)
+        sample_layout.setSpacing(CARD_SPACING)
+        self.inference_prediction_table = QTableWidget(0, 5)
+        self.inference_prediction_table.setHorizontalHeaderLabels(
+            ["序列", "帧", "样本", "误差指标", "误差"]
+        )
+        self.inference_prediction_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.inference_prediction_table.verticalHeader().setVisible(False)
+        self.inference_prediction_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.inference_prediction_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.inference_prediction_table.setMaximumHeight(190)
+        self.inference_prediction_table.cellClicked.connect(self._select_inference_sample)
+        sample_layout.addWidget(self._section_label("最差样本"))
+        sample_layout.addWidget(self.inference_prediction_table)
+        sample_actions = self._action_toolbar(
+            [self._action_button("定位到数据集帧", self.jump_to_selected_inference_sample)],
+            object_name="inferenceSampleToolbar",
+        )
+        sample_layout.addWidget(sample_actions)
+        preview_grid = QGridLayout()
+        preview_grid.setContentsMargins(0, 0, 0, 0)
+        preview_grid.setHorizontalSpacing(CARD_SPACING)
+        preview_grid.setVerticalSpacing(CARD_SPACING)
+        self.inference_input_preview = self._preview_label("输入：NaN")
+        self.inference_target_preview = self._preview_label("真值：NaN")
+        self.inference_prediction_preview = self._preview_label("预测：NaN")
+        self.inference_error_preview = self._preview_label("误差：NaN")
+        preview_grid.addWidget(self._preview_panel("输入", self.inference_input_preview), 0, 0)
+        preview_grid.addWidget(self._preview_panel("真值", self.inference_target_preview), 0, 1)
+        preview_grid.addWidget(self._preview_panel("预测", self.inference_prediction_preview), 1, 0)
+        preview_grid.addWidget(self._preview_panel("误差", self.inference_error_preview), 1, 1)
+        sample_layout.addLayout(preview_grid, 1)
+        inference_result_tabs.addTab(sample_page, "最差样本")
+
+        sequence_page = QWidget()
+        sequence_layout = QVBoxLayout(sequence_page)
+        sequence_layout.setContentsMargins(0, 0, 0, 0)
+        self.inference_sequence_table = QTableWidget(0, 4)
+        self.inference_sequence_table.setHorizontalHeaderLabels(["序列", "样本数", "平均误差", "最大误差"])
+        self.inference_sequence_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.inference_sequence_table.verticalHeader().setVisible(False)
+        self.inference_sequence_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        sequence_layout.addWidget(self.inference_sequence_table)
+        inference_result_tabs.addTab(sequence_page, "分序列统计")
+
+        overview_page = QWidget()
+        overview_layout = QVBoxLayout(overview_page)
+        overview_layout.setContentsMargins(0, 0, 0, 0)
+        self.inference_preview = self._preview_label("整体推理预览：NaN")
+        self.inference_preview.setMaximumHeight(260)
+        self.inference_run_summary = QTextEdit()
+        self.inference_run_summary.setReadOnly(True)
+        self.inference_run_summary.setPlaceholderText("Inference run: NaN")
+        overview_layout.addWidget(self.inference_preview, 1)
+        overview_layout.addWidget(self.inference_run_summary, 1)
+        inference_result_tabs.addTab(overview_page, "整体与原始输出")
+        inference_results_layout.addWidget(inference_result_tabs, 1)
+        inference_results_box.setMinimumWidth(620)
+        inference_splitter.addWidget(inference_results_box)
+        inference_splitter.setStretchFactor(0, 1)
+        inference_splitter.setStretchFactor(1, 2)
+        inference_root.addWidget(inference_splitter, 1)
+        tabs.addTab(inference_tab, "推理评估")
+
         processing_tab = QWidget()
         processing_layout = QVBoxLayout(processing_tab)
         processing_layout.setContentsMargins(0, 0, 0, 0)
-        processing_layout.setSpacing(PAGE_SPACING)
-        processing_layout.addWidget(self._tab_header("处理与标注", "集中放置分割、Mask、标签检查和未来的数据集转换工具。"))
-        processing_hint = QLabel(
-            "图像分割、标签检查、terrain mask 和数据集到 BeamNG 地图转换会放在这里；未实现项保持 NaN/未完成。"
+        processing_layout.setSpacing(CARD_SPACING)
+        processing_layout.addWidget(
+            self._tab_header("处理与标注", "组合非破坏式处理步骤，并保存可重复运行的版本化流水线。")
         )
-        processing_hint.setObjectName("mutedText")
-        processing_hint.setWordWrap(True)
-        processing_layout.addWidget(self._group("数据处理与标注", [processing_hint]))
-        processing_layout.addStretch(1)
+        processing_columns = self._row_layout()
+        processing_config_box, processing_config_layout = self._new_group("流水线配置")
+        self.processing_pipeline_combo = self._combo()
+        self.processing_pipeline_combo.currentIndexChanged.connect(self._load_processing_pipeline_selection)
+        self.processing_pipeline_name_edit = QLineEdit("dataset_processing")
+        self.processing_dataset_root_edit = QLineEdit()
+        self.processing_adapter_edit = QLineEdit()
+        self.processing_sequence_edit = QLineEdit()
+        self.processing_output_root_edit = QLineEdit(str(services.ROOT / "outputs" / "processed_datasets"))
+        processing_dataset_browse = QPushButton("选择")
+        self._configure_button(processing_dataset_browse)
+        processing_dataset_browse.clicked.connect(lambda: self._browse_dir(self.processing_dataset_root_edit))
+        processing_output_browse = QPushButton("选择")
+        self._configure_button(processing_output_browse)
+        processing_output_browse.clicked.connect(lambda: self._browse_dir(self.processing_output_root_edit))
+        processing_config_layout.addWidget(self._field("已保存流水线", self.processing_pipeline_combo))
+        processing_config_layout.addWidget(self._field("名称", self.processing_pipeline_name_edit))
+        processing_config_layout.addWidget(
+            self._field("数据集", self._with_button(self.processing_dataset_root_edit, processing_dataset_browse))
+        )
+        processing_config_layout.addWidget(self._field("适配器", self.processing_adapter_edit))
+        processing_config_layout.addWidget(self._field("序列", self.processing_sequence_edit))
+        processing_config_layout.addWidget(
+            self._field("版本输出根目录", self._with_button(self.processing_output_root_edit, processing_output_browse))
+        )
+        self.processing_operation_combo = self._combo()
+        for operation in services.processing_operation_entries():
+            self.processing_operation_combo.addItem(str(operation["label"]), dict(operation))
+        add_processing_step = QPushButton("添加步骤")
+        self._configure_button(add_processing_step)
+        add_processing_step.clicked.connect(self._add_processing_step)
+        remove_processing_step = QPushButton("删除步骤")
+        self._configure_button(remove_processing_step)
+        remove_processing_step.clicked.connect(self._remove_processing_step)
+        processing_config_layout.addWidget(
+            self._field("操作", self._with_button(self.processing_operation_combo, add_processing_step))
+        )
+        self.processing_step_table = QTableWidget(0, 2)
+        self.processing_step_table.setHorizontalHeaderLabels(["步骤", "参数 JSON"])
+        self.processing_step_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self.processing_step_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self.processing_step_table.verticalHeader().setVisible(False)
+        self.processing_step_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.processing_step_table.setMinimumHeight(210)
+        processing_config_layout.addWidget(self.processing_step_table, 1)
+        processing_config_layout.addWidget(remove_processing_step)
+        processing_config_layout.addWidget(
+            self._action_toolbar(
+                [
+                    self._action_button("预检", self.validate_processing_pipeline_from_gui),
+                    self._action_button("保存流水线", self.save_processing_pipeline_from_gui),
+                    self._action_button("运行", self.run_processing_pipeline_from_gui, primary=True),
+                ],
+                object_name="processingActionToolbar",
+            )
+        )
+        self.processing_preflight_summary = QLabel("预检：NaN")
+        self.processing_preflight_summary.setObjectName("mutedText")
+        self.processing_preflight_summary.setWordWrap(True)
+        processing_config_layout.addWidget(self.processing_preflight_summary)
+        processing_columns.addWidget(processing_config_box, 1)
+
+        processing_result_box, processing_result_layout = self._new_group("最近运行")
+        self.processing_result_summary = QTextEdit()
+        self.processing_result_summary.setReadOnly(True)
+        self.processing_result_summary.setMaximumHeight(190)
+        self.processing_result_summary.setPlaceholderText("Processing run: NaN")
+        self.processing_result_table = QTableWidget(0, 4)
+        self.processing_result_table.setHorizontalHeaderLabels(["帧", "操作", "来源模态", "输出"])
+        self.processing_result_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.processing_result_table.verticalHeader().setVisible(False)
+        self.processing_result_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        processing_result_layout.addWidget(self.processing_result_summary)
+        processing_result_layout.addWidget(self.processing_result_table, 1)
+        processing_columns.addWidget(processing_result_box, 2)
+        processing_layout.addLayout(processing_columns, 1)
         tabs.addTab(processing_tab, "处理与标注")
 
         layout.addWidget(tabs, 1)
@@ -2996,6 +3176,7 @@ class MainWindow(QMainWindow):
         self._fill_training_run_list()
         self._fill_training_job_table(self.catalog.get("training_jobs", []))
         self._fill_training_artifact_combo()
+        self._fill_processing_pipeline_combo()
         self._fill_episode_list()
         self._refresh_planner_summary()
         beamng = _find_named(self.catalog["backends"], "beamng")
@@ -4280,17 +4461,23 @@ class MainWindow(QMainWindow):
         self.dataset_frame_slider.setRange(0, max(0, frame_count - 1))
         self.dataset_frame_slider.setValue(min(self.settings.preview_frame_index, max(0, frame_count - 1)))
         self.dataset_frame_label.setText(f"帧 {self.dataset_frame_slider.value() + 1 if frame_count else 0} / {frame_count}")
+        self._complete_inference_frame_jump()
         self.log(f"数据集 OK: {payload.get('dataset_id')} / frames={frame_count}")
 
     def _populate_dataset_tree(self, payload: dict[str, Any]) -> None:
         self.dataset_tree.blockSignals(True)
         self.dataset_tree.clear()
         dataset_label = str(payload.get("dataset_id") or Path(str(payload.get("dataset_root") or "dataset")).name)
-        root_item = QTreeWidgetItem([dataset_label, str(payload.get("adapter") or services.NAN_TEXT)])
+        quality = payload.get("quality") if isinstance(payload.get("quality"), dict) else {}
+        root_item = QTreeWidgetItem(
+            [
+                dataset_label,
+                f"{payload.get('adapter') or services.NAN_TEXT} | {quality.get('status') or services.NAN_TEXT}",
+            ]
+        )
         root_item.setData(0, Qt.ItemDataRole.UserRole, {"kind": "dataset"})
         self.dataset_tree.addTopLevelItem(root_item)
         selected = str(payload.get("selected_sequence") or "")
-        quality = payload.get("quality") if isinstance(payload.get("quality"), dict) else {}
         modalities = [str(item) for item in (quality.get("available_modalities") or quality.get("modalities") or [])]
         missing = quality.get("missing_asset_counts") if isinstance(quality.get("missing_asset_counts"), dict) else {}
         for sequence_id in payload.get("sequences", []):
@@ -4308,8 +4495,16 @@ class MainWindow(QMainWindow):
             if is_selected:
                 for modality in modalities:
                     missing_count = int(missing.get(modality, 0))
+                    asset_count = int(
+                        (quality.get("asset_counts") if isinstance(quality.get("asset_counts"), dict) else {}).get(
+                            modality, 0
+                        )
+                    )
                     modality_item = QTreeWidgetItem(
-                        [modality, "完整" if missing_count == 0 else f"缺失 {missing_count}"]
+                        [
+                            modality,
+                            f"{asset_count} | 完整" if missing_count == 0 else f"{asset_count} | 缺失 {missing_count}",
+                        ]
                     )
                     modality_item.setData(
                         0,
@@ -4317,6 +4512,31 @@ class MainWindow(QMainWindow):
                         {"kind": "modality", "sequence_id": sequence_text, "modality": modality},
                     )
                     sequence_item.addChild(modality_item)
+                frame_count = int(payload.get("frame_count") or 0)
+                frame_range = f"0..{frame_count - 1}" if frame_count else services.NAN_TEXT
+                sequence_item.addChild(
+                    QTreeWidgetItem(
+                        [
+                            "帧范围",
+                            f"{frame_range} | {services.display_value(quality.get('time_start'))}.."
+                            f"{services.display_value(quality.get('time_end'))} s",
+                        ]
+                    )
+                )
+                calibration = payload.get("calibration") if isinstance(payload.get("calibration"), dict) else {}
+                calibration_status = "已提供" if calibration else "未提供"
+                sequence_item.addChild(
+                    QTreeWidgetItem(["标定", f"{calibration_status} | {len(calibration)} 项"])
+                )
+                issue_count = int(quality.get("error_count", 0)) + int(quality.get("warning_count", 0))
+                sequence_item.addChild(
+                    QTreeWidgetItem(
+                        [
+                            "质量",
+                            f"{quality.get('status') or services.NAN_TEXT} | 问题 {issue_count}",
+                        ]
+                    )
+                )
                 sequence_item.setExpanded(True)
         root_item.setExpanded(True)
         self.dataset_tree.blockSignals(False)
@@ -5121,6 +5341,33 @@ class MainWindow(QMainWindow):
             self.training_artifact_combo.setCurrentIndex(selected_index)
         self.training_artifact_combo.blockSignals(False)
         self._update_training_artifact_details()
+        if hasattr(self, "inference_artifact_combo"):
+            inference_current = self.inference_artifact_combo.currentData()
+            inference_path = (
+                str(inference_current.get("artifact_path") or "")
+                if isinstance(inference_current, dict)
+                else ""
+            )
+            self.inference_artifact_combo.blockSignals(True)
+            self.inference_artifact_combo.clear()
+            inference_selected = 0
+            for artifact in self.catalog.get("training_artifacts", []):
+                if (
+                    not artifact.get("exists")
+                    or str(artifact.get("status") or "").lower() != "completed"
+                    or not artifact.get("inference_available")
+                ):
+                    continue
+                tags = [name for name in ("latest", "best", "favorite") if artifact.get(name)]
+                tag_text = f" [{' / '.join(tags)}]" if tags else ""
+                label = str(artifact.get("label") or artifact.get("id") or services.NAN_TEXT)
+                self.inference_artifact_combo.addItem(f"{label}{tag_text}", dict(artifact))
+                if str(artifact.get("artifact_path") or "") == inference_path:
+                    inference_selected = self.inference_artifact_combo.count() - 1
+            if self.inference_artifact_combo.count():
+                self.inference_artifact_combo.setCurrentIndex(inference_selected)
+            self.inference_artifact_combo.blockSignals(False)
+            self._update_inference_artifact_details()
 
     def _update_training_artifact_details(self) -> None:
         if not hasattr(self, "training_artifact_detail_label"):
@@ -5128,21 +5375,11 @@ class MainWindow(QMainWindow):
         data = self.training_artifact_combo.currentData()
         artifact = dict(data) if isinstance(data, dict) else {}
         if not artifact:
-            self.inference_params_edit.clear()
-            self._inference_params_artifact_path = ""
             self.training_artifact_detail_label.setText("Checkpoint：NaN")
             self.favorite_artifact_button.setText("收藏")
             self.resume_artifact_button.setEnabled(False)
             return
         artifact_path = str(artifact.get("artifact_path") or "")
-        if artifact_path != self._inference_params_artifact_path:
-            manifest_path = str(artifact.get("trainer_manifest_path") or "")
-            try:
-                defaults = services.inference_parameter_defaults(manifest_path) if manifest_path else {}
-            except Exception:
-                defaults = {}
-            self.inference_params_edit.setPlainText(json.dumps(defaults, indent=2, ensure_ascii=False))
-            self._inference_params_artifact_path = artifact_path
         tags = [name for name in ("latest", "best", "favorite") if artifact.get(name)]
         metrics = artifact.get("metrics") if isinstance(artifact.get("metrics"), dict) else {}
         parameters = artifact.get("parameters") if isinstance(artifact.get("parameters"), dict) else {}
@@ -5153,6 +5390,41 @@ class MainWindow(QMainWindow):
         )
         self.favorite_artifact_button.setText("取消收藏" if artifact.get("favorite") else "收藏")
         self.resume_artifact_button.setEnabled(bool(artifact.get("resume_supported")))
+
+    def _update_inference_artifact_details(self) -> None:
+        if not hasattr(self, "inference_artifact_detail_label"):
+            return
+        data = self.inference_artifact_combo.currentData()
+        artifact = dict(data) if isinstance(data, dict) else {}
+        if not artifact:
+            self.inference_params_edit.clear()
+            self._inference_params_artifact_path = ""
+            self.inference_artifact_detail_label.setText("Checkpoint：NaN")
+            return
+        artifact_path = str(artifact.get("artifact_path") or "")
+        if artifact_path != self._inference_params_artifact_path:
+            manifest_path = str(artifact.get("trainer_manifest_path") or "")
+            try:
+                defaults = services.inference_parameter_defaults(manifest_path) if manifest_path else {}
+            except Exception:
+                defaults = {}
+            self.inference_params_edit.setPlainText(json.dumps(defaults, indent=2, ensure_ascii=False))
+            self._inference_params_artifact_path = artifact_path
+        self.inference_dataset_root_edit.setText(
+            str(artifact.get("dataset_root") or self.dataset_root_edit.text().strip())
+        )
+        self.inference_adapter_edit.setText(str(artifact.get("adapter") or self.adapter_edit.text().strip()))
+        self.inference_sequence_edit.setText(
+            str(artifact.get("sequence_id") or self.sequence_combo.currentText().strip())
+        )
+        self.inference_split_path_edit.setText(
+            str(artifact.get("split_path") or self.dataset_split_path_edit.text().strip())
+        )
+        tags = [name for name in ("latest", "best", "favorite") if artifact.get(name)]
+        self.inference_artifact_detail_label.setText(
+            f"{artifact_path or services.NAN_TEXT} | "
+            f"{', '.join(tags) if tags else '无标签'} | epoch: {services.display_value(artifact.get('epoch'))}"
+        )
 
     def toggle_selected_artifact_favorite(self) -> None:
         data = self.training_artifact_combo.currentData()
@@ -5212,8 +5484,181 @@ class MainWindow(QMainWindow):
         self.data_training_tabs.setCurrentIndex(1)
         self.log(f"已加载恢复训练配置: {artifact_path}")
 
+    def _fill_processing_pipeline_combo(self) -> None:
+        if not hasattr(self, "processing_pipeline_combo"):
+            return
+        current = self.processing_pipeline_combo.currentData()
+        current_id = str(current.get("id") or "") if isinstance(current, dict) else ""
+        pending_id = str(getattr(self, "_processing_select_id", "") or "")
+        wanted = pending_id or current_id
+        self.processing_pipeline_combo.blockSignals(True)
+        self.processing_pipeline_combo.clear()
+        self.processing_pipeline_combo.addItem("新流水线", None)
+        selected = 0
+        for row in self.catalog.get("processing_pipelines", []):
+            self.processing_pipeline_combo.addItem(str(row.get("label") or row.get("id")), dict(row))
+            if str(row.get("id") or "") == wanted:
+                selected = self.processing_pipeline_combo.count() - 1
+        self.processing_pipeline_combo.setCurrentIndex(selected)
+        self.processing_pipeline_combo.blockSignals(False)
+        self._processing_select_id = ""
+        self._load_processing_pipeline_selection()
+
+    def _load_processing_pipeline_selection(self) -> None:
+        if not hasattr(self, "processing_pipeline_combo"):
+            return
+        data = self.processing_pipeline_combo.currentData()
+        pipeline = dict(data) if isinstance(data, dict) else {}
+        if pipeline:
+            self.processing_pipeline_name_edit.setText(str(pipeline.get("label") or pipeline.get("id") or ""))
+            self.processing_dataset_root_edit.setText(str(pipeline.get("dataset_root") or ""))
+            self.processing_adapter_edit.setText(str(pipeline.get("adapter") or ""))
+            self.processing_sequence_edit.setText(str(pipeline.get("sequence_id") or ""))
+            self.processing_output_root_edit.setText(
+                str(pipeline.get("output_root") or services.ROOT / "outputs" / "processed_datasets")
+            )
+            self._set_processing_steps(
+                pipeline.get("steps") if isinstance(pipeline.get("steps"), list) else []
+            )
+            return
+        if not self.processing_dataset_root_edit.text().strip():
+            self.processing_dataset_root_edit.setText(self.dataset_root_edit.text().strip())
+            self.processing_adapter_edit.setText(self.adapter_edit.text().strip())
+            self.processing_sequence_edit.setText(self.sequence_combo.currentText().strip())
+        if self.processing_step_table.rowCount() == 0:
+            self._add_processing_step()
+
+    def _add_processing_step(self) -> None:
+        data = self.processing_operation_combo.currentData()
+        operation = dict(data) if isinstance(data, dict) else {}
+        if not operation:
+            return
+        row = self.processing_step_table.rowCount()
+        self.processing_step_table.insertRow(row)
+        operation_item = QTableWidgetItem(str(operation.get("label") or operation.get("id") or ""))
+        operation_item.setData(Qt.ItemDataRole.UserRole, str(operation.get("id") or ""))
+        operation_item.setFlags(operation_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        self.processing_step_table.setItem(row, 0, operation_item)
+        self.processing_step_table.setItem(
+            row,
+            1,
+            QTableWidgetItem(json.dumps(operation.get("parameters") or {}, ensure_ascii=False)),
+        )
+
+    def _remove_processing_step(self) -> None:
+        rows = sorted({index.row() for index in self.processing_step_table.selectedIndexes()}, reverse=True)
+        for row in rows:
+            self.processing_step_table.removeRow(row)
+
+    def _set_processing_steps(self, steps: list[Any]) -> None:
+        operations = {str(row["id"]): dict(row) for row in services.processing_operation_entries()}
+        self.processing_step_table.setRowCount(0)
+        for raw in steps:
+            step = dict(raw) if isinstance(raw, dict) else {}
+            operation_id = str(step.get("operation") or step.get("id") or "")
+            operation = operations.get(operation_id, {"id": operation_id, "label": operation_id})
+            row = self.processing_step_table.rowCount()
+            self.processing_step_table.insertRow(row)
+            item = QTableWidgetItem(str(operation.get("label") or operation_id))
+            item.setData(Qt.ItemDataRole.UserRole, operation_id)
+            item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self.processing_step_table.setItem(row, 0, item)
+            self.processing_step_table.setItem(
+                row,
+                1,
+                QTableWidgetItem(json.dumps(step.get("parameters") or {}, ensure_ascii=False)),
+            )
+
+    def _processing_pipeline_payload(self) -> dict[str, Any]:
+        steps = []
+        for row in range(self.processing_step_table.rowCount()):
+            operation_item = self.processing_step_table.item(row, 0)
+            parameter_item = self.processing_step_table.item(row, 1)
+            operation = str(operation_item.data(Qt.ItemDataRole.UserRole) or "") if operation_item else ""
+            parameters = json.loads(parameter_item.text().strip() or "{}") if parameter_item else {}
+            if not isinstance(parameters, dict):
+                raise ValueError(f"步骤 {row + 1} 的参数必须是 JSON 对象。")
+            steps.append({"operation": operation, "parameters": parameters})
+        name = self.processing_pipeline_name_edit.text().strip() or "dataset_processing"
+        return {
+            "id": name,
+            "label": name,
+            "dataset_root": self.processing_dataset_root_edit.text().strip(),
+            "adapter": self.processing_adapter_edit.text().strip(),
+            "sequence_id": self.processing_sequence_edit.text().strip(),
+            "output_root": self.processing_output_root_edit.text().strip(),
+            "steps": steps,
+        }
+
+    def validate_processing_pipeline_from_gui(self) -> None:
+        try:
+            report = services.validate_processing_pipeline(self._processing_pipeline_payload())
+        except Exception as exc:
+            self.processing_preflight_summary.setText(f"预检失败：{exc}")
+            return
+        if report.get("ready"):
+            self.processing_preflight_summary.setText(
+                f"预检：可运行 | sequence={report.get('sequence_id')} | steps={len(report.get('steps', []))}"
+            )
+        else:
+            self.processing_preflight_summary.setText(
+                "预检：不可运行\n" + "\n".join(str(item) for item in report.get("issues", []))
+            )
+
+    def save_processing_pipeline_from_gui(self) -> None:
+        try:
+            payload = self._processing_pipeline_payload()
+            saved = services.save_processing_pipeline(
+                pipeline_id=str(payload["id"]),
+                label=str(payload["label"]),
+                dataset_root=str(payload["dataset_root"]),
+                adapter=str(payload["adapter"]),
+                sequence_id=str(payload["sequence_id"]),
+                steps=list(payload["steps"]),
+                output_root=str(payload["output_root"]),
+            )
+        except Exception as exc:
+            self.processing_preflight_summary.setText(f"保存失败：{exc}")
+            return
+        self._processing_select_id = str(saved.get("id") or "")
+        self.processing_preflight_summary.setText(f"已保存：{saved.get('id')}")
+        self.refresh_catalogs()
+
+    def run_processing_pipeline_from_gui(self) -> None:
+        try:
+            payload = self._processing_pipeline_payload()
+            report = services.validate_processing_pipeline(payload)
+            if not report.get("ready"):
+                raise ValueError("; ".join(str(item) for item in report.get("issues", [])))
+        except Exception as exc:
+            self.processing_preflight_summary.setText(f"运行前检查失败：{exc}")
+            return
+        self._run_task(
+            lambda: services.run_processing_pipeline(payload),
+            self._processing_pipeline_finished,
+            "数据处理失败",
+            task_label=f"处理流水线 {payload.get('label')}",
+        )
+
+    def _processing_pipeline_finished(self, payload: dict[str, Any]) -> None:
+        self.processing_result_summary.setText(
+            f"状态: {payload.get('status')}\n版本: {payload.get('version')}\n"
+            f"帧数: {payload.get('frame_count')}\n产物: {payload.get('asset_count')}\n"
+            f"跳过: {payload.get('skipped_count')}\n目录: {payload.get('output_dir')}"
+        )
+        assets = payload.get("assets") if isinstance(payload.get("assets"), list) else []
+        self.processing_result_table.setRowCount(min(500, len(assets)))
+        for row_index, row in enumerate(assets[:500]):
+            values = [row.get("frame_id"), row.get("operation"), row.get("source_modality"), row.get("output")]
+            for column, value in enumerate(values):
+                self.processing_result_table.setItem(
+                    row_index, column, QTableWidgetItem(services.display_value(value))
+                )
+        self.processing_preflight_summary.setText(f"运行完成：{payload.get('output_dir')}")
+        self.log(f"数据处理完成: {payload.get('path', services.NAN_TEXT)}")
+
     def run_selected_artifact_inference(self) -> None:
-        data = self.training_artifact_combo.currentData()
+        data = self.inference_artifact_combo.currentData()
         artifact = dict(data) if isinstance(data, dict) else {}
         if not artifact:
             self.inference_metric_summary.setText("推理指标：未选择 checkpoint")
@@ -5233,10 +5678,10 @@ class MainWindow(QMainWindow):
             lambda: services.run_inference_manifest_job(
                 manifest_path,
                 artifact_path=str(artifact.get("artifact_path") or ""),
-                dataset_root=self.dataset_root_edit.text().strip(),
-                adapter=self.adapter_edit.text().strip(),
-                sequence_id=self.sequence_combo.currentText().strip(),
-                split_path=str(artifact.get("split_path") or self.dataset_split_path_edit.text().strip()),
+                dataset_root=self.inference_dataset_root_edit.text().strip(),
+                adapter=self.inference_adapter_edit.text().strip(),
+                sequence_id=self.inference_sequence_edit.text().strip(),
+                split_path=self.inference_split_path_edit.text().strip(),
                 parameters=inference_parameters,
             ),
             self._inference_finished,
@@ -5244,24 +5689,132 @@ class MainWindow(QMainWindow):
             task_label=f"推理 {artifact.get('label', artifact.get('id', 'checkpoint'))}",
         )
 
+    def validate_selected_artifact_inference(self) -> None:
+        data = self.inference_artifact_combo.currentData()
+        artifact = dict(data) if isinstance(data, dict) else {}
+        if not artifact:
+            self.inference_preflight_summary.setText("预检：未选择 checkpoint")
+            return
+        try:
+            parameters = json.loads(self.inference_params_edit.toPlainText().strip() or "{}")
+            if not isinstance(parameters, dict):
+                raise ValueError("推理参数必须是 JSON 对象。")
+            report = services.validate_inference_setup(
+                str(artifact.get("trainer_manifest_path") or ""),
+                artifact_path=str(artifact.get("artifact_path") or ""),
+                dataset_root=self.inference_dataset_root_edit.text().strip(),
+                adapter=self.inference_adapter_edit.text().strip(),
+                sequence_id=self.inference_sequence_edit.text().strip(),
+                split_path=self.inference_split_path_edit.text().strip(),
+                parameters=parameters,
+            )
+        except Exception as exc:
+            self.inference_preflight_summary.setText(f"预检失败：{exc}")
+            return
+        if report.get("ready"):
+            command = " ".join(str(item) for item in report.get("command_preview", []))
+            self.inference_preflight_summary.setText(f"预检：可运行\n{command}")
+        else:
+            self.inference_preflight_summary.setText(
+                "预检：不可运行\n" + "\n".join(str(item) for item in report.get("issues", []))
+            )
+
     def _inference_finished(self, payload: dict[str, Any]) -> None:
-        metrics = payload.get("metrics") if isinstance(payload.get("metrics"), dict) else {}
-        self.inference_metric_summary.setText("推理指标：" + _compact_json(metrics))
-        predictions = payload.get("predictions") if isinstance(payload.get("predictions"), list) else []
-        columns, normalized_rows = _inference_prediction_rows(predictions[:100])
-        self.inference_prediction_table.setColumnCount(len(columns))
-        self.inference_prediction_table.setHorizontalHeaderLabels(columns)
-        self.inference_prediction_table.setRowCount(min(100, len(predictions)))
-        for row_index, row in enumerate(normalized_rows):
-            values = [row.get(column) for column in columns]
+        evaluation = services.inference_evaluation_summary(payload, worst_limit=100)
+        self._inference_evaluation = evaluation
+        metrics = evaluation.get("metrics") if isinstance(evaluation.get("metrics"), dict) else {}
+        self.inference_metric_summary.setText(
+            f"样本 {evaluation.get('sample_count', 0)} | 序列 {evaluation.get('sequence_count', 0)} | "
+            + _mapping_preview(metrics)
+        )
+        worst_samples = evaluation.get("worst_samples") if isinstance(evaluation.get("worst_samples"), list) else []
+        self.inference_prediction_table.setRowCount(len(worst_samples))
+        for row_index, row in enumerate(worst_samples):
+            values = [
+                row.get("sequence_id"),
+                row.get("frame_id"),
+                row.get("sample"),
+                row.get("error_metric"),
+                row.get("error"),
+            ]
             for column, value in enumerate(values):
-                self.inference_prediction_table.setItem(row_index, column, QTableWidgetItem(services.display_value(value)))
+                item = QTableWidgetItem(services.display_value(value))
+                if column == 0:
+                    item.setData(Qt.ItemDataRole.UserRole, dict(row))
+                self.inference_prediction_table.setItem(row_index, column, item)
+        sequence_rows = evaluation.get("per_sequence") if isinstance(evaluation.get("per_sequence"), list) else []
+        self.inference_sequence_table.setRowCount(len(sequence_rows))
+        for row_index, row in enumerate(sequence_rows):
+            values = [row.get("sequence_id"), row.get("sample_count"), row.get("mean_error"), row.get("max_error")]
+            for column, value in enumerate(values):
+                self.inference_sequence_table.setItem(
+                    row_index, column, QTableWidgetItem(services.display_value(value))
+                )
         previews = payload.get("previews") if isinstance(payload.get("previews"), dict) else {}
         preview_path = next(iter(previews.values()), "")
         self._set_preview(self.inference_preview, preview_path, "推理预览：NaN")
-        self.model_summary.setText(_compact_json(payload))
+        if worst_samples:
+            self.inference_prediction_table.selectRow(0)
+            self._show_inference_sample(worst_samples[0])
+        else:
+            self._show_inference_sample({})
+        self.inference_run_summary.setText(_compact_json(payload))
         self.log(f"推理完成: {payload.get('path', services.NAN_TEXT)}")
         self.refresh_catalogs()
+
+    def _select_inference_sample(self, row: int, _column: int) -> None:
+        item = self.inference_prediction_table.item(row, 0)
+        sample = item.data(Qt.ItemDataRole.UserRole) if item is not None else None
+        self._show_inference_sample(sample if isinstance(sample, dict) else {})
+
+    def _show_inference_sample(self, sample: dict[str, Any]) -> None:
+        self._selected_inference_sample = dict(sample)
+        previews = sample.get("previews") if isinstance(sample.get("previews"), dict) else {}
+        self._set_preview(self.inference_input_preview, previews.get("input"), "输入：NaN")
+        self._set_preview(
+            self.inference_target_preview,
+            previews.get("target") or previews.get("ground_truth") or previews.get("actual"),
+            "真值：NaN",
+        )
+        self._set_preview(self.inference_prediction_preview, previews.get("prediction"), "预测：NaN")
+        self._set_preview(self.inference_error_preview, previews.get("error"), "误差：NaN")
+
+    def jump_to_selected_inference_sample(self) -> None:
+        sample = getattr(self, "_selected_inference_sample", {})
+        if not isinstance(sample, dict) or not sample:
+            self.inference_preflight_summary.setText("定位：请先选择一个样本")
+            return
+        self.dataset_root_edit.setText(self.inference_dataset_root_edit.text().strip())
+        self.adapter_edit.setText(self.inference_adapter_edit.text().strip())
+        sequence_id = str(sample.get("sequence_id") or self.inference_sequence_edit.text().strip())
+        if sequence_id:
+            self.sequence_combo.setCurrentText(sequence_id)
+        frame_index = sample.get("frame_index")
+        self._pending_inference_frame_jump = {
+            "dataset_root": self.dataset_root_edit.text().strip(),
+            "sequence_id": sequence_id,
+            "frame_index": frame_index,
+        }
+        self.data_training_tabs.setCurrentIndex(0)
+        self.dataset_workspace.setCurrentIndex(0)
+        current_root = str(self.dataset_info.get("dataset_root") or "") if self.dataset_info else ""
+        current_sequence = str(self.dataset_info.get("selected_sequence") or "") if self.dataset_info else ""
+        if current_root and Path(current_root).resolve() == Path(self.dataset_root_edit.text().strip()).resolve() and (
+            not sequence_id or current_sequence == sequence_id
+        ):
+            self._complete_inference_frame_jump()
+        else:
+            self.inspect_dataset()
+
+    def _complete_inference_frame_jump(self) -> None:
+        pending = getattr(self, "_pending_inference_frame_jump", {})
+        if not isinstance(pending, dict) or not pending:
+            return
+        frame_index = pending.get("frame_index")
+        if frame_index is not None:
+            self.dataset_frame_slider.setValue(max(0, min(int(frame_index), self.dataset_frame_slider.maximum())))
+            self.preview_dataset()
+        self._pending_inference_frame_jump = {}
 
     def _fill_training_job_table(self, jobs: list[dict[str, Any]] | None = None) -> None:
         if not hasattr(self, "training_job_table"):
@@ -6350,57 +6903,6 @@ def _validation_float(validation: dict[str, Any], key: str, default: float | Non
     except (TypeError, ValueError):
         return default
     return value if math.isfinite(value) else default
-
-
-def _number_or_nan(value: Any) -> float:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return math.nan
-
-
-def _inference_prediction_rows(predictions: list[Any]) -> tuple[list[str], list[dict[str, Any]]]:
-    rows = [row if isinstance(row, dict) else {"sample": index, "value": row} for index, row in enumerate(predictions)]
-    coordinate_rows = any(isinstance(row.get("predicted"), dict) and isinstance(row.get("actual"), dict) for row in rows)
-    if coordinate_rows:
-        columns = ["sample", "predicted.x", "predicted.y", "actual.x", "actual.y", "position_error"]
-        normalized: list[dict[str, Any]] = []
-        for index, row in enumerate(rows):
-            predicted = row.get("predicted") if isinstance(row.get("predicted"), dict) else {}
-            actual = row.get("actual") if isinstance(row.get("actual"), dict) else {}
-            px = _number_or_nan(predicted.get("x"))
-            py = _number_or_nan(predicted.get("y"))
-            ax = _number_or_nan(actual.get("x"))
-            ay = _number_or_nan(actual.get("y"))
-            error = math.hypot(px - ax, py - ay) if all(math.isfinite(value) for value in (px, py, ax, ay)) else math.nan
-            normalized.append(
-                {
-                    "sample": row.get("sample", index),
-                    "predicted.x": px,
-                    "predicted.y": py,
-                    "actual.x": ax,
-                    "actual.y": ay,
-                    "position_error": error,
-                }
-            )
-        return columns, normalized
-
-    flattened = [_flatten_prediction_row(row) for row in rows]
-    names = {key for row in flattened for key in row}
-    preferred = [key for key in ("sample", "frame_id", "index") if key in names]
-    columns = preferred + sorted(name for name in names if name not in preferred)[: max(0, 8 - len(preferred))]
-    return columns or ["sample"], flattened
-
-
-def _flatten_prediction_row(row: dict[str, Any], prefix: str = "") -> dict[str, Any]:
-    flattened: dict[str, Any] = {}
-    for key, value in row.items():
-        name = f"{prefix}.{key}" if prefix else str(key)
-        if isinstance(value, dict):
-            flattened.update(_flatten_prediction_row(value, name))
-        elif not isinstance(value, (list, tuple, dict)):
-            flattened[name] = value
-    return flattened
 
 
 def _validation_int(validation: dict[str, Any], key: str, default: int) -> int:
