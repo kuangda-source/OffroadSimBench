@@ -26,6 +26,7 @@ def main() -> int:
     parser.add_argument("--max-pixels-per-frame", type=int, default=512)
     parser.add_argument("--max-depth-m", type=float, default=50.0)
     parser.add_argument("--seed", type=int, default=7)
+    parser.add_argument("--resume", default="")
     args = parser.parse_args()
 
     output_dir = Path(args.output).resolve()
@@ -68,12 +69,23 @@ def main() -> int:
     validation_x, validation_y = samples(validation_frames)
     if not all(np.all(np.isfinite(value)) for value in (train_x, train_y, validation_x, validation_y)):
         raise ValueError("Tiny depth training data contains NaN or infinite values.")
-    weights = np.zeros(train_x.shape[1], dtype=np.float64)
-    weights[0] = float(np.mean(train_y))
+    start_epoch = 0
+    if args.resume:
+        resumed_model = TinyDepthModel.load(args.resume)
+        weights = resumed_model.weights.astype(np.float64, copy=True)
+        if len(weights) != train_x.shape[1]:
+            raise ValueError(
+                f"Resume checkpoint has {len(weights)} weights, expected {train_x.shape[1]}."
+            )
+        start_epoch = int(resumed_model.metadata.get("epoch") or 0)
+    else:
+        weights = np.zeros(train_x.shape[1], dtype=np.float64)
+        weights[0] = float(np.mean(train_y))
     history = {"train_loss": [], "validation_loss": [], "learning_rate": [], "throughput": []}
     events_path = output_dir / "events.jsonl"
     with events_path.open("w", encoding="utf-8") as events:
-        for epoch in range(1, args.epochs + 1):
+        for local_epoch in range(1, args.epochs + 1):
+            epoch = start_epoch + local_epoch
             with np.errstate(over="ignore", invalid="ignore"):
                 train_error = train_x @ weights - train_y
                 regularization = weights.copy()
@@ -99,10 +111,10 @@ def main() -> int:
                 "validation_loss": validation_rmse,
                 "learning_rate": args.learning_rate,
                 "throughput": float(len(train_y)),
-                "progress": epoch / args.epochs,
-                "current_step": epoch,
+                "progress": local_epoch / args.epochs,
+                "current_step": local_epoch,
                 "total_steps": args.epochs,
-                "message": f"depth epoch {epoch}/{args.epochs}",
+                "message": f"depth epoch {epoch} (+{local_epoch}/{args.epochs})",
             }
             events.write(json.dumps(event) + "\n")
             events.flush()
@@ -113,7 +125,7 @@ def main() -> int:
     metrics = {
         "train_rmse_m": history["train_loss"][-1],
         "validation_rmse_m": history["validation_loss"][-1],
-        "epoch": args.epochs,
+        "epoch": start_epoch + args.epochs,
         "train_frame_count": len(train_frames),
         "validation_frame_count": len(validation_frames),
         "train_pixel_count": len(train_y),
@@ -130,6 +142,7 @@ def main() -> int:
             "split_path": str(Path(args.split_path).resolve()) if args.split_path else "",
             "ridge": args.ridge,
             "learning_rate": args.learning_rate,
+            "resumed_from": str(Path(args.resume).resolve()) if args.resume else "",
         },
     )
     model_path = model.save(output_dir)

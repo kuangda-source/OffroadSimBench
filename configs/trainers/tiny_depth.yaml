@@ -80,6 +80,11 @@ outputs:
   metrics_file: metrics.json
   history_file: history.json
   events_file: events.jsonl
+resume:
+  supported: true
+  arguments:
+    - --resume
+    - "{resume_checkpoint}"
 inference:
   launch:
     kind: python_script

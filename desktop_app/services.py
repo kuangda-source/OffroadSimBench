@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import csv
+import copy
 import hashlib
 import json
 import math
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -98,6 +100,11 @@ NAN_TEXT = "NaN"
 REGION_TRAINING_COLLECTION_FILENAME = "region_training_collection.json"
 LIGHTWEIGHT_REGION_WORLD_MODELS = ("tiny_learned", "mlp_dynamics")
 UNFINISHED_TEXT = "未完成"
+_TENSORBOARD_CACHE_LOCK = threading.RLock()
+_TENSORBOARD_EVENT_CACHE: dict[
+    tuple[tuple[str, int, int], ...],
+    tuple[dict[str, list[float]], dict[str, list[float]]],
+] = {}
 
 
 @dataclass(slots=True)
@@ -567,7 +574,7 @@ def save_dataset_manifest(
             "id": sequence_id,
             "root": str(sequence_root.resolve()),
         }
-        for key in ("pose_csv", "timestamp_csv", "actions_csv", "metadata"):
+        for key in ("pose_csv", "timestamp_csv", "actions_csv", "metadata", "alignment"):
             value = raw_sequence.get(key)
             if value:
                 row[key] = value
@@ -593,6 +600,89 @@ def save_dataset_manifest(
         raise RuntimeError("PyYAML is required to save dataset manifests.") from exc
     target.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True), encoding="utf-8")
     return load_dataset_manifest(target)
+
+
+def preview_dataset_mapping(
+    *,
+    dataset_root: str,
+    sequence: dict[str, Any],
+    max_frames: int = 5,
+) -> dict[str, Any]:
+    """Materialize a temporary manifest and return real matched-frame evidence."""
+
+    source_root = Path(dataset_root).resolve()
+    sequence_id = str(sequence.get("id") or sequence.get("sequence_id") or "sequence_001")
+    preview_key = hashlib.sha1(
+        json.dumps(
+            {"dataset_root": str(source_root), "sequence": sequence},
+            sort_keys=True,
+            ensure_ascii=False,
+            default=str,
+        ).encode("utf-8")
+    ).hexdigest()[:12]
+    preview_dir = ROOT / "outputs" / "dataset_mapping_previews" / preview_key
+    with tempfile.TemporaryDirectory(prefix="offroad_mapping_") as temporary_root:
+        manifest = save_dataset_manifest(
+            dataset_id=f"mapping_preview_{preview_key}",
+            display_name="Mapping preview",
+            dataset_root=str(source_root),
+            sequences=[sequence],
+            destination_root=temporary_root,
+        )
+        mapped_root = str(manifest["dataset_root"])
+        inspection = inspect_dataset(mapped_root, "manifest_dataset", sequence_id)
+        session = DatasetPreviewSession(max_cached_frames=max(1, int(max_frames)))
+        frame_count = int(inspection.get("frame_count") or 0)
+        rows: list[dict[str, Any]] = []
+        expected = {
+            {
+                "rgb": "front_rgb",
+                "camera": "front_rgb",
+                "lidar": "lidar_points",
+                "mask": "label",
+            }.get(str(name), str(name))
+            for name in (sequence.get("assets") if isinstance(sequence.get("assets"), dict) else {})
+        }
+        for index in range(min(max(0, int(max_frames)), frame_count)):
+            frame = session.preview(
+                mapped_root,
+                "manifest_dataset",
+                sequence_id,
+                frame_index=index,
+                output_dir=preview_dir,
+            )
+            assets = dict(frame.get("assets") or {})
+            available = set(assets)
+            rows.append(
+                {
+                    "frame_index": index,
+                    "frame_id": str(frame.get("frame_id") or ""),
+                    "available_modalities": sorted(available),
+                    "missing_modalities": sorted(expected - available),
+                    "assets": assets,
+                    "previews": dict(frame.get("previews") or {}),
+                    "metadata": dict(frame.get("metadata") or {}),
+                }
+            )
+    quality = inspection.get("quality") if isinstance(inspection.get("quality"), dict) else {}
+    missing_rows = sum(1 for row in rows if row["missing_modalities"])
+    issues = [
+        f"{missing_rows} of {len(rows)} sampled frame(s) are missing declared modalities."
+    ] if missing_rows else []
+    if int(quality.get("error_count") or 0):
+        issues.append(f"Mapping quality scan found {quality.get('error_count')} error(s).")
+    return {
+        "ready": bool(rows) and not issues,
+        "status": "ready" if rows and not issues else "invalid",
+        "dataset_root": str(source_root),
+        "sequence_id": sequence_id,
+        "frame_count": int(inspection.get("frame_count") or 0),
+        "sampled_frame_count": len(rows),
+        "available_modalities": list(quality.get("available_modalities") or []),
+        "issues": issues,
+        "matches": rows,
+        "preview_dir": str(preview_dir.resolve()),
+    }
 
 
 def suggest_dataset_manifest_sequences(dataset_root: str | Path) -> list[dict[str, Any]]:
@@ -851,6 +941,7 @@ def training_preset_entries(trainer_root: str | Path | None = None) -> list[dict
                 "input": dict(row.get("input", {})),
                 "outputs": dict(row.get("outputs", {})),
                 "inference": dict(row.get("inference", {})),
+                "resume": dict(row.get("resume", {})),
             }
         )
     return rows
@@ -906,6 +997,7 @@ def load_trainer_manifest(path: str | Path) -> dict[str, Any]:
         "input": dict(normalized["input"]),
         "outputs": dict(normalized["outputs"]),
         "inference": dict(normalized["inference"]),
+        "resume": dict(normalized["resume"]),
         "inference_manifest_path": str(inference_manifest_path) if inference_manifest_path else "",
         "manifest_path": str(manifest_path),
         "manifest_dir": str(manifest_path.parent),
@@ -1165,6 +1257,7 @@ def save_trainer_manifest(
     parameters: dict[str, Any] | None = None,
     input_spec: dict[str, Any] | None = None,
     outputs: dict[str, Any] | None = None,
+    resume_spec: dict[str, Any] | None = None,
     description: str = "",
     destination_root: str | Path | None = None,
 ) -> dict[str, Any]:
@@ -1195,6 +1288,7 @@ def save_trainer_manifest(
         "parameters": dict(parameters or {}),
         "input": dict(input_spec or {}),
         "outputs": dict(outputs or {"artifact_type": "artifact"}),
+        "resume": dict(resume_spec or {}),
     }
     if description:
         data["description"] = description
@@ -1218,6 +1312,7 @@ def run_trainer_manifest_job(
     adapter: str = "",
     sequence_id: str = "",
     split_path: str = "",
+    resume_checkpoint: str = "",
 ) -> dict[str, Any]:
     _verify_recorded_training_snapshot(manifest_path, "manifest")
     if split_path:
@@ -1236,6 +1331,7 @@ def run_trainer_manifest_job(
         adapter,
         sequence_id,
         execution_split_path,
+        resume_checkpoint,
     )
     manifest_dir = Path(str(manifest["manifest_dir"]))
     working_directory = resolve_trainer_working_directory(manifest, manifest_dir)
@@ -1268,6 +1364,7 @@ def run_trainer_manifest_job(
                 "command": command,
                 "working_directory": str(working_directory),
                 "stderr": completed.stderr.strip(),
+                "resume_checkpoint": resume_checkpoint,
             },
             logs={"stdout": str(stdout_path), "stderr": str(stderr_path)},
             provenance=provenance,
@@ -1334,6 +1431,7 @@ def run_trainer_manifest_job(
             "trainer_manifest_path": str(Path(manifest_path).resolve()),
             "command": command,
             "working_directory": str(working_directory),
+            "resume_checkpoint": resume_checkpoint,
         },
         logs={"stdout": str(stdout_path), "stderr": str(stderr_path)},
         provenance=provenance,
@@ -1359,6 +1457,7 @@ def queue_trainer_manifest_job(
     adapter: str = "",
     sequence_id: str = "",
     split_path: str = "",
+    resume_checkpoint: str = "",
 ) -> ProcessTrainingJob:
     """Queue a trainer manifest and finalize its standard training record."""
 
@@ -1379,6 +1478,7 @@ def queue_trainer_manifest_job(
         adapter,
         sequence_id,
         execution_split_path,
+        resume_checkpoint,
     )
     manifest_dir = Path(str(manifest["manifest_dir"]))
     working_directory = resolve_trainer_working_directory(manifest, manifest_dir)
@@ -1401,6 +1501,7 @@ def queue_trainer_manifest_job(
             "trainer_manifest_path": str(Path(manifest_path).resolve()),
             "command": command,
             "working_directory": str(working_directory),
+            "resume_checkpoint": resume_checkpoint,
         },
         logs={"stdout": str(stdout_path), "stderr": str(stderr_path)},
         provenance=provenance,
@@ -1460,6 +1561,7 @@ def queue_trainer_manifest_job(
                     "resource_sampling_available": bool(normalized_resources),
                     "events_path": str(_trainer_output_file(target_dir, outputs.get("events_file"), "events.jsonl")),
                     "metric_diagnostics": metric_diagnostics,
+                    "resume_checkpoint": resume_checkpoint,
                 },
                 logs={"stdout": str(stdout_path), "stderr": str(stderr_path)},
                 provenance=provenance,
@@ -1546,6 +1648,7 @@ def queue_trainer_manifest_job(
                 "resource_sampling_available": bool(normalized_resources),
                 "events_path": events_path,
                 "metric_diagnostics": metric_diagnostics,
+                "resume_checkpoint": resume_checkpoint,
             },
             logs={"stdout": str(stdout_path), "stderr": str(stderr_path)},
             provenance=provenance,
@@ -1578,6 +1681,14 @@ def queue_trainer_manifest_job(
             "split_path": split_path,
             "trainer_manifest_path": str(Path(manifest_path).resolve()),
             "events_path": str(_trainer_output_file(target_dir, outputs.get("events_file"), "events.jsonl")),
+            "tensorboard_dir": str(
+                _trainer_output_file(
+                    target_dir,
+                    outputs.get("tensorboard_dir") or outputs.get("tensorboard_log_dir"),
+                    ".",
+                )
+            ),
+            "resume_checkpoint": resume_checkpoint,
         },
         finalizer=finalize,
     )
@@ -1609,6 +1720,7 @@ def queue_training_config_job(
         adapter=str(row.get("adapter") or ""),
         sequence_id=str(row.get("sequence_id") or ""),
         split_path=str(row.get("split_path") or ""),
+        resume_checkpoint=str(row.get("resume_checkpoint") or ""),
     )
 
 
@@ -1862,6 +1974,7 @@ def run_training_config_job(
     adapter = str(row.get("adapter") or "")
     sequence_id = str(row.get("sequence_id") or "")
     split_path = str(row.get("split_path") or "")
+    resume_checkpoint = str(row.get("resume_checkpoint") or "")
 
     manifest_path = str(preset.get("manifest_path") or "").strip()
     if manifest_path:
@@ -1873,6 +1986,7 @@ def run_training_config_job(
             adapter=adapter,
             sequence_id=sequence_id,
             split_path=split_path,
+            resume_checkpoint=resume_checkpoint,
         )
     elif preset_id == "stablewm_hdf5":
         payload = export_lewm_hdf5(
@@ -1943,6 +2057,9 @@ def validate_training_config_setup(
     output_path = str(row.get("output_path") or "").strip()
     if not output_path:
         output_path = str(ROOT / "outputs" / "training_runs" / f"{row['id']}_{_timestamp()}")
+    resume_checkpoint = str(row.get("resume_checkpoint") or "").strip()
+    if resume_checkpoint and not Path(resume_checkpoint).exists():
+        issues.append(f"Resume checkpoint not found: {resume_checkpoint}")
 
     command_preview: list[str] = []
     manifest: dict[str, Any] = {}
@@ -1958,6 +2075,9 @@ def validate_training_config_setup(
         try:
             manifest = load_trainer_manifest(manifest_path)
             _validate_trainer_launch(manifest)
+            resume_spec = manifest.get("resume") if isinstance(manifest.get("resume"), dict) else {}
+            if resume_checkpoint and not resume_spec.get("supported"):
+                issues.append(f"Trainer does not support resume: {preset.get('label') or preset_id}")
             if dataset_exists:
                 compatibility = _trainer_dataset_compatibility(
                     manifest,
@@ -1967,7 +2087,7 @@ def validate_training_config_setup(
                     split_path=str(row.get("split_path") or ""),
                 )
                 issues.extend(str(item) for item in compatibility["issues"])
-            if parameters or not schema:
+            if (parameters or not schema) and (not resume_checkpoint or resume_spec.get("supported")):
                 command_preview = _trainer_command(
                     manifest,
                     dataset_root,
@@ -1976,9 +2096,12 @@ def validate_training_config_setup(
                     str(row.get("adapter") or ""),
                     str(row.get("sequence_id") or ""),
                     str(row.get("split_path") or ""),
+                    resume_checkpoint,
                 )
         except Exception as exc:
             issues.append(f"Trainer manifest is invalid: {exc}")
+    elif resume_checkpoint:
+        issues.append("The selected built-in trainer does not declare checkpoint resume support.")
 
     status = "ready" if not issues else "invalid"
     if preset and preset.get("available") is False:
@@ -2001,6 +2124,12 @@ def validate_training_config_setup(
         "parameters": parameters,
         "parameter_schema": dict(schema),
         "output_path": output_path,
+        "resume_checkpoint": resume_checkpoint,
+        "resume_supported": bool(
+            manifest.get("resume", {}).get("supported")
+            if isinstance(manifest.get("resume"), dict)
+            else False
+        ),
         "command_preview": command_preview,
     }
 
@@ -2119,6 +2248,7 @@ def training_artifact_entries(root: str | Path | None = None) -> list[dict[str, 
         summary = run.get("summary") if isinstance(run.get("summary"), dict) else {}
         manifest_path = str(summary.get("trainer_manifest_path") or "").strip()
         inference_available = False
+        resume_supported = False
         if manifest_path and Path(manifest_path).is_file():
             try:
                 loaded_manifest = load_trainer_manifest(manifest_path)
@@ -2128,6 +2258,8 @@ def training_artifact_entries(root: str | Path | None = None) -> list[dict[str, 
                         {**inference, "manifest_dir": str(loaded_manifest["manifest_dir"])}
                     )
                     inference_available = True
+                resume = loaded_manifest.get("resume") if isinstance(loaded_manifest.get("resume"), dict) else {}
+                resume_supported = bool(resume.get("supported"))
             except Exception:
                 inference_available = False
         rows.append(
@@ -2142,6 +2274,8 @@ def training_artifact_entries(root: str | Path | None = None) -> list[dict[str, 
                 "training_run_path": str(run.get("path") or ""),
                 "trainer_manifest_path": manifest_path,
                 "inference_available": inference_available,
+                "resume_supported": resume_supported,
+                "preset_id": str(run.get("preset_id") or ""),
                 "dataset_root": str(run.get("dataset_root") or ""),
                 "adapter": str(run.get("adapter") or ""),
                 "sequence_id": str(run.get("sequence_id") or ""),
@@ -2164,6 +2298,27 @@ def training_artifact_entries(root: str | Path | None = None) -> list[dict[str, 
         ),
         reverse=True,
     )
+    deduplicated: list[dict[str, Any]] = []
+    by_path: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        artifact_key = str(Path(str(row.get("artifact_path") or "")).resolve()).lower()
+        existing = by_path.get(artifact_key)
+        if existing is None:
+            by_path[artifact_key] = row
+            deduplicated.append(row)
+            continue
+        existing["favorite"] = bool(existing.get("favorite") or row.get("favorite"))
+        existing["best"] = bool(existing.get("best") or row.get("best"))
+        merged_marks = dict(row.get("best_marks") if isinstance(row.get("best_marks"), dict) else {})
+        merged_marks.update(
+            existing.get("best_marks") if isinstance(existing.get("best_marks"), dict) else {}
+        )
+        existing["best_marks"] = merged_marks
+        duplicate_runs = existing.setdefault("duplicate_training_run_paths", [])
+        duplicate_run = str(row.get("training_run_path") or "")
+        if duplicate_run and duplicate_run not in duplicate_runs:
+            duplicate_runs.append(duplicate_run)
+    rows = deduplicated
     for index, row in enumerate(rows):
         row["latest"] = index == 0
     return rows
@@ -2286,6 +2441,17 @@ def live_training_metric_record(job: dict[str, Any]) -> dict[str, Any]:
     output_dir = Path(str(job.get("output_dir") or ROOT / "outputs"))
     events_value = str(metadata.get("events_path") or output_dir / "events.jsonl")
     history, history_steps = _read_metric_events_with_steps(Path(events_value))
+    jsonl_available = bool(history)
+    tensorboard_value = str(
+        metadata.get("tensorboard_path")
+        or metadata.get("tensorboard_dir")
+        or output_dir
+    )
+    tensorboard_history, tensorboard_steps = _read_tensorboard_events_with_steps(Path(tensorboard_value))
+    for key, values in tensorboard_history.items():
+        if key not in history or len(values) > len(history[key]):
+            history[key] = list(values)
+            history_steps[key] = list(tensorboard_steps.get(key, []))
     resource_history = job.get("resource_history") if isinstance(job.get("resource_history"), dict) else {}
     elapsed = resource_history.get("elapsed_sec")
     elapsed_values = list(elapsed) if isinstance(elapsed, list) else []
@@ -2309,7 +2475,18 @@ def live_training_metric_record(job: dict[str, Any]) -> dict[str, Any]:
         "status": job.get("status"),
         "history": history,
         "history_steps": history_steps,
-        "summary": {"events_path": events_value},
+        "summary": {
+            "events_path": events_value,
+            "tensorboard_path": tensorboard_value,
+            "metric_sources": [
+                source
+                for source, available in (
+                    ("metrics_jsonl", jsonl_available),
+                    ("tensorboard", bool(tensorboard_history)),
+                )
+                if available
+            ],
+        },
         "mtime": time.time(),
     }
     record["metric_diagnostics"] = training_metric_diagnostics(record)
@@ -2931,6 +3108,18 @@ def _trainer_result_payload(manifest: dict[str, Any], output_dir: Path, stdout: 
             if len(history.get(key, [])) == len(values):
                 history_steps[key] = list(event_steps.get(key, []))
 
+    tensorboard_target = _trainer_output_file(
+        output_dir,
+        outputs.get("tensorboard_dir") or outputs.get("tensorboard_log_dir"),
+        ".",
+    )
+    tensorboard_history, tensorboard_steps = _read_tensorboard_events_with_steps(tensorboard_target)
+    for key, values in tensorboard_history.items():
+        existing = history.get(key)
+        if not isinstance(existing, (list, tuple)) or len(values) > len(existing):
+            history[key] = list(values)
+            history_steps[key] = list(tensorboard_steps.get(key, []))
+
     normalized_history, normalized_steps = _normalize_metric_series(history, history_steps)
     if not normalized_history:
         normalized_history = {key: [value] for key, value in _numeric_metric_items(metrics)}
@@ -3005,6 +3194,77 @@ def _read_metric_events_with_steps(path: Path) -> tuple[dict[str, list[float]], 
         for key, value in _numeric_metric_items(event):
             history.setdefault(key, []).append(value)
             history_steps.setdefault(key, []).append(event_step)
+    return history, history_steps
+
+
+def _read_tensorboard_events_with_steps(path: Path) -> tuple[dict[str, list[float]], dict[str, list[float]]]:
+    """Read scalar TensorBoard events when the optional dependency is installed."""
+
+    try:
+        from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
+    except ImportError:
+        return {}, {}
+    if path.is_file():
+        event_paths = [path]
+    elif path.is_dir():
+        event_paths = sorted(path.rglob("events.out.tfevents.*"))[:64]
+    else:
+        return {}, {}
+    signature_rows: list[tuple[str, int, int]] = []
+    for event_path in event_paths:
+        try:
+            stat = event_path.stat()
+        except OSError:
+            continue
+        signature_rows.append((str(event_path.resolve()), int(stat.st_mtime_ns), int(stat.st_size)))
+    signature = tuple(signature_rows)
+    if not signature:
+        return {}, {}
+    with _TENSORBOARD_CACHE_LOCK:
+        cached = _TENSORBOARD_EVENT_CACHE.get(signature)
+        if cached is not None:
+            return copy.deepcopy(cached)
+    history: dict[str, list[float]] = {}
+    history_steps: dict[str, list[float]] = {}
+    rows: dict[str, list[tuple[float, float, float]]] = {}
+    for event_path in event_paths:
+        try:
+            accumulator = EventAccumulator(str(event_path), size_guidance={"scalars": 0})
+            accumulator.Reload()
+            tags = accumulator.Tags()
+        except Exception:
+            continue
+        scalar_tags = tags.get("scalars", []) if isinstance(tags, dict) else []
+        for tag in scalar_tags:
+            try:
+                events = accumulator.Scalars(tag)
+            except Exception:
+                continue
+            for event in events:
+                value = _float_or_nan(getattr(event, "value", math.nan))
+                step = _float_or_nan(getattr(event, "step", math.nan))
+                wall_time = _float_or_nan(getattr(event, "wall_time", math.nan))
+                if math.isfinite(value):
+                    rows.setdefault(str(tag), []).append(
+                        (
+                            float(step) if math.isfinite(step) else float(len(rows.get(str(tag), []))),
+                            float(wall_time) if math.isfinite(wall_time) else 0.0,
+                            float(value),
+                        )
+                    )
+    for tag, points in rows.items():
+        deduplicated: dict[float, tuple[float, float]] = {}
+        for step, wall_time, value in points:
+            previous = deduplicated.get(step)
+            if previous is None or wall_time >= previous[0]:
+                deduplicated[step] = (wall_time, value)
+        ordered = sorted(deduplicated.items(), key=lambda item: item[0])
+        history_steps[tag] = [float(step) for step, _ in ordered]
+        history[tag] = [float(row[1]) for _, row in ordered]
+    with _TENSORBOARD_CACHE_LOCK:
+        _TENSORBOARD_EVENT_CACHE[signature] = (copy.deepcopy(history), copy.deepcopy(history_steps))
+        while len(_TENSORBOARD_EVENT_CACHE) > 8:
+            _TENSORBOARD_EVENT_CACHE.pop(next(iter(_TENSORBOARD_EVENT_CACHE)))
     return history, history_steps
 
 
@@ -3554,6 +3814,7 @@ def save_training_config(
     sequence_id: str = "",
     split_path: str = "",
     output_path: str = "",
+    resume_checkpoint: str = "",
     parameters: dict[str, Any] | None = None,
     path: str | Path | None = None,
 ) -> dict[str, Any]:
@@ -3567,6 +3828,7 @@ def save_training_config(
             "sequence_id": sequence_id,
             "split_path": split_path,
             "output_path": output_path,
+            "resume_checkpoint": resume_checkpoint,
             "parameters": parameters or {},
         }
     )
@@ -3690,6 +3952,7 @@ def import_training_config(
             parameters=dict(trainer_data.get("parameters") if isinstance(trainer_data.get("parameters"), dict) else {}),
             input_spec=dict(trainer_data.get("input") if isinstance(trainer_data.get("input"), dict) else {}),
             outputs=dict(trainer_data.get("outputs") if isinstance(trainer_data.get("outputs"), dict) else {"artifact_type": "artifact"}),
+            resume_spec=dict(trainer_data.get("resume") if isinstance(trainer_data.get("resume"), dict) else {}),
             description=str(trainer_data.get("description") or ""),
             destination_root=trainer_destination_root or TRAINER_MANIFEST_DIRS[0],
         )
@@ -3702,7 +3965,9 @@ def import_training_config(
         dataset_root=dataset_root,
         adapter=adapter,
         sequence_id=str(raw.get("sequence_id") or ""),
+        split_path=str(raw.get("split_path") or ""),
         output_path=str(raw.get("output_path") or raw.get("model_path") or raw.get("hdf5_path") or ""),
+        resume_checkpoint=str(raw.get("resume_checkpoint") or raw.get("resume_from") or ""),
         parameters=dict(raw.get("parameters") if isinstance(raw.get("parameters"), dict) else {}),
         path=path,
     )
@@ -3759,6 +4024,157 @@ def inspect_dataset(dataset_root: str, adapter: str = "", sequence_id: str = "")
             "disk_usage_truncated": analysis["disk_usage_truncated"],
         },
         "quality": analysis,
+    }
+
+
+class DatasetWorkspaceSession:
+    """Cache bounded dataset inspections until the source root changes."""
+
+    def __init__(self, *, max_cached_inspections: int = 8) -> None:
+        self.max_cached_inspections = max(1, int(max_cached_inspections))
+        self._lock = threading.RLock()
+        self._cache: dict[tuple[str, str, str, tuple[int, int]], dict[str, Any]] = {}
+
+    def invalidate(self) -> None:
+        with self._lock:
+            self._cache.clear()
+
+    def inspect(self, dataset_root: str, adapter: str = "", sequence_id: str = "") -> dict[str, Any]:
+        if not dataset_root:
+            raise ValueError("Dataset root is required.")
+        root = Path(dataset_root).resolve()
+        signature = _dataset_workspace_signature(root)
+        key = (str(root), adapter.strip(), sequence_id.strip(), signature)
+        with self._lock:
+            cached = self._cache.get(key)
+            if cached is not None:
+                self._cache.pop(key)
+                self._cache[key] = cached
+                payload = copy.deepcopy(cached)
+                payload["inspection_cache_hit"] = True
+                return payload
+
+        payload = inspect_dataset(str(root), adapter=adapter, sequence_id=sequence_id)
+        payload["inspection_cache_hit"] = False
+        with self._lock:
+            stale_keys = [item for item in self._cache if item[:3] == key[:3] and item[3] != signature]
+            for stale_key in stale_keys:
+                self._cache.pop(stale_key, None)
+            self._cache[key] = copy.deepcopy(payload)
+            while len(self._cache) > self.max_cached_inspections:
+                self._cache.pop(next(iter(self._cache)))
+        return payload
+
+
+def _dataset_workspace_signature(root: Path) -> tuple[int, int]:
+    try:
+        root_stat = root.stat()
+    except OSError:
+        return (0, 0)
+    marker_mtime = int(root_stat.st_mtime_ns)
+    marker_count = 0
+    for name in (*DATASET_MANIFEST_FILENAMES, "metadata.json", "dataset.json"):
+        marker = root / name
+        try:
+            stat = marker.stat()
+        except OSError:
+            continue
+        marker_mtime = max(marker_mtime, int(stat.st_mtime_ns))
+        marker_count += 1
+    return marker_mtime, marker_count
+
+
+def dataset_trainability_report(
+    dataset_root: str,
+    adapter: str = "",
+    sequence_id: str = "",
+    *,
+    training_preset_id: str = "",
+    split_path: str = "",
+    inspection: dict[str, Any] | None = None,
+    trainer_root: str | Path | None = None,
+) -> dict[str, Any]:
+    """Explain whether a dataset can satisfy a selected trainer contract."""
+
+    inspected = dict(inspection or inspect_dataset(dataset_root, adapter=adapter, sequence_id=sequence_id))
+    quality = inspected.get("quality") if isinstance(inspected.get("quality"), dict) else {}
+    issues: list[str] = []
+    warnings: list[str] = []
+    sample_count = int(quality.get("sample_count") or inspected.get("frame_count") or 0)
+    if sample_count < 2:
+        issues.append("Dataset needs at least two readable samples.")
+    error_count = int(quality.get("error_count") or 0)
+    warning_count = int(quality.get("warning_count") or 0)
+    if error_count:
+        issues.append(f"Dataset quality scan found {error_count} error(s).")
+    if warning_count:
+        warnings.append(f"Dataset quality scan found {warning_count} warning(s).")
+
+    resolved_adapter = str(inspected.get("adapter") or adapter)
+    available_modalities = list(quality.get("available_modalities") or quality.get("modalities") or [])
+    compatibility: dict[str, Any] = {
+        "compatible": not issues,
+        "adapter": resolved_adapter,
+        "accepted_dataset_formats": ["any_registered_adapter"],
+        "sequence_ids_checked": [str(inspected.get("selected_sequence") or sequence_id)],
+        "declared_modalities": list(quality.get("modalities") or []),
+        "available_modalities": available_modalities,
+        "required_modalities": [],
+        "missing_modalities": [],
+        "split_required": False,
+        "split_path": split_path,
+        "issues": [],
+    }
+    preset: dict[str, Any] = {}
+    if training_preset_id:
+        preset = next(
+            (
+                dict(row)
+                for row in training_preset_entries(trainer_root)
+                if str(row.get("id") or "") == training_preset_id
+            ),
+            {},
+        )
+        if not preset:
+            issues.append(f"Training preset not found: {training_preset_id}")
+        elif preset.get("available") is False:
+            issues.append(f"Training preset is not available: {preset.get('label') or training_preset_id}")
+        else:
+            manifest_path = str(preset.get("manifest_path") or "").strip()
+            if manifest_path:
+                try:
+                    manifest = load_trainer_manifest(manifest_path)
+                    compatibility = _trainer_dataset_compatibility(
+                        manifest,
+                        dataset_root=dataset_root,
+                        adapter=resolved_adapter,
+                        sequence_id=str(inspected.get("selected_sequence") or sequence_id),
+                        split_path=split_path,
+                    )
+                except Exception as exc:
+                    compatibility = {**compatibility, "compatible": False, "issues": [str(exc)]}
+                issues.extend(str(item) for item in compatibility.get("issues", []))
+
+    ready = not issues
+    state = "ready" if ready and not warnings else "warning" if ready else "blocked"
+    return {
+        "ready": ready,
+        "state": state,
+        "status": {"ready": "trainable", "warning": "trainable_with_warnings", "blocked": "not_trainable"}[state],
+        "dataset_root": str(Path(dataset_root).resolve()),
+        "adapter": resolved_adapter,
+        "sequence_id": str(inspected.get("selected_sequence") or sequence_id),
+        "sample_count": sample_count,
+        "training_preset_id": training_preset_id,
+        "training_preset_label": str(preset.get("label") or training_preset_id),
+        "available_modalities": list(compatibility.get("available_modalities") or available_modalities),
+        "required_modalities": list(compatibility.get("required_modalities") or []),
+        "missing_modalities": list(compatibility.get("missing_modalities") or []),
+        "split_required": bool(compatibility.get("split_required", False)),
+        "split_path": split_path,
+        "issues": issues,
+        "warnings": warnings,
+        "compatibility": compatibility,
     }
 
 
@@ -7329,6 +7745,7 @@ def _training_config_row(raw: dict[str, Any]) -> dict[str, Any]:
         "sequence_id": str(raw.get("sequence_id") or ""),
         "split_path": str(raw.get("split_path") or ""),
         "output_path": str(raw.get("output_path") or raw.get("model_path") or raw.get("hdf5_path") or ""),
+        "resume_checkpoint": str(raw.get("resume_checkpoint") or raw.get("resume_from") or ""),
         "parameters": dict(parameters),
     }
 
@@ -7581,6 +7998,7 @@ def _trainer_command(
     adapter: str,
     sequence_id: str,
     split_path: str = "",
+    resume_checkpoint: str = "",
 ) -> list[str]:
     context = {
         "dataset_root": dataset_root,
@@ -7588,6 +8006,7 @@ def _trainer_command(
         "adapter": adapter,
         "sequence_id": sequence_id,
         "split_path": split_path,
+        "resume_checkpoint": resume_checkpoint,
         "manifest_dir": str(Path(str(manifest["manifest_dir"])).resolve()),
         "params": _AttrDict(parameters),
     }
@@ -7595,6 +8014,12 @@ def _trainer_command(
     for value in manifest.get("arguments", []):
         rendered = str(value).format_map(_AttrDict(context))
         arguments.append(rendered)
+    if resume_checkpoint:
+        resume = manifest.get("resume") if isinstance(manifest.get("resume"), dict) else {}
+        if not resume.get("supported"):
+            raise ValueError(f"Trainer '{manifest.get('label') or manifest.get('id')}' does not support resume.")
+        for value in resume.get("arguments", []):
+            arguments.append(str(value).format_map(_AttrDict(context)))
     return build_trainer_command(
         manifest,
         arguments=arguments,

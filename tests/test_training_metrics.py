@@ -7,6 +7,8 @@ import sys
 import time
 from pathlib import Path
 
+import pytest
+
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
@@ -104,6 +106,42 @@ def test_live_metric_record_combines_events_and_resource_samples(tmp_path: Path)
         "resource.cpu_percent",
         "resource.memory_mb",
     ]
+
+
+def test_live_metric_record_accepts_tensorboard_scalar_source(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        services,
+        "_read_tensorboard_events_with_steps",
+        lambda _path: ({"validation/loss": [0.9, 0.4]}, {"validation/loss": [1.0, 2.0]}),
+    )
+
+    record = services.live_training_metric_record(
+        {
+            "job_id": "tensorboard_job",
+            "status": "running",
+            "output_dir": str(tmp_path),
+            "metadata": {"tensorboard_dir": str(tmp_path / "tb")},
+        }
+    )
+
+    assert record["history"]["validation/loss"] == [0.9, 0.4]
+    assert record["history_steps"]["validation/loss"] == [1.0, 2.0]
+    assert record["summary"]["metric_sources"] == ["tensorboard"]
+
+
+def test_tensorboard_scalar_events_are_read_with_real_steps(tmp_path: Path) -> None:
+    from torch.utils.tensorboard import SummaryWriter
+
+    writer = SummaryWriter(log_dir=str(tmp_path))
+    writer.add_scalar("train/loss", 0.8, 1)
+    writer.add_scalar("train/loss", 0.4, 3)
+    writer.flush()
+    writer.close()
+
+    history, steps = services._read_tensorboard_events_with_steps(tmp_path)
+
+    assert history["train/loss"] == pytest.approx([0.8, 0.4])
+    assert steps["train/loss"] == [1.0, 3.0]
 
 
 def test_live_resource_metric_filter_preserves_elapsed_step_alignment(tmp_path: Path) -> None:

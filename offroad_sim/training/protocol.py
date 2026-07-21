@@ -82,6 +82,7 @@ def normalize_trainer_manifest(data: Mapping[str, Any], *, manifest_path: Path) 
         raise ValueError("input must be a mapping.")
     input_spec = _normalize_input_spec(raw_input)
     inference = _normalize_inference_spec(data.get("inference"), manifest_path=manifest_path)
+    resume = _normalize_resume_spec(data.get("resume"))
 
     launch = {
         "kind": kind,
@@ -104,6 +105,7 @@ def normalize_trainer_manifest(data: Mapping[str, Any], *, manifest_path: Path) 
         "input": input_spec,
         "outputs": dict(data.get("outputs") or {}),
         "inference": inference,
+        "resume": resume,
     }
 
 
@@ -268,6 +270,32 @@ def _normalize_input_spec(raw_input: Mapping[str, Any]) -> dict[str, Any]:
         "required_modalities": [str(value) for value in required_modalities],
         "optional_modalities": [str(value) for value in optional_modalities],
         "split_required": bool(raw_input.get("split_required", False)),
+    }
+
+
+def _normalize_resume_spec(raw_resume: Any) -> dict[str, Any]:
+    if raw_resume in (None, False, {}):
+        return {"supported": False, "arguments": []}
+    if raw_resume is True:
+        raw: Mapping[str, Any] = {}
+    elif isinstance(raw_resume, Mapping):
+        raw = raw_resume
+    else:
+        raise ValueError("resume must be a mapping or boolean.")
+    supported = bool(raw.get("supported", True))
+    arguments = raw.get("arguments")
+    if arguments is None:
+        argument = str(raw.get("argument") or "--resume").strip()
+        arguments = [argument, "{resume_checkpoint}"] if supported else []
+    if not isinstance(arguments, list) or not all(isinstance(value, (str, int, float)) for value in arguments):
+        raise ValueError("resume.arguments must be a list of command arguments.")
+    normalized_arguments = [str(value) for value in arguments]
+    if supported and not any("{resume_checkpoint}" in value for value in normalized_arguments):
+        raise ValueError("resume.arguments must include {resume_checkpoint}.")
+    return {
+        "supported": supported,
+        "arguments": normalized_arguments if supported else [],
+        "description": str(raw.get("description") or ""),
     }
 
 

@@ -47,6 +47,8 @@ from PySide6.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QTextEdit,
+    QTreeWidget,
+    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -1270,6 +1272,569 @@ class NavigationTaskDialog(QDialog):
         return spin
 
 
+class DatasetMappingWizard(QDialog):
+    """Create and preflight a reusable manifest-dataset mapping."""
+
+    MODALITIES = ("front_rgb", "depth", "label", "lidar", "local_bev", "terrain_map")
+
+    def __init__(self, dataset_root: str = "", parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("通用数据映射向导")
+        self.resize(900, 700)
+        self.saved_manifest: dict[str, Any] = {}
+        self.last_preflight: dict[str, Any] = {}
+        root = QVBoxLayout(self)
+        root.setContentsMargins(20, 20, 20, 20)
+        root.setSpacing(12)
+        self.stack = QStackedWidget()
+        self.stack.addWidget(self._build_source_step(dataset_root))
+        self.stack.addWidget(self._build_mapping_step())
+        self.stack.addWidget(self._build_preview_step())
+        self.stack.currentChanged.connect(self._update_navigation)
+        root.addWidget(self.stack, 1)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        self.back_button = QPushButton("上一步")
+        self.next_button = QPushButton("下一步")
+        self.save_button = QPushButton("保存数据源")
+        cancel_button = QPushButton("取消")
+        self.back_button.clicked.connect(lambda: self.stack.setCurrentIndex(max(0, self.stack.currentIndex() - 1)))
+        self.next_button.clicked.connect(self._next)
+        self.save_button.clicked.connect(self._save)
+        cancel_button.clicked.connect(self.reject)
+        for button in (self.back_button, self.next_button, self.save_button, cancel_button):
+            button.setMinimumHeight(CONTROL_HEIGHT)
+            row.addWidget(button)
+        root.addLayout(row)
+        self._update_navigation(0)
+
+    def _build_source_step(self, dataset_root: str) -> QWidget:
+        page = QWidget()
+        form = QFormLayout(page)
+        form.setContentsMargins(8, 12, 8, 8)
+        form.setHorizontalSpacing(16)
+        form.setVerticalSpacing(12)
+        self.dataset_root_edit = QLineEdit(dataset_root)
+        self.dataset_id_edit = QLineEdit(Path(dataset_root).name if dataset_root else "custom_driving_dataset")
+        self.sequence_id_edit = QLineEdit("sequence_001")
+        self.sequence_root_edit = QLineEdit(".")
+        self.pose_csv_edit = QLineEdit("poses.csv")
+        for control in (
+            self.dataset_root_edit,
+            self.dataset_id_edit,
+            self.sequence_id_edit,
+            self.sequence_root_edit,
+            self.pose_csv_edit,
+        ):
+            control.setMinimumHeight(CONTROL_HEIGHT)
+        browse = QPushButton("选择")
+        browse.clicked.connect(self._browse_root)
+        root_row = QWidget()
+        root_layout = QHBoxLayout(root_row)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setSpacing(8)
+        root_layout.addWidget(self.dataset_root_edit, 1)
+        root_layout.addWidget(browse)
+        form.addRow("数据集根目录 *", root_row)
+        form.addRow("数据源名称 *", self.dataset_id_edit)
+        form.addRow("序列 ID *", self.sequence_id_edit)
+        form.addRow("序列相对目录", self.sequence_root_edit)
+        form.addRow("位姿 CSV", self.pose_csv_edit)
+        return page
+
+    def _build_mapping_step(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(8, 12, 8, 8)
+        layout.setSpacing(12)
+        form = QFormLayout()
+        form.setHorizontalSpacing(16)
+        form.setVerticalSpacing(8)
+        self.asset_edits: dict[str, QLineEdit] = {}
+        for modality in self.MODALITIES:
+            edit = QLineEdit()
+            edit.setMinimumHeight(CONTROL_HEIGHT)
+            edit.setPlaceholderText(f"例如 {modality}/*.png")
+            self.asset_edits[modality] = edit
+            form.addRow(modality, edit)
+        layout.addLayout(form)
+        alignment_form = QFormLayout()
+        self.alignment_combo = QComboBox()
+        self.alignment_combo.addItem("按文件排序", "index")
+        self.alignment_combo.addItem("按 Frame ID", "frame_id")
+        self.alignment_combo.addItem("按时间戳", "timestamp")
+        self.alignment_regex_edit = QLineEdit()
+        self.alignment_regex_edit.setPlaceholderText(r"例如 .*_(?P<frame_id>\d+) 或 .*_(?P<timestamp>\d+\.\d+)")
+        self.alignment_tolerance_spin = QDoubleSpinBox()
+        self.alignment_tolerance_spin.setRange(0.0, 60.0)
+        self.alignment_tolerance_spin.setDecimals(4)
+        self.alignment_tolerance_spin.setValue(0.05)
+        self.alignment_tolerance_spin.setSuffix(" s")
+        alignment_form.addRow("对齐方式", self.alignment_combo)
+        alignment_form.addRow("文件名正则", self.alignment_regex_edit)
+        alignment_form.addRow("时间容差", self.alignment_tolerance_spin)
+        layout.addLayout(alignment_form)
+        layout.addStretch(1)
+        return page
+
+    def _build_preview_step(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(8, 12, 8, 8)
+        layout.setSpacing(10)
+        self.preflight_summary = QLabel("映射预检：NaN")
+        self.preflight_summary.setObjectName("mutedText")
+        self.preflight_summary.setWordWrap(True)
+        self.match_table = QTableWidget(0, 4)
+        self.match_table.setHorizontalHeaderLabels(["帧", "Frame ID", "已匹配模态", "缺失模态"])
+        self.match_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.match_table.verticalHeader().setVisible(False)
+        self.match_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        layout.addWidget(self.preflight_summary)
+        layout.addWidget(self.match_table, 1)
+        return page
+
+    def sequence_payload(self) -> dict[str, Any]:
+        mode = str(self.alignment_combo.currentData() or "index")
+        alignment: dict[str, Any] = {"mode": mode}
+        regex = self.alignment_regex_edit.text().strip()
+        if regex:
+            alignment["timestamp_regex" if mode == "timestamp" else "filename_regex"] = regex
+        if mode == "timestamp":
+            alignment["tolerance_sec"] = float(self.alignment_tolerance_spin.value())
+        return {
+            "id": self.sequence_id_edit.text().strip() or "sequence_001",
+            "root": self.sequence_root_edit.text().strip() or ".",
+            "pose_csv": self.pose_csv_edit.text().strip() or "poses.csv",
+            "alignment": alignment,
+            "assets": {
+                modality: edit.text().strip()
+                for modality, edit in self.asset_edits.items()
+                if edit.text().strip()
+            },
+        }
+
+    def run_preflight(self) -> dict[str, Any]:
+        try:
+            self.last_preflight = services.preview_dataset_mapping(
+                dataset_root=self.dataset_root_edit.text().strip(),
+                sequence=self.sequence_payload(),
+                max_frames=5,
+            )
+        except Exception as exc:
+            self.last_preflight = {"ready": False, "status": "invalid", "issues": [str(exc)], "matches": []}
+        matches = self.last_preflight.get("matches") if isinstance(self.last_preflight.get("matches"), list) else []
+        self.match_table.setRowCount(len(matches))
+        for row_index, match in enumerate(matches):
+            values = [
+                match.get("frame_index", row_index),
+                match.get("frame_id", ""),
+                ", ".join(match.get("available_modalities", [])),
+                ", ".join(match.get("missing_modalities", [])) or "无",
+            ]
+            for column, value in enumerate(values):
+                self.match_table.setItem(row_index, column, QTableWidgetItem(str(value)))
+        issues = self.last_preflight.get("issues") if isinstance(self.last_preflight.get("issues"), list) else []
+        status = "通过" if self.last_preflight.get("ready") else "未通过"
+        self.preflight_summary.setText(
+            f"映射预检：{status} | 总帧数 {self.last_preflight.get('frame_count', 0)} | "
+            f"采样 {len(matches)}" + (" | " + "; ".join(str(item) for item in issues) if issues else "")
+        )
+        self.save_button.setEnabled(bool(self.last_preflight.get("ready")))
+        return self.last_preflight
+
+    def _next(self) -> None:
+        index = self.stack.currentIndex()
+        if index == 0 and (not self.dataset_root_edit.text().strip() or not self.dataset_id_edit.text().strip()):
+            QMessageBox.warning(self, "数据源信息不完整", "请选择数据集根目录并填写数据源名称。")
+            return
+        if index == 1:
+            self.run_preflight()
+        self.stack.setCurrentIndex(min(self.stack.count() - 1, index + 1))
+
+    def _update_navigation(self, index: int) -> None:
+        self.back_button.setEnabled(index > 0)
+        self.next_button.setVisible(index < self.stack.count() - 1)
+        self.save_button.setVisible(index == self.stack.count() - 1)
+        if index == self.stack.count() - 1:
+            self.save_button.setEnabled(bool(self.last_preflight.get("ready")))
+
+    def _save(self) -> None:
+        if not self.run_preflight().get("ready"):
+            return
+        self.saved_manifest = services.save_dataset_manifest(
+            dataset_id=self.dataset_id_edit.text().strip(),
+            display_name=self.dataset_id_edit.text().strip(),
+            dataset_root=self.dataset_root_edit.text().strip(),
+            sequences=[self.sequence_payload()],
+        )
+        self.accept()
+
+    def _browse_root(self) -> None:
+        path = QFileDialog.getExistingDirectory(self, "选择数据集根目录", self.dataset_root_edit.text() or str(services.ROOT))
+        if path:
+            self.dataset_root_edit.setText(path)
+            if not self.dataset_id_edit.text().strip() or self.dataset_id_edit.text() == "custom_driving_dataset":
+                self.dataset_id_edit.setText(Path(path).name)
+
+
+class TrainingConfigWizard(QDialog):
+    """Four-step editor for reusable, preflighted training configurations."""
+
+    STEP_TITLES = ("1 数据与划分", "2 训练器", "3 参数", "4 预检与保存")
+
+    def __init__(self, initial: dict[str, Any] | None = None, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("新建训练配置")
+        self.resize(860, 680)
+        self.initial = dict(initial or {})
+        self.saved_config: dict[str, Any] = {}
+        self.last_preflight: dict[str, Any] = {}
+        self.parameter_controls: dict[str, QWidget] = {}
+        self.parameter_schema: dict[str, dict[str, Any]] = {}
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(20, 20, 20, 20)
+        root.setSpacing(12)
+        step_row = QHBoxLayout()
+        step_row.setSpacing(8)
+        self.step_labels: list[QLabel] = []
+        for title in self.STEP_TITLES:
+            label = QLabel(title)
+            label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            label.setMinimumHeight(34)
+            label.setObjectName("wizardStep")
+            self.step_labels.append(label)
+            step_row.addWidget(label, 1)
+        root.addLayout(step_row)
+
+        self.stack = QStackedWidget()
+        self.stack.addWidget(self._build_dataset_step())
+        self.stack.addWidget(self._build_trainer_step())
+        self.stack.addWidget(self._build_parameter_step())
+        self.stack.addWidget(self._build_preflight_step())
+        self.stack.currentChanged.connect(self._update_navigation)
+        root.addWidget(self.stack, 1)
+
+        navigation = QHBoxLayout()
+        navigation.addStretch(1)
+        self.back_button = QPushButton("上一步")
+        self.next_button = QPushButton("下一步")
+        self.save_button = QPushButton("保存配置")
+        self.cancel_button = QPushButton("取消")
+        self.back_button.clicked.connect(self._back)
+        self.next_button.clicked.connect(self._next)
+        self.save_button.clicked.connect(self._save)
+        self.cancel_button.clicked.connect(self.reject)
+        for button in (self.back_button, self.next_button, self.save_button, self.cancel_button):
+            button.setMinimumHeight(CONTROL_HEIGHT)
+            navigation.addWidget(button)
+        root.addLayout(navigation)
+
+        self._fill_presets()
+        self._apply_initial()
+        self._update_navigation(0)
+
+    def _build_dataset_step(self) -> QWidget:
+        page = QWidget()
+        form = QFormLayout(page)
+        form.setContentsMargins(8, 12, 8, 8)
+        form.setHorizontalSpacing(16)
+        form.setVerticalSpacing(12)
+        self.dataset_root_edit = QLineEdit()
+        self.dataset_root_edit.setMinimumHeight(CONTROL_HEIGHT)
+        dataset_browse = QPushButton("选择")
+        dataset_browse.clicked.connect(self._browse_dataset_root)
+        dataset_row = QWidget()
+        dataset_layout = QHBoxLayout(dataset_row)
+        dataset_layout.setContentsMargins(0, 0, 0, 0)
+        dataset_layout.setSpacing(8)
+        dataset_layout.addWidget(self.dataset_root_edit, 1)
+        dataset_layout.addWidget(dataset_browse)
+        self.adapter_edit = QLineEdit()
+        self.sequence_edit = QLineEdit()
+        self.split_path_edit = QLineEdit()
+        split_browse = QPushButton("选择")
+        split_browse.clicked.connect(self._browse_split_path)
+        split_row = QWidget()
+        split_layout = QHBoxLayout(split_row)
+        split_layout.setContentsMargins(0, 0, 0, 0)
+        split_layout.setSpacing(8)
+        split_layout.addWidget(self.split_path_edit, 1)
+        split_layout.addWidget(split_browse)
+        for control in (self.adapter_edit, self.sequence_edit, self.split_path_edit):
+            control.setMinimumHeight(CONTROL_HEIGHT)
+        form.addRow("数据集根目录 *", dataset_row)
+        form.addRow("适配器", self.adapter_edit)
+        form.addRow("序列", self.sequence_edit)
+        form.addRow("数据划分", split_row)
+        return page
+
+    def _build_trainer_step(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(8, 12, 8, 8)
+        layout.setSpacing(12)
+        self.preset_combo = QComboBox()
+        self.preset_combo.setMinimumHeight(CONTROL_HEIGHT)
+        self.preset_combo.currentIndexChanged.connect(self._preset_changed)
+        self.preset_summary = QTextEdit()
+        self.preset_summary.setReadOnly(True)
+        layout.addWidget(QLabel("模型 / 外部训练器"))
+        layout.addWidget(self.preset_combo)
+        layout.addWidget(self.preset_summary, 1)
+        return page
+
+    def _build_parameter_step(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(8, 12, 8, 8)
+        self.parameter_widget = QWidget()
+        self.parameter_form = QFormLayout(self.parameter_widget)
+        self.parameter_form.setContentsMargins(0, 0, 0, 0)
+        self.parameter_form.setHorizontalSpacing(16)
+        self.parameter_form.setVerticalSpacing(10)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidget(self.parameter_widget)
+        layout.addWidget(scroll, 1)
+        return page
+
+    def _build_preflight_step(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(8, 12, 8, 8)
+        layout.setSpacing(12)
+        form = QFormLayout()
+        form.setHorizontalSpacing(16)
+        form.setVerticalSpacing(10)
+        self.config_name_edit = QLineEdit()
+        self.output_path_edit = QLineEdit()
+        self.resume_checkpoint_edit = QLineEdit()
+        self.config_name_edit.setMinimumHeight(CONTROL_HEIGHT)
+        self.output_path_edit.setMinimumHeight(CONTROL_HEIGHT)
+        self.resume_checkpoint_edit.setMinimumHeight(CONTROL_HEIGHT)
+        output_browse = QPushButton("选择")
+        output_browse.clicked.connect(self._browse_output_path)
+        output_row = QWidget()
+        output_layout = QHBoxLayout(output_row)
+        output_layout.setContentsMargins(0, 0, 0, 0)
+        output_layout.setSpacing(8)
+        output_layout.addWidget(self.output_path_edit, 1)
+        output_layout.addWidget(output_browse)
+        form.addRow("配置名称 *", self.config_name_edit)
+        form.addRow("输出目录", output_row)
+        form.addRow("恢复 Checkpoint", self.resume_checkpoint_edit)
+        layout.addLayout(form)
+        self.preflight_summary = QTextEdit()
+        self.preflight_summary.setReadOnly(True)
+        self.preflight_summary.setPlaceholderText("预检：NaN")
+        layout.addWidget(self.preflight_summary, 1)
+        return page
+
+    def _fill_presets(self) -> None:
+        self.preset_combo.clear()
+        for row in services.training_preset_entries():
+            label = str(row.get("label") or row.get("id") or services.NAN_TEXT)
+            if row.get("available") is False:
+                label += f" ({services.UNFINISHED_TEXT})"
+            self.preset_combo.addItem(label, dict(row))
+
+    def _apply_initial(self) -> None:
+        self.dataset_root_edit.setText(str(self.initial.get("dataset_root") or ""))
+        self.adapter_edit.setText(str(self.initial.get("adapter") or ""))
+        self.sequence_edit.setText(str(self.initial.get("sequence_id") or ""))
+        self.split_path_edit.setText(str(self.initial.get("split_path") or ""))
+        self.config_name_edit.setText(str(self.initial.get("label") or self.initial.get("id") or "New training config"))
+        self.output_path_edit.setText(str(self.initial.get("output_path") or ""))
+        self.resume_checkpoint_edit.setText(str(self.initial.get("resume_checkpoint") or ""))
+        preset_id = str(self.initial.get("training_preset_id") or "")
+        for index in range(self.preset_combo.count()):
+            row = self.preset_combo.itemData(index)
+            if isinstance(row, dict) and str(row.get("id") or "") == preset_id:
+                self.preset_combo.setCurrentIndex(index)
+                break
+        self._preset_changed()
+
+    def _preset_changed(self, *_args: Any) -> None:
+        preset = self.current_preset()
+        lines = [
+            f"名称：{preset.get('label') or preset.get('id') or services.NAN_TEXT}",
+            f"状态：{preset.get('status') or ('available' if preset.get('available', True) else services.UNFINISHED_TEXT)}",
+            f"说明：{preset.get('description') or services.NAN_TEXT}",
+        ]
+        manifest_path = str(preset.get("manifest_path") or "")
+        if manifest_path:
+            lines.append(f"训练器清单：{manifest_path}")
+        self.preset_summary.setPlainText("\n".join(lines))
+        schema = preset.get("parameters") if isinstance(preset.get("parameters"), dict) else {}
+        values = self.initial.get("parameters") if isinstance(self.initial.get("parameters"), dict) else {}
+        self._build_parameter_controls(schema, values)
+
+    def _build_parameter_controls(self, schema: dict[str, Any], values: dict[str, Any]) -> None:
+        while self.parameter_form.count():
+            item = self.parameter_form.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        self.parameter_controls.clear()
+        self.parameter_schema = {
+            str(name): dict(spec) if isinstance(spec, dict) else {}
+            for name, spec in schema.items()
+        }
+        if not self.parameter_schema:
+            self.parameter_form.addRow(QLabel("此训练器没有可配置参数"))
+            return
+        for name, spec in self.parameter_schema.items():
+            value = values.get(name, spec.get("default"))
+            choices = spec.get("enum") if isinstance(spec.get("enum"), list) else []
+            value_type = str(spec.get("type") or "str").lower()
+            if choices:
+                control: QWidget = QComboBox()
+                for choice in choices:
+                    control.addItem(str(choice), choice)
+                index = next((item for item in range(control.count()) if control.itemData(item) == value), 0)
+                control.setCurrentIndex(index)
+            elif value_type in {"bool", "boolean"}:
+                control = QCheckBox()
+                control.setChecked(bool(value))
+            elif value_type in {"int", "integer"}:
+                control = QSpinBox()
+                control.setRange(int(spec.get("min", -1_000_000_000)), int(spec.get("max", 1_000_000_000)))
+                control.setSingleStep(max(1, int(spec.get("step", 1))))
+                control.setValue(int(value or 0))
+            elif value_type in {"float", "number"}:
+                control = QDoubleSpinBox()
+                control.setRange(float(spec.get("min", -1e12)), float(spec.get("max", 1e12)))
+                control.setDecimals(int(spec.get("decimals", 8)))
+                control.setSingleStep(float(spec.get("step", 0.01)))
+                control.setValue(float(value or 0.0))
+            else:
+                control = QLineEdit()
+                control.setText("" if value is None else str(value))
+            control.setMinimumHeight(CONTROL_HEIGHT)
+            description = str(spec.get("description") or "")
+            if description:
+                control.setToolTip(description)
+            self.parameter_controls[name] = control
+            self.parameter_form.addRow(str(spec.get("label") or name), control)
+
+    def current_preset(self) -> dict[str, Any]:
+        row = self.preset_combo.currentData()
+        return dict(row) if isinstance(row, dict) else {}
+
+    def parameters(self) -> dict[str, Any]:
+        values: dict[str, Any] = {}
+        for name, control in self.parameter_controls.items():
+            if isinstance(control, QComboBox):
+                values[name] = control.currentData()
+            elif isinstance(control, QCheckBox):
+                values[name] = control.isChecked()
+            elif isinstance(control, (QSpinBox, QDoubleSpinBox)):
+                values[name] = control.value()
+            elif isinstance(control, QLineEdit):
+                values[name] = control.text().strip()
+        return values
+
+    def config_payload(self) -> dict[str, Any]:
+        preset = self.current_preset()
+        label = self.config_name_edit.text().strip() or "New training config"
+        return {
+            "id": label,
+            "label": label,
+            "training_preset_id": str(preset.get("id") or ""),
+            "dataset_root": self.dataset_root_edit.text().strip(),
+            "adapter": self.adapter_edit.text().strip(),
+            "sequence_id": self.sequence_edit.text().strip(),
+            "split_path": self.split_path_edit.text().strip(),
+            "output_path": self.output_path_edit.text().strip(),
+            "resume_checkpoint": self.resume_checkpoint_edit.text().strip(),
+            "parameters": self.parameters(),
+        }
+
+    def run_preflight(self) -> dict[str, Any]:
+        self.last_preflight = services.validate_training_config_setup(self.config_payload())
+        status = "通过" if self.last_preflight.get("ready") else "未通过"
+        lines = [f"预检：{status}"]
+        compatibility = self.last_preflight.get("compatibility")
+        if isinstance(compatibility, dict):
+            lines.extend(
+                [
+                    f"适配器：{compatibility.get('adapter') or services.NAN_TEXT}",
+                    f"已有模态：{', '.join(compatibility.get('available_modalities', [])) or services.NAN_TEXT}",
+                    f"必需模态：{', '.join(compatibility.get('required_modalities', [])) or '无特定要求'}",
+                ]
+            )
+        command = self.last_preflight.get("command_preview")
+        if isinstance(command, list) and command:
+            lines.append("启动命令：" + " ".join(str(item) for item in command))
+        issues = self.last_preflight.get("issues") if isinstance(self.last_preflight.get("issues"), list) else []
+        if issues:
+            lines.append("问题：")
+            lines.extend(f"- {item}" for item in issues)
+        self.preflight_summary.setPlainText("\n".join(lines))
+        self.save_button.setEnabled(bool(self.last_preflight.get("ready")))
+        return self.last_preflight
+
+    def _next(self) -> None:
+        index = self.stack.currentIndex()
+        if index == 0 and not self.dataset_root_edit.text().strip():
+            QMessageBox.warning(self, "数据集未选择", "请选择数据集根目录。")
+            return
+        if index == 2:
+            self.run_preflight()
+        self.stack.setCurrentIndex(min(self.stack.count() - 1, index + 1))
+
+    def _back(self) -> None:
+        self.stack.setCurrentIndex(max(0, self.stack.currentIndex() - 1))
+
+    def _update_navigation(self, index: int) -> None:
+        self.back_button.setEnabled(index > 0)
+        self.next_button.setVisible(index < self.stack.count() - 1)
+        self.save_button.setVisible(index == self.stack.count() - 1)
+        if index == self.stack.count() - 1:
+            self.save_button.setEnabled(bool(self.last_preflight.get("ready")))
+        for step_index, label in enumerate(self.step_labels):
+            label.setProperty("active", step_index == index)
+            label.style().unpolish(label)
+            label.style().polish(label)
+
+    def _save(self) -> None:
+        preflight = self.run_preflight()
+        if not preflight.get("ready"):
+            return
+        payload = self.config_payload()
+        self.saved_config = services.save_training_config(
+            config_id=str(payload["id"]),
+            label=str(payload["label"]),
+            training_preset_id=str(payload["training_preset_id"]),
+            dataset_root=str(payload["dataset_root"]),
+            adapter=str(payload["adapter"]),
+            sequence_id=str(payload["sequence_id"]),
+            split_path=str(payload["split_path"]),
+            output_path=str(payload["output_path"]),
+            resume_checkpoint=str(payload["resume_checkpoint"]),
+            parameters=dict(payload["parameters"]),
+        )
+        self.accept()
+
+    def _browse_dataset_root(self) -> None:
+        path = QFileDialog.getExistingDirectory(self, "选择数据集根目录", self.dataset_root_edit.text() or str(services.ROOT))
+        if path:
+            self.dataset_root_edit.setText(path)
+
+    def _browse_split_path(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "选择数据划分", self.split_path_edit.text() or str(services.ROOT), "JSON (*.json);;All files (*)")
+        if path:
+            self.split_path_edit.setText(path)
+
+    def _browse_output_path(self) -> None:
+        path = QFileDialog.getExistingDirectory(self, "选择输出目录", self.output_path_edit.text() or str(services.ROOT / "outputs"))
+        if path:
+            self.output_path_edit.setText(path)
+
+
 class MainWindow(QMainWindow):
     PAGE_TITLES = [
         ("总览", "通过引导式 demo 快速检查配置并运行可视演示。"),
@@ -1295,6 +1860,7 @@ class MainWindow(QMainWindow):
         self._navigation_preview_pending: tuple[str, str, float] | None = None
         self._dataset_preview_busy = False
         self.dataset_preview_session = services.DatasetPreviewSession(max_cached_frames=24)
+        self.dataset_workspace_session = services.DatasetWorkspaceSession(max_cached_inspections=8)
         self._busy_depth = 0
         self.training_job_queue = services.TrainingJobQueue(max_parallel=1)
         self._current_training_job_id = ""
@@ -1368,6 +1934,8 @@ class MainWindow(QMainWindow):
         self.training_config_name_edit.setPlaceholderText("Custom training config")
         self.training_output_edit = QLineEdit()
         self.training_output_edit.setPlaceholderText(r"outputs\models\custom_training_run")
+        self.training_resume_checkpoint_edit = QLineEdit()
+        self.training_resume_checkpoint_edit.setPlaceholderText("可选；仅对声明 resume 的训练器生效")
         self.model_config_name_edit = QLineEdit()
         self.model_config_name_edit.setPlaceholderText("Johnson Valley MLP support-route validated")
 
@@ -1390,6 +1958,13 @@ class MainWindow(QMainWindow):
         self.dataset_sequence_table.setAlternatingRowColors(True)
         self.dataset_sequence_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.dataset_sequence_table.itemSelectionChanged.connect(self._sync_sequence_from_table_selection)
+        self.dataset_tree = QTreeWidget()
+        self.dataset_tree.setHeaderLabels(["数据集 / 序列 / 模态", "状态"])
+        self.dataset_tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.dataset_tree.header().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self.dataset_tree.setMinimumHeight(180)
+        self.dataset_tree.setMaximumHeight(260)
+        self.dataset_tree.itemClicked.connect(self._dataset_tree_item_clicked)
         self._dataset_sequence_view_mode = "mapping"
         self.dataset_root_edit = QLineEdit()
         self.dataset_root_edit.setPlaceholderText(r"datasets\ORFD_Dataset_ICRA2022_ZIP")
@@ -1590,6 +2165,10 @@ class MainWindow(QMainWindow):
         self.dataset_import_button.setToolTip("导入已有的 dataset_manifest.yaml；直接选择普通数据集文件夹时无需使用。")
         self._configure_button(self.dataset_import_button)
         self.dataset_import_button.clicked.connect(self.import_dataset_manifest)
+        self.dataset_mapping_button = QPushButton("配置通用映射")
+        self.dataset_mapping_button.setToolTip("为没有内置适配器的数据集创建可复用的模态与对齐映射。")
+        self._configure_button(self.dataset_mapping_button)
+        self.dataset_mapping_button.clicked.connect(self.open_dataset_mapping_wizard)
         self.dataset_save_button = QPushButton("保存为通用数据源")
         self.dataset_save_button.setToolTip("保存当前序列映射，供未内置适配器的数据集重复使用。")
         self._configure_button(self.dataset_save_button)
@@ -1606,7 +2185,7 @@ class MainWindow(QMainWindow):
         self._configure_button(self.dataset_sequence_remove_button)
         self.dataset_sequence_remove_button.clicked.connect(self._remove_dataset_sequence_rows)
         source_toolbar = self._action_toolbar(
-            [self.dataset_detect_button, self.dataset_import_button],
+            [self.dataset_detect_button, self.dataset_mapping_button, self.dataset_import_button],
             object_name="datasetSourceToolbar",
         )
         manifest_toolbar = self._action_toolbar(
@@ -1632,6 +2211,7 @@ class MainWindow(QMainWindow):
                 manifest_toolbar,
                 self._field("当前序列", self.sequence_combo),
                 self._field("识别到的适配器", self.adapter_edit),
+                self._field("数据工作区", self.dataset_tree),
                 self._action_button("检查数据集", self.inspect_dataset),
                 self._action_button("预览数据帧", self.preview_dataset, primary=True),
             ],
@@ -1699,6 +2279,10 @@ class MainWindow(QMainWindow):
         self.dataset_detail_summary.setReadOnly(True)
         self.dataset_detail_summary.setMaximumHeight(180)
         self.dataset_detail_summary.setPlaceholderText("数据集详情：NaN")
+        self.dataset_trainability_summary = QTextEdit()
+        self.dataset_trainability_summary.setReadOnly(True)
+        self.dataset_trainability_summary.setMaximumHeight(150)
+        self.dataset_trainability_summary.setPlaceholderText("训练适配状态：尚未检查数据集")
         self.dataset_sequence_detail_table = QTableWidget(0, 6)
         self.dataset_sequence_detail_table.setHorizontalHeaderLabels(
             ["序列", "样本数", "模态", "开始时间", "结束时间", "间隔问题"]
@@ -1707,6 +2291,8 @@ class MainWindow(QMainWindow):
         self.dataset_sequence_detail_table.verticalHeader().setVisible(False)
         self.dataset_sequence_detail_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         detail_layout.addWidget(self.dataset_detail_summary)
+        detail_layout.addWidget(self._section_label("训练适配状态"))
+        detail_layout.addWidget(self.dataset_trainability_summary)
         detail_layout.addWidget(self.dataset_sequence_detail_table, 1)
         dataset_workspace.addTab(detail_page, "数据详情")
 
@@ -1806,9 +2392,13 @@ class MainWindow(QMainWindow):
         training_config_import = QPushButton("导入训练配置")
         self._configure_button(training_config_import)
         training_config_import.clicked.connect(self.import_training_config)
+        training_config_wizard = QPushButton("新建训练配置")
+        self._configure_button(training_config_wizard, primary=True)
+        training_config_wizard.clicked.connect(self.open_training_config_wizard)
         training_controls = self._group(
             "训练配置",
             [
+                training_config_wizard,
                 self._field("训练配置", self.training_config_combo),
                 training_config_import,
                 self._field("配置名称", self.training_config_name_edit),
@@ -1818,6 +2408,7 @@ class MainWindow(QMainWindow):
                 self._field("模型参数", self.trainer_parameter_form),
                 self._field("高级 JSON 覆盖", self.trainer_params_edit),
                 self._field("输出目录", self.training_output_edit),
+                self._field("恢复 Checkpoint", self.training_resume_checkpoint_edit),
                 self._action_button("验证配置", self.validate_training_config),
                 self._action_button("保存训练配置", self.save_training_config),
                 self._action_button("开始训练 / 导出", self.run_training_preset, primary=True),
@@ -1856,11 +2447,18 @@ class MainWindow(QMainWindow):
         self._configure_button(self.cancel_training_button)
         self.cancel_training_button.setEnabled(False)
         self.cancel_training_button.clicked.connect(self.cancel_current_training_job)
+        self.pause_training_log_button = QPushButton("暂停日志刷新")
+        self.pause_training_log_button.setCheckable(True)
+        self._configure_button(self.pause_training_log_button)
+        self.pause_training_log_button.toggled.connect(
+            lambda paused: self.pause_training_log_button.setText("继续日志刷新" if paused else "暂停日志刷新")
+        )
         job_status_row = QWidget()
         job_status_layout = QHBoxLayout(job_status_row)
         job_status_layout.setContentsMargins(0, 0, 0, 0)
         job_status_layout.setSpacing(8)
         job_status_layout.addWidget(self.training_job_progress, 1)
+        job_status_layout.addWidget(self.pause_training_log_button)
         job_status_layout.addWidget(self.cancel_training_button)
         output_layout.addWidget(self.training_job_status_label)
         output_layout.addWidget(job_status_row)
@@ -2029,6 +2627,10 @@ class MainWindow(QMainWindow):
         self._configure_button(self.favorite_artifact_button)
         self.favorite_artifact_button.clicked.connect(self.toggle_selected_artifact_favorite)
         inference_row_layout.addWidget(self.favorite_artifact_button)
+        self.resume_artifact_button = QPushButton("恢复训练")
+        self._configure_button(self.resume_artifact_button)
+        self.resume_artifact_button.clicked.connect(self.resume_selected_training_artifact)
+        inference_row_layout.addWidget(self.resume_artifact_button)
         delete_artifact_button = QPushButton("删除产物")
         self._configure_button(delete_artifact_button)
         delete_artifact_button.clicked.connect(self.delete_selected_training_artifact)
@@ -2651,7 +3253,7 @@ class MainWindow(QMainWindow):
     def inspect_dataset(self) -> None:
         self.log("检查数据集...")
         self._run_task(
-            lambda: services.inspect_dataset(
+            lambda: self.dataset_workspace_session.inspect(
                 self.dataset_root_edit.text().strip(),
                 adapter=self.adapter_edit.text().strip(),
                 sequence_id=self.sequence_combo.currentText().strip(),
@@ -2661,14 +3263,32 @@ class MainWindow(QMainWindow):
             task_label="检查数据集",
         )
 
+    def open_dataset_mapping_wizard(self) -> None:
+        dialog = DatasetMappingWizard(self.dataset_root_edit.text().strip(), self)
+        if dialog.exec() != QDialog.DialogCode.Accepted or not dialog.saved_manifest:
+            return
+        row = dict(dialog.saved_manifest)
+        self.refresh_catalogs()
+        self.dataset_root_edit.setText(str(row.get("dataset_root") or ""))
+        self.adapter_edit.setText("manifest_dataset")
+        sequences = [str(item) for item in row.get("sequences", [])]
+        self._set_custom_dataset_controls(True)
+        self.sequence_combo.clear()
+        self.sequence_combo.addItems(sequences)
+        self.log(f"通用数据映射已保存: {row.get('manifest_path', services.NAN_TEXT)}")
+        self.inspect_dataset()
+
     def _dataset_root_changed(self, _text: str) -> None:
         self.dataset_info = None
+        self.dataset_workspace_session.invalidate()
         if hasattr(self, "dataset_preview_timer"):
             self.dataset_preview_timer.stop()
         if hasattr(self, "dataset_play_button"):
             self.dataset_play_button.setChecked(False)
         self.sequence_combo.clear()
         self.adapter_edit.clear()
+        if hasattr(self, "dataset_tree"):
+            self.dataset_tree.clear()
         if hasattr(self, "dataset_save_button"):
             self._set_custom_dataset_controls(True)
             self._set_dataset_sequence_rows([])
@@ -3137,6 +3757,7 @@ class MainWindow(QMainWindow):
                 sequence_id=self.sequence_combo.currentText().strip(),
                 split_path=self.dataset_split_path_edit.text().strip(),
                 output_path=output_path,
+                resume_checkpoint=self.training_resume_checkpoint_edit.text().strip(),
                 parameters=parameters,
             )
         except Exception as exc:
@@ -3147,6 +3768,24 @@ class MainWindow(QMainWindow):
         self.log(f"Training config saved: {row['label']}")
         self.refresh_catalogs()
         self._select_training_config(str(row["id"]))
+
+    def open_training_config_wizard(self) -> None:
+        try:
+            initial = self._current_training_config_row()
+        except ValueError:
+            initial = {
+                "dataset_root": self.dataset_root_edit.text().strip(),
+                "adapter": self.adapter_edit.text().strip(),
+                "sequence_id": self.sequence_combo.currentText().strip(),
+                "split_path": self.dataset_split_path_edit.text().strip(),
+            }
+        dialog = TrainingConfigWizard(initial, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted or not dialog.saved_config:
+            return
+        row = dict(dialog.saved_config)
+        self.log(f"训练配置向导已保存: {row.get('label', row.get('id', services.NAN_TEXT))}")
+        self.refresh_catalogs()
+        self._select_training_config(str(row.get("id") or ""))
 
     def _current_training_config_row(self) -> dict[str, Any]:
         label = self.training_config_name_edit.text().strip() or "Manual training config"
@@ -3161,6 +3800,7 @@ class MainWindow(QMainWindow):
             "sequence_id": self.sequence_combo.currentText().strip(),
             "split_path": self.dataset_split_path_edit.text().strip(),
             "output_path": self._current_training_output_path(preset_id),
+            "resume_checkpoint": self.training_resume_checkpoint_edit.text().strip(),
             "parameters": self._trainer_parameters_from_text(),
         }
 
@@ -3621,7 +4261,9 @@ class MainWindow(QMainWindow):
         self.dataset_detail_summary.setText(_dataset_detail_text(payload))
         quality = payload.get("quality") if isinstance(payload.get("quality"), dict) else {}
         self.dataset_quality_summary.setText(_dataset_quality_text(quality))
+        self._refresh_dataset_trainability()
         self._populate_dataset_analysis_tables(quality)
+        self._populate_dataset_tree(payload)
         self.sequence_combo.clear()
         sequence_ids = [str(item) for item in payload.get("sequences", [])]
         for sequence_id in sequence_ids:
@@ -3639,6 +4281,55 @@ class MainWindow(QMainWindow):
         self.dataset_frame_slider.setValue(min(self.settings.preview_frame_index, max(0, frame_count - 1)))
         self.dataset_frame_label.setText(f"帧 {self.dataset_frame_slider.value() + 1 if frame_count else 0} / {frame_count}")
         self.log(f"数据集 OK: {payload.get('dataset_id')} / frames={frame_count}")
+
+    def _populate_dataset_tree(self, payload: dict[str, Any]) -> None:
+        self.dataset_tree.blockSignals(True)
+        self.dataset_tree.clear()
+        dataset_label = str(payload.get("dataset_id") or Path(str(payload.get("dataset_root") or "dataset")).name)
+        root_item = QTreeWidgetItem([dataset_label, str(payload.get("adapter") or services.NAN_TEXT)])
+        root_item.setData(0, Qt.ItemDataRole.UserRole, {"kind": "dataset"})
+        self.dataset_tree.addTopLevelItem(root_item)
+        selected = str(payload.get("selected_sequence") or "")
+        quality = payload.get("quality") if isinstance(payload.get("quality"), dict) else {}
+        modalities = [str(item) for item in (quality.get("available_modalities") or quality.get("modalities") or [])]
+        missing = quality.get("missing_asset_counts") if isinstance(quality.get("missing_asset_counts"), dict) else {}
+        for sequence_id in payload.get("sequences", []):
+            sequence_text = str(sequence_id)
+            is_selected = sequence_text == selected
+            sequence_item = QTreeWidgetItem(
+                [sequence_text, f"{payload.get('frame_count', 0)} 帧" if is_selected else "未扫描"]
+            )
+            sequence_item.setData(
+                0,
+                Qt.ItemDataRole.UserRole,
+                {"kind": "sequence", "sequence_id": sequence_text},
+            )
+            root_item.addChild(sequence_item)
+            if is_selected:
+                for modality in modalities:
+                    missing_count = int(missing.get(modality, 0))
+                    modality_item = QTreeWidgetItem(
+                        [modality, "完整" if missing_count == 0 else f"缺失 {missing_count}"]
+                    )
+                    modality_item.setData(
+                        0,
+                        Qt.ItemDataRole.UserRole,
+                        {"kind": "modality", "sequence_id": sequence_text, "modality": modality},
+                    )
+                    sequence_item.addChild(modality_item)
+                sequence_item.setExpanded(True)
+        root_item.setExpanded(True)
+        self.dataset_tree.blockSignals(False)
+
+    def _dataset_tree_item_clicked(self, item: QTreeWidgetItem, _column: int) -> None:
+        data = item.data(0, Qt.ItemDataRole.UserRole)
+        if not isinstance(data, dict) or data.get("kind") != "sequence":
+            return
+        sequence_id = str(data.get("sequence_id") or "")
+        if not sequence_id or sequence_id == self.sequence_combo.currentText().strip():
+            return
+        self.sequence_combo.setCurrentText(sequence_id)
+        self.inspect_dataset()
 
     def _preview_ready(self, payload: dict[str, Any]) -> None:
         self._dataset_preview_busy = False
@@ -3671,6 +4362,7 @@ class MainWindow(QMainWindow):
     def _dataset_split_ready(self, payload: dict[str, Any]) -> None:
         self.dataset_split_path_edit.setText(str(payload.get("path") or ""))
         self.dataset_split_summary.setText(_dataset_split_text(payload))
+        self._refresh_dataset_trainability()
         self.log(f"数据划分完成：{payload.get('path', services.NAN_TEXT)}")
 
     def _populate_dataset_analysis_tables(self, analysis: dict[str, Any]) -> None:
@@ -3833,6 +4525,7 @@ class MainWindow(QMainWindow):
             else:
                 self.home_model_combo.setCurrentText(output_path)
                 self.model_path_edit.setText(output_path)
+        self.training_resume_checkpoint_edit.setText(str(row.get("resume_checkpoint") or ""))
         parameters = row.get("parameters") if isinstance(row.get("parameters"), dict) else {}
         text = json.dumps(parameters, indent=2, ensure_ascii=False) if parameters else "{}"
         self._trainer_params_autofill = text
@@ -4000,6 +4693,26 @@ class MainWindow(QMainWindow):
     def _sync_training_preset_selection(self, *, force: bool = False) -> None:
         self._sync_training_preset_summary()
         self._sync_training_preset_params(force=force)
+        self._refresh_dataset_trainability()
+
+    def _refresh_dataset_trainability(self) -> None:
+        if not hasattr(self, "dataset_trainability_summary") or not self.dataset_info:
+            return
+        preset = self.training_preset_combo.currentData()
+        preset_id = str(preset.get("id") or "") if isinstance(preset, dict) else ""
+        adapter = str(self.dataset_info.get("adapter") or self.adapter_edit.text().strip())
+        try:
+            report = services.dataset_trainability_report(
+                str(self.dataset_info.get("dataset_root") or self.dataset_root_edit.text().strip()),
+                adapter=adapter,
+                sequence_id=str(self.dataset_info.get("selected_sequence") or ""),
+                training_preset_id=preset_id,
+                split_path=self.dataset_split_path_edit.text().strip(),
+                inspection=self.dataset_info,
+            )
+        except Exception as exc:
+            report = {"state": "blocked", "issues": [str(exc)]}
+        self.dataset_trainability_summary.setText(_dataset_trainability_text(report))
 
     def _sync_training_preset_summary(self) -> None:
         if not hasattr(self, "training_preset_summary"):
@@ -4419,6 +5132,7 @@ class MainWindow(QMainWindow):
             self._inference_params_artifact_path = ""
             self.training_artifact_detail_label.setText("Checkpoint：NaN")
             self.favorite_artifact_button.setText("收藏")
+            self.resume_artifact_button.setEnabled(False)
             return
         artifact_path = str(artifact.get("artifact_path") or "")
         if artifact_path != self._inference_params_artifact_path:
@@ -4438,6 +5152,7 @@ class MainWindow(QMainWindow):
             f"metrics: {_mapping_preview(metrics)} | parameters: {_mapping_preview(parameters)}"
         )
         self.favorite_artifact_button.setText("取消收藏" if artifact.get("favorite") else "收藏")
+        self.resume_artifact_button.setEnabled(bool(artifact.get("resume_supported")))
 
     def toggle_selected_artifact_favorite(self) -> None:
         data = self.training_artifact_combo.currentData()
@@ -4472,6 +5187,30 @@ class MainWindow(QMainWindow):
             return
         self.log(f"训练产物已删除: {payload['artifact_path']}")
         self.refresh_catalogs()
+
+    def resume_selected_training_artifact(self) -> None:
+        data = self.training_artifact_combo.currentData()
+        artifact = dict(data) if isinstance(data, dict) else {}
+        if not artifact or not artifact.get("resume_supported"):
+            self.training_artifact_detail_label.setText("Checkpoint：所选训练器未声明恢复训练支持")
+            return
+        artifact_path = str(artifact.get("artifact_path") or "")
+        self.training_resume_checkpoint_edit.setText(artifact_path)
+        self.dataset_root_edit.setText(str(artifact.get("dataset_root") or ""))
+        self.adapter_edit.setText(str(artifact.get("adapter") or ""))
+        self.sequence_combo.setCurrentText(str(artifact.get("sequence_id") or ""))
+        self.dataset_split_path_edit.setText(str(artifact.get("split_path") or ""))
+        preset_id = str(artifact.get("preset_id") or "")
+        if preset_id:
+            self._select_training_preset(preset_id)
+        source = Path(artifact_path)
+        base = source.parent if source.is_file() else source
+        self.training_output_edit.setText(
+            str(base.parent / f"{base.name}_resume_{time.strftime('%Y%m%dT%H%M%S')}")
+        )
+        self.training_config_name_edit.setText(f"{artifact.get('label') or artifact.get('id') or 'training'} resume")
+        self.data_training_tabs.setCurrentIndex(1)
+        self.log(f"已加载恢复训练配置: {artifact_path}")
 
     def run_selected_artifact_inference(self) -> None:
         data = self.training_artifact_combo.currentData()
@@ -4590,7 +5329,7 @@ class MainWindow(QMainWindow):
         log_path = Path(str(current.get("stdout_path") or ""))
         stderr_path = Path(str(current.get("stderr_path") or ""))
         log_text = self._training_job_log_tail(log_path, stderr_path)
-        if log_text:
+        if log_text and not self.pause_training_log_button.isChecked():
             self.latest_training_log.setPlainText(log_text)
             cursor = self.latest_training_log.textCursor()
             cursor.movePosition(cursor.MoveOperation.End)
@@ -4614,7 +5353,7 @@ class MainWindow(QMainWindow):
                 self._set_training_run_views(payload)
                 self.log(f"训练任务{status}: {payload['message']}")
                 self.refresh_catalogs()
-            if log_text:
+            if log_text and not self.pause_training_log_button.isChecked():
                 self.latest_training_log.setPlainText(log_text)
         if not any(str(row.get("status") or "") in {"queued", "running", "canceling"} for row in snapshots):
             self.training_job_timer.stop()
@@ -5514,6 +6253,35 @@ def _dataset_quality_text(
     return "\n".join(lines)
 
 
+def _dataset_trainability_text(report: dict[str, Any]) -> str:
+    if not report:
+        return "训练适配状态：尚未检查数据集"
+    status_label = {
+        "ready": "可训练",
+        "warning": "可训练（有警告）",
+        "blocked": "不可训练",
+    }.get(str(report.get("state") or ""), services.NAN_TEXT)
+    required = ", ".join(str(item) for item in report.get("required_modalities", [])) or "无特定要求"
+    available = ", ".join(str(item) for item in report.get("available_modalities", [])) or services.NAN_TEXT
+    lines = [
+        f"状态：{status_label}",
+        f"训练器：{report.get('training_preset_label') or '尚未选择'}",
+        f"样本数：{report.get('sample_count', 0)}",
+        f"已有模态：{available}",
+        f"必需模态：{required}",
+        f"数据划分：{'必需' if report.get('split_required') else '可选'}",
+    ]
+    issues = [str(item) for item in report.get("issues", [])]
+    warnings = [str(item) for item in report.get("warnings", [])]
+    if issues:
+        lines.append("阻塞原因：")
+        lines.extend(f"- {item}" for item in issues)
+    if warnings:
+        lines.append("警告：")
+        lines.extend(f"- {item}" for item in warnings)
+    return "\n".join(lines)
+
+
 def _dataset_split_text(payload: dict[str, Any]) -> str:
     if not payload:
         return "数据划分：NaN"
@@ -6110,6 +6878,19 @@ QPushButton:disabled {
 #tabTitle {
     color: #1d1d1f;
     font-size: 18px;
+    font-weight: 700;
+}
+#wizardStep {
+    background: #ffffff;
+    border: 1px solid #d2d2d7;
+    border-radius: 6px;
+    color: #6e6e73;
+    padding: 6px 10px;
+}
+#wizardStep[active="true"] {
+    background: #eaf4ff;
+    border-color: #007aff;
+    color: #0066cc;
     font-weight: 700;
 }
 QTabWidget::pane {

@@ -93,3 +93,72 @@ sequences:
 
     assert Path(loaded.frames[0].front_rgb_path).name == "a.png"
     assert Path(loaded.frames[1].front_rgb_path).name == "b.png"
+
+
+def test_manifest_dataset_adapter_aligns_globs_by_frame_id(tmp_path) -> None:
+    root = tmp_path / "frame_id_drive"
+    sequence = root / "clip"
+    (sequence / "images").mkdir(parents=True)
+    for name in ("cam_002.png", "cam_001.png"):
+        (sequence / "images" / name).write_bytes(b"fake")
+    with (sequence / "poses.csv").open("w", encoding="utf-8", newline="") as file:
+        writer = csv.DictWriter(file, fieldnames=["frame_id", "timestamp"])
+        writer.writeheader()
+        writer.writerow({"frame_id": "002", "timestamp": "0.0"})
+        writer.writerow({"frame_id": "001", "timestamp": "0.1"})
+    (root / "dataset_manifest.yaml").write_text(
+        """
+adapter: manifest_dataset
+dataset_id: frame_id_drive
+sequences:
+  - id: clip
+    root: clip
+    pose_csv: poses.csv
+    alignment:
+      mode: frame_id
+      filename_regex: 'cam_(?P<frame_id>\\d+)'
+    assets:
+      front_rgb: images/*.png
+""",
+        encoding="utf-8",
+    )
+
+    loaded = default_dataset_registry().resolve(root, "manifest_dataset").load_sequence(root, "clip")
+
+    assert Path(loaded.frames[0].front_rgb_path).name == "cam_002.png"
+    assert Path(loaded.frames[1].front_rgb_path).name == "cam_001.png"
+
+
+def test_manifest_dataset_adapter_aligns_globs_by_timestamp_with_tolerance(tmp_path) -> None:
+    root = tmp_path / "timestamp_drive"
+    sequence = root / "clip"
+    (sequence / "images").mkdir(parents=True)
+    for name in ("rgb_10.02.png", "rgb_10.11.png", "rgb_20.00.png"):
+        (sequence / "images" / name).write_bytes(b"fake")
+    with (sequence / "poses.csv").open("w", encoding="utf-8", newline="") as file:
+        writer = csv.DictWriter(file, fieldnames=["frame_id", "timestamp"])
+        writer.writeheader()
+        writer.writerow({"frame_id": "a", "timestamp": "10.0"})
+        writer.writerow({"frame_id": "b", "timestamp": "10.1"})
+    (root / "dataset_manifest.yaml").write_text(
+        """
+adapter: manifest_dataset
+dataset_id: timestamp_drive
+sequences:
+  - id: clip
+    root: clip
+    pose_csv: poses.csv
+    alignment:
+      mode: timestamp
+      timestamp_regex: 'rgb_(?P<timestamp>\\d+\\.\\d+)'
+      tolerance_sec: 0.05
+    assets:
+      front_rgb: images/*.png
+""",
+        encoding="utf-8",
+    )
+
+    loaded = default_dataset_registry().resolve(root, "manifest_dataset").load_sequence(root, "clip")
+
+    assert Path(loaded.frames[0].front_rgb_path).name == "rgb_10.02.png"
+    assert Path(loaded.frames[1].front_rgb_path).name == "rgb_10.11.png"

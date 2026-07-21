@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 import pytest
+import numpy as np
 
 from offroad_sim.core import Action, Observation, VehicleState
 from offroad_sim.datasets import create_mock_orfd_dataset
@@ -233,6 +234,80 @@ def test_dataset_preview_session_reuses_sequence_and_rendered_frames(tmp_path) -
     assert repeated["sequence_cache_hit"] is True
     assert repeated["preview_cache_hit"] is True
     assert repeated["previews"] == second["previews"]
+
+
+def test_dataset_workspace_session_caches_inspection(tmp_path) -> None:
+    dataset_root = create_mock_orfd_dataset(tmp_path / "orfd", frame_count=3)
+    session = services.DatasetWorkspaceSession(max_cached_inspections=2)
+
+    first = session.inspect(str(dataset_root), "orfd", "training/seq_0001")
+    second = session.inspect(str(dataset_root), "orfd", "training/seq_0001")
+
+    assert first["inspection_cache_hit"] is False
+    assert second["inspection_cache_hit"] is True
+    assert second["selected_sequence"] == "training/seq_0001"
+
+
+def test_dataset_trainability_report_applies_trainer_modalities_and_split(tmp_path) -> None:
+    dataset_root = create_mock_orfd_dataset(tmp_path / "orfd", frame_count=6)
+
+    blocked = services.dataset_trainability_report(
+        str(dataset_root),
+        adapter="orfd",
+        sequence_id="training/seq_0001",
+        training_preset_id="tiny_rgb_depth",
+    )
+    split = services.create_dataset_split_definition(
+        str(dataset_root),
+        adapter="orfd",
+        output_path=tmp_path / "split.json",
+    )
+    ready = services.dataset_trainability_report(
+        str(dataset_root),
+        adapter="orfd",
+        sequence_id="training/seq_0001",
+        training_preset_id="tiny_rgb_depth",
+        split_path=str(split["path"]),
+    )
+
+    assert blocked["ready"] is False
+    assert blocked["split_required"] is True
+    assert any("split" in issue.lower() for issue in blocked["issues"])
+    assert ready["ready"] is True
+    assert ready["required_modalities"] == ["depth", "front_rgb"]
+    assert ready["missing_modalities"] == []
+
+
+def test_dataset_mapping_preflight_returns_real_matched_frames(tmp_path) -> None:
+    source = tmp_path / "custom"
+    sequence = source / "clip"
+    (sequence / "rgb").mkdir(parents=True)
+    (sequence / "depth").mkdir()
+    (sequence / "poses.csv").write_text(
+        "frame_id,timestamp,x,y\n002,0.0,0,0\n001,0.1,1,0\n",
+        encoding="utf-8",
+    )
+    for frame_id in ("001", "002"):
+        np.save(sequence / "rgb" / f"cam_{frame_id}.npy", np.zeros((3, 4, 3), dtype=np.uint8))
+        np.save(sequence / "depth" / f"depth_{frame_id}.npy", np.ones((3, 4), dtype=np.float32))
+
+    report = services.preview_dataset_mapping(
+        dataset_root=str(source),
+        sequence={
+            "id": "clip",
+            "root": "clip",
+            "pose_csv": "poses.csv",
+            "alignment": {"mode": "frame_id", "filename_regex": r"_(?P<frame_id>\d+)"},
+            "assets": {"front_rgb": "rgb/*.npy", "depth": "depth/*.npy"},
+        },
+        max_frames=2,
+    )
+
+    assert report["ready"] is True
+    assert report["frame_count"] == 2
+    assert report["matches"][0]["frame_id"] == "002"
+    assert Path(report["matches"][0]["assets"]["front_rgb"]).name == "cam_002.npy"
+    assert report["matches"][0]["missing_modalities"] == []
 
 
 def test_training_preset_entries_include_available_and_future_models() -> None:

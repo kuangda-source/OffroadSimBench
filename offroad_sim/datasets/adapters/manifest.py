@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import csv
+import math
+import re
 from pathlib import Path
 from typing import Any
 
@@ -103,7 +105,14 @@ class ManifestDatasetAdapter(DatasetAdapter):
             reader = csv.DictReader(file)
             for index, row in enumerate(reader):
                 frame_id = str(row.get("frame_id") or row.get("id") or f"{index:06d}")
-                fields = self._asset_paths(sequence_root, assets, frame_id, index, row)
+                fields = self._asset_paths(
+                    sequence_root,
+                    assets,
+                    frame_id,
+                    index,
+                    row,
+                    sequence_row.get("alignment") if isinstance(sequence_row.get("alignment"), dict) else {},
+                )
                 frames.append(
                     DatasetFrame(
                         frame_id=frame_id,
@@ -130,6 +139,7 @@ class ManifestDatasetAdapter(DatasetAdapter):
         frame_id: str,
         index: int,
         row: dict[str, Any],
+        alignment: dict[str, Any],
     ) -> dict[str, str | None]:
         fields: dict[str, str | None] = {}
         context = {"frame_id": frame_id, "index": index, **row}
@@ -138,22 +148,92 @@ class ManifestDatasetAdapter(DatasetAdapter):
             if field_name is None or template in (None, ""):
                 continue
             rendered = str(template).format_map(_SafeFormatDict(context))
-            fields[field_name] = self._resolve_asset_path(sequence_root, rendered, index)
+            fields[field_name] = self._resolve_asset_path(
+                sequence_root,
+                rendered,
+                index,
+                frame_id=frame_id,
+                timestamp=self._as_float(row.get("timestamp"), float(index)),
+                alignment=alignment,
+            )
         return fields
 
-    def _resolve_asset_path(self, sequence_root: Path, rendered: str, index: int) -> str | None:
+    def _resolve_asset_path(
+        self,
+        sequence_root: Path,
+        rendered: str,
+        index: int,
+        *,
+        frame_id: str,
+        timestamp: float,
+        alignment: dict[str, Any],
+    ) -> str | None:
         if any(char in rendered for char in "*?["):
             pattern = Path(rendered)
             if pattern.is_absolute():
                 matches = sorted(pattern.parent.glob(pattern.name), key=lambda path: str(path).lower())
             else:
                 matches = sorted(sequence_root.glob(rendered), key=lambda path: str(path).lower())
+            mode = str(alignment.get("mode") or "index").strip().lower()
+            if mode == "frame_id":
+                selected = self._match_frame_id(matches, frame_id, str(alignment.get("filename_regex") or ""))
+                return str(selected.resolve()) if selected is not None else None
+            if mode == "timestamp":
+                selected = self._match_timestamp(
+                    matches,
+                    timestamp,
+                    str(alignment.get("timestamp_regex") or alignment.get("filename_regex") or ""),
+                    float(alignment.get("tolerance_sec", 0.05)),
+                )
+                return str(selected.resolve()) if selected is not None else None
             return str(matches[index].resolve()) if index < len(matches) else None
         path = Path(rendered)
         if not path.is_absolute():
             path = sequence_root / rendered
         resolved = path.resolve()
         return str(resolved) if resolved.exists() else None
+
+    def _match_frame_id(self, matches: list[Path], frame_id: str, pattern: str) -> Path | None:
+        for path in matches:
+            key = self._filename_key(path, pattern, preferred_group="frame_id")
+            if key == frame_id or (not pattern and path.stem == frame_id):
+                return path
+        return None
+
+    def _match_timestamp(
+        self,
+        matches: list[Path],
+        timestamp: float,
+        pattern: str,
+        tolerance_sec: float,
+    ) -> Path | None:
+        best: tuple[float, Path] | None = None
+        for path in matches:
+            raw = self._filename_key(path, pattern, preferred_group="timestamp")
+            try:
+                value = float(raw)
+            except (TypeError, ValueError):
+                continue
+            distance = abs(value - timestamp)
+            if best is None or distance < best[0]:
+                best = (distance, path)
+        tolerance = max(0.0, float(tolerance_sec))
+        return best[1] if best is not None and math.isfinite(best[0]) and best[0] <= tolerance else None
+
+    def _filename_key(self, path: Path, pattern: str, *, preferred_group: str) -> str:
+        if not pattern:
+            return path.stem
+        match = re.search(pattern, path.name)
+        if match is None:
+            return ""
+        groups = match.groupdict()
+        if preferred_group in groups:
+            return str(groups[preferred_group])
+        if "key" in groups:
+            return str(groups["key"])
+        if match.groups():
+            return str(match.group(1))
+        return str(match.group(0))
 
     def _goal(self, row: dict[str, Any], frames: list[DatasetFrame]) -> tuple[float, float] | None:
         value = row.get("goal")

@@ -177,3 +177,42 @@ def test_tiny_depth_manifest_is_discovered_as_pluggable_trainer() -> None:
     assert row["inference"]["input"]["split_required"] is True
     assert row["inference"]["parameters"]["max_samples"]["default"] == 8
     assert row["inference"]["parameters"]["split_name"]["enum"] == ["validation", "test"]
+    assert row["resume"]["supported"] is True
+    assert "{resume_checkpoint}" in row["resume"]["arguments"]
+
+
+def test_tiny_depth_checkpoint_can_resume_through_generic_trainer_protocol(tmp_path: Path) -> None:
+    dataset_root = create_mock_orfd_dataset(tmp_path / "dataset", frame_count=8)
+    split = services.create_dataset_split_definition(
+        str(dataset_root),
+        "orfd",
+        train_ratio=0.5,
+        validation_ratio=0.25,
+        test_ratio=0.25,
+        output_path=tmp_path / "split.json",
+    )
+    manifest = services.CONFIG_ROOT / "trainers" / "tiny_depth.yaml"
+    parameters = {"epochs": 2, "max_frames": 6, "max_pixels_per_frame": 32}
+    first = services.run_trainer_manifest_job(
+        manifest,
+        dataset_root=str(dataset_root),
+        output_dir=str(tmp_path / "first"),
+        adapter="orfd",
+        split_path=split["path"],
+        parameters=parameters,
+    )
+    resumed = services.run_trainer_manifest_job(
+        manifest,
+        dataset_root=str(dataset_root),
+        output_dir=str(tmp_path / "resumed"),
+        adapter="orfd",
+        split_path=split["path"],
+        parameters=parameters,
+        resume_checkpoint=first["artifact_path"],
+    )
+    record = json.loads(Path(resumed["training_run_path"]).read_text(encoding="utf-8"))
+
+    assert resumed["metrics"]["epoch"] == 4
+    assert "--resume" in resumed["command"]
+    assert first["artifact_path"] in resumed["command"]
+    assert record["summary"]["resume_checkpoint"] == first["artifact_path"]

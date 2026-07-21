@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+import numpy as np
 from PySide6.QtCore import QPointF, Qt
 from PySide6.QtGui import QColor, QPixmap
 from PySide6.QtWidgets import QApplication, QAbstractItemView, QDialog, QLabel, QPushButton
@@ -16,11 +17,13 @@ from PySide6.QtWidgets import QApplication, QAbstractItemView, QDialog, QLabel, 
 from desktop_app import services
 from desktop_app.qt_main import (
     DATASET_SOURCE_MIN_WIDTH,
+    DatasetMappingWizard,
     INITIAL_WINDOW_WIDTH,
     MainWindow,
     NavigationTaskCanvas,
     NavigationTaskDialog,
     STYLESHEET,
+    TrainingConfigWizard,
     TrainingCurveWidget,
 )
 
@@ -42,6 +45,74 @@ def _process_until(predicate, timeout_sec: float = 2.0) -> bool:
         time.sleep(0.01)
     app.processEvents()
     return bool(predicate())
+
+
+def test_training_config_wizard_builds_schema_controls_and_preflights(tmp_path, monkeypatch) -> None:
+    _ensure_app()
+    dataset_root = services.create_mock_orfd_dataset(tmp_path / "orfd", frame_count=6)
+    split = services.create_dataset_split_definition(
+        str(dataset_root),
+        adapter="orfd",
+        output_path=tmp_path / "split.json",
+    )
+    wizard = TrainingConfigWizard(
+        {
+            "label": "Tiny depth wizard",
+            "training_preset_id": "tiny_rgb_depth",
+            "dataset_root": str(dataset_root),
+            "adapter": "orfd",
+            "sequence_id": "training/seq_0001",
+            "split_path": split["path"],
+            "output_path": str(tmp_path / "training"),
+            "parameters": {"epochs": 3, "max_frames": 4},
+        }
+    )
+
+    assert wizard.stack.count() == 4
+    assert "epochs" in wizard.parameter_controls
+    assert wizard.parameters()["epochs"] == 3
+    preflight = wizard.run_preflight()
+    assert preflight["ready"] is True
+    assert "预检：通过" in wizard.preflight_summary.toPlainText()
+
+    saved: dict = {}
+
+    def fake_save_training_config(**payload):
+        saved.update(payload)
+        return {"id": "tiny_depth_wizard", **payload}
+
+    monkeypatch.setattr(services, "save_training_config", fake_save_training_config)
+    wizard._save()
+    assert saved["training_preset_id"] == "tiny_rgb_depth"
+    assert saved["parameters"]["epochs"] == 3
+    assert wizard.saved_config["id"] == "tiny_depth_wizard"
+    wizard.close()
+
+
+def test_dataset_mapping_wizard_previews_and_saves_reusable_manifest(tmp_path, monkeypatch) -> None:
+    _ensure_app()
+    source = tmp_path / "source"
+    clip = source / "clip"
+    (clip / "rgb").mkdir(parents=True)
+    (clip / "poses.csv").write_text("frame_id,timestamp\n001,0.0\n002,0.1\n", encoding="utf-8")
+    for frame_id in ("001", "002"):
+        np.save(clip / "rgb" / f"cam_{frame_id}.npy", np.zeros((3, 4, 3), dtype=np.uint8))
+    wizard = DatasetMappingWizard(str(source))
+    wizard.dataset_id_edit.setText("wizard_dataset")
+    wizard.sequence_id_edit.setText("clip")
+    wizard.sequence_root_edit.setText("clip")
+    wizard.asset_edits["front_rgb"].setText("rgb/*.npy")
+    wizard.alignment_combo.setCurrentIndex(wizard.alignment_combo.findData("frame_id"))
+    wizard.alignment_regex_edit.setText(r"_(?P<frame_id>\d+)")
+
+    report = wizard.run_preflight()
+
+    assert report["ready"] is True
+    assert wizard.match_table.rowCount() == 2
+    monkeypatch.setattr(services, "DATASET_MANIFEST_DIRS", (tmp_path / "configs",))
+    wizard._save()
+    assert wizard.saved_manifest["id"] == "wizard_dataset"
+    wizard.close()
 
 
 class _QueuedJobStub:
@@ -619,6 +690,13 @@ def test_gui_dataset_inspection_updates_details_quality_and_frame_controls() -> 
     assert window.dataset_sequence_detail_table.item(0, 0).text() == "clip_001"
     assert window.dataset_issue_table.rowCount() == 1
     assert window.dataset_issue_table.item(0, 1).text() == "sample_warning"
+    root_item = window.dataset_tree.topLevelItem(0)
+    assert root_item.text(0) == "tiny_drive"
+    assert root_item.child(0).text(0) == "clip_001"
+    assert [root_item.child(0).child(index).text(0) for index in range(2)] == [
+        "front_rgb",
+        "lidar_points",
+    ]
     window.close()
 
 

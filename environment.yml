@@ -13,6 +13,7 @@ dependencies:
       - -e .
       - beamngpy
       - PySide6>=6.7
+      - tensorboard>=2.14
       - torch==2.5.1
       - torchvision==0.20.1
       - stable-worldmodel>=0.0.6

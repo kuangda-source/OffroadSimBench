@@ -322,6 +322,35 @@ def test_favoriting_an_old_artifact_does_not_make_it_latest(tmp_path) -> None:
     assert Path(latest["artifact_path"]).parent.name == "newer"
 
 
+def test_artifact_catalog_deduplicates_shared_checkpoint_paths(tmp_path) -> None:
+    artifact = tmp_path / "shared" / "model.ckpt"
+    artifact.parent.mkdir()
+    artifact.write_text("checkpoint", encoding="utf-8")
+    records = []
+    for name in ("first", "second"):
+        output_dir = tmp_path / name
+        record = services.write_training_run_record(
+            output_dir,
+            preset_id="shared_checkpoint",
+            status="completed",
+            artifact_path=str(artifact),
+            artifact_type="checkpoint",
+        )
+        records.append(record)
+    services.set_training_artifact_favorite(records[0]["path"], True)
+
+    entries = services.training_artifact_entries(tmp_path)
+
+    assert len(entries) == 1
+    assert entries[0]["artifact_path"] == str(artifact.resolve())
+    assert entries[0]["favorite"] is True
+    recorded_paths = {
+        entries[0]["training_run_path"],
+        *entries[0]["duplicate_training_run_paths"],
+    }
+    assert recorded_paths == {record["path"] for record in records}
+
+
 def test_delete_training_artifact_checks_config_references_and_preserves_run(tmp_path, monkeypatch) -> None:
     config_root = tmp_path / "configs"
     config_root.mkdir()

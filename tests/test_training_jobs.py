@@ -359,6 +359,33 @@ def test_gui_tracks_manifest_job_progress_logs_and_completion(tmp_path) -> None:
     window.close()
 
 
+def test_gui_can_pause_log_refresh_without_pausing_metrics(monkeypatch) -> None:
+    QApplication.instance() or QApplication([])
+    window = MainWindow()
+    job = {
+        "job_id": "active-job",
+        "status": "running",
+        "message": "training",
+        "progress": 0.5,
+        "stdout_path": "stdout.log",
+        "stderr_path": "stderr.log",
+    }
+    window._current_training_job_id = "active-job"
+    monkeypatch.setattr(window.training_job_queue, "snapshots", lambda: [job])
+    monkeypatch.setattr(window, "_training_job_log_tail", lambda *_args: "new log line")
+    live_calls: list[dict] = []
+    monkeypatch.setattr(services, "live_training_metric_record", lambda _job: {"history": {"loss": [1.0]}})
+    monkeypatch.setattr(window, "_set_live_training_metric_views", live_calls.append)
+    window.latest_training_log.setPlainText("kept log")
+    window.pause_training_log_button.setChecked(True)
+
+    window._refresh_training_jobs()
+
+    assert window.latest_training_log.toPlainText() == "kept log"
+    assert live_calls == [{"history": {"loss": [1.0]}}]
+    window.close()
+
+
 def test_gui_close_stops_generic_qthreads() -> None:
     QApplication.instance() or QApplication([])
     window = MainWindow()
